@@ -105,6 +105,7 @@ export async function reverseGeocodePendingAssets(): Promise<void> {
           geo_country_code: g.country_code,
           geo_admin_region: g.admin_region,
           geo_locality: g.locality,
+          postal_code: g.postcode,
           geo_raw: g.raw,
           geo_provider: 'nominatim',
           geo_resolved_at: now,

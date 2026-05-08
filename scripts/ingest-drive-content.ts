@@ -4,10 +4,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { google } from 'googleapis';
 import type { drive_v3 } from 'googleapis';
 
-import { OAUTH_REDIRECT_URI, loadWebOAuthClientSecrets } from './lib/google-oauth-secrets.js';
+import { getDriveClient } from './lib/google-drive-auth.js';
+
+export { getDriveClient };
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -134,15 +135,6 @@ function formatUnknownError(e: unknown): string {
     }
   }
   return String(e);
-}
-
-export async function getDriveClient(): Promise<drive_v3.Drive> {
-  const { clientId, clientSecret } = loadWebOAuthClientSecrets();
-  const refreshToken = requireEnv('GOOGLE_REFRESH_TOKEN');
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, OAUTH_REDIRECT_URI);
-  oauth2Client.setCredentials({ refresh_token: refreshToken });
-  await oauth2Client.getAccessToken();
-  return google.drive({ version: 'v3', auth: oauth2Client });
 }
 
 export async function listDriveFiles(

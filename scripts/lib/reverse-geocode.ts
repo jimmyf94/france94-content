@@ -9,6 +9,7 @@ export type ReverseGeocodeResult = {
   country_code: string | null;
   admin_region: string | null;
   locality: string | null;
+  postcode: string | null;
   raw: unknown;
 };
 
@@ -27,6 +28,7 @@ type NominatimResponse = {
     municipality?: string;
     hamlet?: string;
     suburb?: string;
+    postcode?: string;
   };
 };
 
@@ -79,6 +81,7 @@ export async function reverseGeocodeNominatim(
   const locality =
     a.city ?? a.town ?? a.village ?? a.municipality ?? a.hamlet ?? a.suburb ?? null;
   const adminRegion = a.state ?? a.region ?? a.province ?? a.county ?? null;
+  const postcodeRaw = a.postcode?.trim() || null;
 
   return {
     label: data.display_name?.trim() || null,
@@ -86,6 +89,7 @@ export async function reverseGeocodeNominatim(
     country_code: a.country_code?.trim().toUpperCase() || null,
     admin_region: adminRegion?.trim() || null,
     locality: locality?.trim() || null,
+    postcode: postcodeRaw ? postcodeRaw.replace(/\s+/g, '').toLowerCase() : null,
     raw: data,
   };
 }

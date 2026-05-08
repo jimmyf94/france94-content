@@ -7,9 +7,9 @@ import { URL } from 'node:url';
 import { google } from 'googleapis';
 
 import {
-  GOOGLE_DRIVE_READONLY_SCOPE,
+  GOOGLE_DRIVE_READWRITE_SCOPE,
   OAUTH_REDIRECT_URI,
-  loadWebOAuthClientSecrets,
+  loadOAuthClientSecrets,
 } from './lib/google-oauth-secrets.js';
 
 const CALLBACK_PATH = '/oauth2callback';
@@ -27,13 +27,13 @@ function openBrowser(url: string): void {
 }
 
 async function main(): Promise<void> {
-  const { clientId, clientSecret } = loadWebOAuthClientSecrets();
+  const { clientId, clientSecret } = loadOAuthClientSecrets();
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, OAUTH_REDIRECT_URI);
 
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: [GOOGLE_DRIVE_READONLY_SCOPE],
+    scope: [GOOGLE_DRIVE_READWRITE_SCOPE],
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -65,6 +65,7 @@ async function main(): Promise<void> {
 
         const { tokens } = await oauth2Client.getToken(code);
         const refresh = tokens.refresh_token;
+        const grantedScopes = tokens.scope?.trim();
 
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(
@@ -79,7 +80,15 @@ async function main(): Promise<void> {
             reject(new Error('Missing refresh_token'));
             return;
           }
-          console.log('\nAdd this to your .env file:\n');
+          if (grantedScopes) {
+            console.log('\nGranted OAuth scopes (must include https://www.googleapis.com/auth/drive for rename/move):\n');
+            console.log(`${grantedScopes}\n`);
+          } else {
+            console.log(
+              '\n(No scope string on token response — run npm run check:drive-token to verify access.)\n',
+            );
+          }
+          console.log('Add this to your .env file:\n');
           console.log(`GOOGLE_REFRESH_TOKEN=${refresh}\n`);
           resolve();
         });
@@ -92,7 +101,9 @@ async function main(): Promise<void> {
 
     server.listen(PORT, '127.0.0.1', () => {
       console.log(`Callback server: ${OAUTH_REDIRECT_URI}`);
-      console.log('Opening browser for Google sign-in…');
+      console.log(
+        'Scopes: Google Drive read/write (required for ingest, analyze, rename/move). Opening browser…',
+      );
       openBrowser(authUrl);
     });
 
