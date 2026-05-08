@@ -11,10 +11,15 @@ import { OAUTH_REDIRECT_URI, loadWebOAuthClientSecrets } from './lib/google-oaut
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
+export function driveFileViewUrl(driveFileId: string): string {
+  return `https://drive.google.com/file/d/${driveFileId}/view`;
+}
+
 type AssetStatus = 'new' | 'duplicate' | 'error';
 
 type ContentAssetInsert = {
   drive_file_id: string;
+  drive_web_view_link: string | null;
   drive_parent_folder_id: string | null;
   original_filename: string;
   current_filename: string | null;
@@ -142,6 +147,7 @@ function buildInsertRow(
 
   return {
     drive_file_id: driveFileId,
+    drive_web_view_link: file.webViewLink?.trim() || driveFileViewUrl(driveFileId),
     drive_parent_folder_id: file.parents?.[0] ?? null,
     original_filename: name,
     current_filename: name,
