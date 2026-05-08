@@ -1,0 +1,21 @@
+---
+alwaysApply: true
+---
+
+Use Google Drive as storage, not state.
+
+Required Drive folder structure eventually:
+
+```text
+
+FR94_Content/
+
+  00_inbox_raw/
+
+  01_processed_raw/
+
+  02_ready_for_review/
+
+  03_final_assets/
+
+  99_error/

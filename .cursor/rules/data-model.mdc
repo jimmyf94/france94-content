@@ -1,0 +1,57 @@
+---
+alwaysApply: true
+---
+
+Use Supabase as the canonical registry.
+
+Prefer explicit tables over vague JSON blobs.
+
+Use `jsonb` only for raw external metadata, LLM raw responses, and flexible payloads that do not yet deserve a formal schema.
+
+Important tables:
+
+- `content_assets`
+
+- `post_candidates`
+
+Do not store only opaque LLM outputs. Extract important fields into columns.
+
+Every pipeline item should have a status.
+
+Statuses should be explicit and boring.
+
+Example `content_assets.status`:
+
+- `new`
+
+- `analyzed`
+
+- `renamed`
+
+- `ready_for_planning`
+
+- `used`
+
+- `archived`
+
+- `duplicate`
+
+- `error`
+
+Example `post_candidates.status`:
+
+- `needs_review`
+
+- `approved`
+
+- `rejected`
+
+- `needs_rewrite`
+
+- `in_production`
+
+- `produced`
+
+- `ready_to_publish`
+
+- `posted`

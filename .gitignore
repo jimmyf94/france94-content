@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+*.log
+.DS_Store
+
+# Google OAuth client secrets (download from GCP; never commit)
+f94client.json
+**/f94client.json

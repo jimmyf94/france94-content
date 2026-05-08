@@ -1,0 +1,19 @@
+{
+  "name": "france94-content-manager",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ingest:drive": "tsx scripts/ingest-drive-content.ts",
+    "oauth:google-drive": "tsx scripts/google-oauth-setup.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "dotenv": "^16.4.7",
+    "googleapis": "^148.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

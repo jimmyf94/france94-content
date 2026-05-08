@@ -1,0 +1,41 @@
+---
+alwaysApply: true
+---
+
+Original names from phone, GoPro, or downloads are raw input only.
+
+AI may suggest semantic filename cores, but code owns final filename structure.
+
+Final filename pattern:
+
+`YYYY-MM-DD_location_activity_subject_lane_quality_seq.ext`
+
+Example:
+
+`2026-05-08_bergerac_run_hill-fatigue-training_reel_A_001.mov`
+
+Rules:
+
+- lowercase only
+
+- no accents
+
+- no spaces
+
+- hyphens inside concepts
+
+- underscores between fields
+
+- preserve extension
+
+- code controls date
+
+- code controls sequence
+
+- code controls duplicate handling
+
+- code sanitizes illegal characters
+
+- max reasonable length
+
+- AI never controls the entire final filename

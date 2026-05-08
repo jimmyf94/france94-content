@@ -1,0 +1,88 @@
+---
+description: 
+alwaysApply: false
+---
+
+# FR94 Content Ops — Cursor Rules
+
+## Project Context
+
+This project supports France94, an endurance and charity challenge where Jimmy will complete 94 Olympic-distance triathlons in 94 consecutive days, one per mainland French department, to raise money for cancer research.
+
+This system is an internal AI-assisted content operations pipeline.
+
+The goal is to turn raw media captured during training, planning, travel, outreach, and the challenge itself into structured content assets, approval-ready post candidates, and eventually final Instagram-ready drafts.
+
+The human should stay involved only for approval and final judgment.
+
+## Core Product Principle
+
+This is not a generic social media scheduler.
+
+It is a content intelligence system for a founder-athlete endurance project.
+
+The pipeline should prioritize:
+
+- raw authenticity
+
+- mission clarity
+
+- French-first communication
+
+- international readability
+
+- sponsor-safe output
+
+- low manual admin
+
+- deterministic infrastructure
+
+- human approval before publishing
+
+## Architecture Principle
+
+Supabase is the source of truth.
+
+Google Drive is raw file storage.
+
+LLMs are used for semantic understanding, naming, captioning, and planning.
+
+LLMs must not control orchestration, state transitions, deduplication, publishing, file permissions, or destructive actions.
+
+Use normal deterministic code for:
+
+- Drive scanning
+
+- database reads/writes
+
+- duplicate checks
+
+- status changes
+
+- file renaming
+
+- error handling
+
+- cron jobs
+
+- permissions
+
+- exports
+
+Use AI only for:
+
+- multimodal analysis
+
+- transcript interpretation
+
+- semantic summaries
+
+- filename core suggestions
+
+- content classification
+
+- caption drafts
+
+- post candidate generation
+
+- production instructions
