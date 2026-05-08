@@ -530,6 +530,12 @@ export type VideoSampledResult = {
   height: number | null;
   frameSamplePaths: string[];
   audioTranscript: string;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  captureTime: string | null;
+  cameraMake: string | null;
+  cameraModel: string | null;
 };
 
 export async function analyzeVideoSampled(
@@ -655,6 +661,12 @@ export async function analyzeVideoSampled(
       height: probe.height,
       frameSamplePaths: framePaths.map((p) => path.basename(p)),
       audioTranscript,
+      latitude: probe.latitude,
+      longitude: probe.longitude,
+      altitude: probe.altitude,
+      captureTime: probe.captureTime,
+      cameraMake: probe.cameraMake,
+      cameraModel: probe.cameraModel,
     };
   });
 }
@@ -674,6 +686,13 @@ export async function updateAssetAnalysis(
     frame_sample_count?: number | null;
     frame_sample_paths?: string[] | null;
     audio_transcript?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    altitude?: number | null;
+    capture_time?: string | null;
+    camera_make?: string | null;
+    camera_model?: string | null;
+    geo_source?: string | null;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -689,44 +708,59 @@ export async function updateAssetAnalysis(
     frame_sample_count = null,
     frame_sample_paths = null,
     audio_transcript = null,
+    geo_source,
   } = payload;
+
+  const update: Record<string, unknown> = {
+    analyzed_at: now,
+    analysis_status: 'complete',
+    drive_web_view_link,
+    visual_summary: analysis.visual_summary,
+    transcript: analysis.transcript,
+    semantic_summary: analysis.semantic_summary,
+    activity: analysis.activity,
+    content_lane: analysis.content_lane,
+    suggested_title: analysis.suggested_title,
+    suggested_filename_core: analysis.suggested_filename_core,
+    tags: analysis.tags,
+    nonverbal_cues: analysis.nonverbal_cues,
+    quality_score: analysis.quality_score,
+    mission_score: analysis.mission_score,
+    human_score: analysis.human_score,
+    sponsor_safety_score: analysis.sponsor_safety_score,
+    publish_recommendation: analysis.publish_recommendation,
+    analysis_strategy,
+    duration_seconds,
+    video_width,
+    video_height,
+    frame_sample_count,
+    frame_sample_paths,
+    audio_transcript,
+    needs_full_video_review: analysis.needs_full_video_review,
+    reason_full_video_review_needed:
+      analysis.reason_full_video_review_needed?.trim() ? analysis.reason_full_video_review_needed : null,
+    llm_model,
+    llm_raw,
+    status: 'analyzed',
+    updated_at: now,
+    error_message: null,
+  };
+
+  // Only touch geo columns when the analyzer extracted them (videos via ffprobe).
+  // Image rows already had geo populated at ingest from Drive imageMediaMetadata.
+  if (geo_source) {
+    update.geo_source = geo_source;
+    update.latitude = payload.latitude ?? null;
+    update.longitude = payload.longitude ?? null;
+    update.altitude = payload.altitude ?? null;
+    update.capture_time = payload.capture_time ?? null;
+    update.camera_make = payload.camera_make ?? null;
+    update.camera_model = payload.camera_model ?? null;
+  }
 
   const { error } = await supabase
     .from('content_assets')
-    .update({
-      analyzed_at: now,
-      analysis_status: 'complete',
-      drive_web_view_link,
-      visual_summary: analysis.visual_summary,
-      transcript: analysis.transcript,
-      semantic_summary: analysis.semantic_summary,
-      activity: analysis.activity,
-      content_lane: analysis.content_lane,
-      suggested_title: analysis.suggested_title,
-      suggested_filename_core: analysis.suggested_filename_core,
-      tags: analysis.tags,
-      nonverbal_cues: analysis.nonverbal_cues,
-      quality_score: analysis.quality_score,
-      mission_score: analysis.mission_score,
-      human_score: analysis.human_score,
-      sponsor_safety_score: analysis.sponsor_safety_score,
-      publish_recommendation: analysis.publish_recommendation,
-      analysis_strategy,
-      duration_seconds,
-      video_width,
-      video_height,
-      frame_sample_count,
-      frame_sample_paths,
-      audio_transcript,
-      needs_full_video_review: analysis.needs_full_video_review,
-      reason_full_video_review_needed:
-        analysis.reason_full_video_review_needed?.trim() ? analysis.reason_full_video_review_needed : null,
-      llm_model,
-      llm_raw,
-      status: 'analyzed',
-      updated_at: now,
-      error_message: null,
-    })
+    .update(update)
     .eq('id', assetId);
 
   if (error) throw error;
@@ -853,6 +887,13 @@ export async function analyzePendingAssets(): Promise<void> {
       let frameSampleCount: number | null = null;
       let frameSamplePaths: string[] | null = null;
       let audioTranscript: string | null = null;
+      let videoLatitude: number | null = null;
+      let videoLongitude: number | null = null;
+      let videoAltitude: number | null = null;
+      let videoCaptureTime: string | null = null;
+      let videoCameraMake: string | null = null;
+      let videoCameraModel: string | null = null;
+      let videoGeoSource: string | null = null;
 
       if (category === 'video') {
         console.log(`[video]\tsampled preprocess + analyze\t${asset.id}`);
@@ -877,6 +918,18 @@ export async function analyzePendingAssets(): Promise<void> {
         frameSampleCount = result.frameSamplePaths.length;
         frameSamplePaths = result.frameSamplePaths;
         audioTranscript = result.audioTranscript || null;
+        videoLatitude = result.latitude;
+        videoLongitude = result.longitude;
+        videoAltitude = result.altitude;
+        videoCaptureTime = result.captureTime;
+        videoCameraMake = result.cameraMake;
+        videoCameraModel = result.cameraModel;
+        if (result.latitude != null && result.longitude != null) {
+          videoGeoSource = 'ffprobe_quicktime';
+          console.log(
+            `[geo]\tlat=${result.latitude}\tlon=${result.longitude}\tsrc=ffprobe_quicktime\t${asset.id}`,
+          );
+        }
       } else {
         console.log(`[gemini]\tupload + analyze\t${asset.id}`);
         const result = await analyzeWithGemini(ai, {
@@ -928,6 +981,13 @@ export async function analyzePendingAssets(): Promise<void> {
         frame_sample_count: frameSampleCount,
         frame_sample_paths: frameSamplePaths,
         audio_transcript: audioTranscript,
+        latitude: videoLatitude,
+        longitude: videoLongitude,
+        altitude: videoAltitude,
+        capture_time: videoCaptureTime,
+        camera_make: videoCameraMake,
+        camera_model: videoCameraModel,
+        geo_source: videoGeoSource,
       });
 
       console.log(`[supabase]\tstatus=analyzed\t${asset.id}`);

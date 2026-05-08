@@ -5,6 +5,7 @@
   "scripts": {
     "ingest:drive": "tsx scripts/ingest-drive-content.ts",
     "analyze:content": "tsx scripts/analyze-content-assets.ts",
+    "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts"
   },
   "dependencies": {

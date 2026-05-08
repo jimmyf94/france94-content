@@ -34,7 +34,74 @@ type ContentAssetInsert = {
   status: AssetStatus;
   metadata_raw: Record<string, unknown>;
   error_message: string | null;
+  capture_time: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  camera_make: string | null;
+  camera_model: string | null;
+  geo_source: string | null;
 };
+
+type ImageGeo = {
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  capture_time: string | null;
+  camera_make: string | null;
+  camera_model: string | null;
+  geo_source: 'drive_image_metadata' | null;
+};
+
+const EMPTY_IMAGE_GEO: ImageGeo = {
+  latitude: null,
+  longitude: null,
+  altitude: null,
+  capture_time: null,
+  camera_make: null,
+  camera_model: null,
+  geo_source: null,
+};
+
+function nullIfZero(n: number | null | undefined): number | null {
+  if (n == null || !Number.isFinite(n)) return null;
+  return n === 0 ? null : n;
+}
+
+/** Drive's imageMediaMetadata.time is "YYYY:MM:DD HH:MM:SS" (UTC). Convert to ISO 8601. */
+function exifTimeToIso(t: string | null | undefined): string | null {
+  if (!t) return null;
+  const m = t.trim().match(/^(\d{4}):(\d{2}):(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) {
+    const direct = new Date(t);
+    return Number.isNaN(direct.getTime()) ? null : direct.toISOString();
+  }
+  const [, y, mo, d, h, mi, s] = m;
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${s}Z`;
+  const parsed = new Date(iso);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+export function extractImageGeo(file: drive_v3.Schema$File): ImageGeo {
+  const meta = file.imageMediaMetadata;
+  if (!meta) return EMPTY_IMAGE_GEO;
+
+  const lat = nullIfZero(meta.location?.latitude ?? null);
+  const lon = nullIfZero(meta.location?.longitude ?? null);
+  const alt = meta.location?.altitude ?? null;
+
+  const hasGeo = lat != null && lon != null;
+
+  return {
+    latitude: lat,
+    longitude: lon,
+    altitude: alt != null && Number.isFinite(alt) ? alt : null,
+    capture_time: exifTimeToIso(meta.time ?? null),
+    camera_make: meta.cameraMake?.trim() || null,
+    camera_model: meta.cameraModel?.trim() || null,
+    geo_source: hasGeo ? 'drive_image_metadata' : null,
+  };
+}
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -47,6 +114,26 @@ function requireEnv(name: string): string {
 function truncateErrorMessage(msg: string, max = 2000): string {
   if (msg.length <= max) return msg;
   return `${msg.slice(0, max)}…`;
+}
+
+/** Supabase/PostgREST often returns plain `{ message, details, hint, code }` objects, not `Error`. */
+function formatUnknownError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === 'object') {
+    const o = e as Record<string, unknown>;
+    const msg = o.message != null ? String(o.message) : '';
+    const details = o.details != null ? String(o.details) : '';
+    const hint = o.hint != null ? String(o.hint) : '';
+    const code = o.code != null ? String(o.code) : '';
+    const parts = [msg, details, hint, code].filter((s) => s.length > 0);
+    if (parts.length) return parts.join(' | ');
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return Object.prototype.toString.call(e);
+    }
+  }
+  return String(e);
 }
 
 export async function getDriveClient(): Promise<drive_v3.Drive> {
@@ -69,7 +156,7 @@ export async function listDriveFiles(
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
       fields:
-        'nextPageToken, files(id, name, mimeType, size, parents, md5Checksum, createdTime, modifiedTime, webViewLink, kind, spaces, version)',
+        'nextPageToken, files(id, name, mimeType, size, parents, md5Checksum, createdTime, modifiedTime, webViewLink, kind, spaces, version, imageMediaMetadata(location, time, cameraMake, cameraModel, width, height, rotation))',
       pageSize: 100,
       pageToken,
       supportsAllDrives: true,
@@ -145,6 +232,8 @@ function buildInsertRow(
     throw new Error('Drive file missing id');
   }
 
+  const imageGeo = inferMediaType(file.mimeType) === 'image' ? extractImageGeo(file) : EMPTY_IMAGE_GEO;
+
   return {
     drive_file_id: driveFileId,
     drive_web_view_link: file.webViewLink?.trim() || driveFileViewUrl(driveFileId),
@@ -162,6 +251,13 @@ function buildInsertRow(
     status,
     metadata_raw: metadataRawFromDriveFile(file),
     error_message: errorMessage ?? null,
+    capture_time: imageGeo.capture_time,
+    latitude: imageGeo.latitude,
+    longitude: imageGeo.longitude,
+    altitude: imageGeo.altitude,
+    camera_make: imageGeo.camera_make,
+    camera_model: imageGeo.camera_model,
+    geo_source: imageGeo.geo_source,
   };
 }
 
@@ -228,7 +324,7 @@ export async function ingestDriveFolder(): Promise<void> {
       console.log(`[inserted] ${label}\t${id}\tdb_status=${rowStatus}`);
     } catch (e) {
       errors += 1;
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = formatUnknownError(e);
       const idPart = file.id ?? '(no drive_file_id)';
       console.log(`[error] ${label}\t${idPart}\t${truncateErrorMessage(msg, 500)}`);
 
@@ -241,8 +337,9 @@ export async function ingestDriveFolder(): Promise<void> {
           inserted += 1;
           console.log(`[inserted] ${label}\t${file.id}\tdb_status=error (persisted)`);
         } catch (inner) {
-          const innerMsg = inner instanceof Error ? inner.message : String(inner);
-          console.error(`error: failed to persist error row for ${label}: ${innerMsg}`);
+          console.error(
+            `error: failed to persist error row for ${label}: ${truncateErrorMessage(formatUnknownError(inner), 500)}`,
+          );
         }
       }
     }

@@ -57,8 +57,105 @@ export type ProbeResult = {
   width: number | null;
   height: number | null;
   hasAudio: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  captureTime: string | null;
+  cameraMake: string | null;
+  cameraModel: string | null;
   raw: Record<string, unknown>;
 };
+
+const LOCATION_TAG_KEYS = [
+  'com.apple.quicktime.location.iso6709',
+  'location-eng',
+  'location',
+];
+
+const ISO6709 = /^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:([+-]\d+(?:\.\d+)?))?\/?$/;
+
+function lowerKeyMap(tags: Record<string, unknown> | undefined): Record<string, string> {
+  if (!tags || typeof tags !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(tags)) {
+    if (typeof v === 'string') out[k.toLowerCase()] = v;
+  }
+  return out;
+}
+
+/** Parse an ISO 6709 string like "+44.8378-000.6233+058.000/" into lat/lon/alt. */
+export function parseIso6709(value: string | null | undefined): {
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+} {
+  if (!value) return { latitude: null, longitude: null, altitude: null };
+  const m = value.trim().match(ISO6709);
+  if (!m) return { latitude: null, longitude: null, altitude: null };
+  const lat = Number(m[1]);
+  const lon = Number(m[2]);
+  const alt = m[3] != null ? Number(m[3]) : null;
+  return {
+    latitude: Number.isFinite(lat) ? lat : null,
+    longitude: Number.isFinite(lon) ? lon : null,
+    altitude: alt != null && Number.isFinite(alt) ? alt : null,
+  };
+}
+
+/** Look in format.tags then any stream tags for a QuickTime/MP4 location string. */
+export function parseQuickTimeLocation(probeRaw: Record<string, unknown>): {
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+} {
+  const candidates: Record<string, string>[] = [];
+  const format = (probeRaw.format ?? {}) as Record<string, unknown>;
+  candidates.push(lowerKeyMap(format.tags as Record<string, unknown> | undefined));
+
+  const streams = Array.isArray(probeRaw.streams)
+    ? (probeRaw.streams as Array<Record<string, unknown>>)
+    : [];
+  for (const s of streams) {
+    candidates.push(lowerKeyMap(s.tags as Record<string, unknown> | undefined));
+  }
+
+  for (const tags of candidates) {
+    for (const key of LOCATION_TAG_KEYS) {
+      const v = tags[key];
+      if (v) {
+        const parsed = parseIso6709(v);
+        if (parsed.latitude != null && parsed.longitude != null) return parsed;
+      }
+    }
+  }
+  return { latitude: null, longitude: null, altitude: null };
+}
+
+function pickStringTag(probeRaw: Record<string, unknown>, ...keys: string[]): string | null {
+  const format = (probeRaw.format ?? {}) as Record<string, unknown>;
+  const formatTags = lowerKeyMap(format.tags as Record<string, unknown> | undefined);
+  for (const k of keys) {
+    const v = formatTags[k.toLowerCase()];
+    if (v && v.trim()) return v.trim();
+  }
+  const streams = Array.isArray(probeRaw.streams)
+    ? (probeRaw.streams as Array<Record<string, unknown>>)
+    : [];
+  for (const s of streams) {
+    const tags = lowerKeyMap(s.tags as Record<string, unknown> | undefined);
+    for (const k of keys) {
+      const v = tags[k.toLowerCase()];
+      if (v && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
+function normalizeIsoDate(s: string | null): string | null {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
 
 export async function probeVideo(filePath: string): Promise<ProbeResult> {
   const { stdout } = await runProcess(requireFfprobe(), [
@@ -91,11 +188,22 @@ export async function probeVideo(filePath: string): Promise<ProbeResult> {
   const width = videoStream?.width != null ? Number(videoStream.width) : null;
   const height = videoStream?.height != null ? Number(videoStream.height) : null;
 
+  const geo = parseQuickTimeLocation(parsed);
+  const captureTime = normalizeIsoDate(pickStringTag(parsed, 'creation_time'));
+  const cameraMake = pickStringTag(parsed, 'com.apple.quicktime.make', 'make');
+  const cameraModel = pickStringTag(parsed, 'com.apple.quicktime.model', 'model');
+
   return {
     durationSeconds: Number.isFinite(durationSeconds ?? NaN) ? (durationSeconds as number) : null,
     width: Number.isFinite(width ?? NaN) ? (width as number) : null,
     height: Number.isFinite(height ?? NaN) ? (height as number) : null,
     hasAudio: audioStream != null,
+    latitude: geo.latitude,
+    longitude: geo.longitude,
+    altitude: geo.altitude,
+    captureTime,
+    cameraMake,
+    cameraModel,
     raw: parsed,
   };
 }
