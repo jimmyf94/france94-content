@@ -10,8 +10,16 @@ import type { drive_v3 } from 'googleapis';
 import { z } from 'zod';
 
 import { driveFileViewUrl, getDriveClient } from './ingest-drive-content.js';
+import {
+  extractAudio,
+  extractFrames,
+  pickFrameTimestamps,
+  probeVideo,
+  withTempDir,
+} from './lib/video-preprocess.js';
 
 const DEFAULT_ANALYSIS_PROMPT_REL = path.join('prompts', 'france94-media-analysis.txt');
+const DEFAULT_VIDEO_SAMPLED_PROMPT_REL = path.join('prompts', 'france94-video-sampled-analysis.txt');
 
 function resolveAnalysisPromptPath(): string {
   const fromEnv = process.env.CONTENT_ANALYSIS_PROMPT_PATH?.trim();
@@ -38,7 +46,33 @@ function loadAnalysisPrompt(): string {
   return trimmed;
 }
 
+function resolveVideoSampledPromptPath(): string {
+  const fromEnv = process.env.VIDEO_SAMPLED_PROMPT_PATH?.trim();
+  if (fromEnv) {
+    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+  }
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_VIDEO_SAMPLED_PROMPT_REL);
+}
+
+function loadVideoSampledPrompt(): string {
+  const promptPath = resolveVideoSampledPromptPath();
+  let raw: string;
+  try {
+    raw = fs.readFileSync(promptPath, 'utf8');
+  } catch {
+    throw new Error(
+      `Cannot read video-sampled prompt file: ${promptPath}. Set VIDEO_SAMPLED_PROMPT_PATH or add scripts/prompts/france94-video-sampled-analysis.txt.`,
+    );
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`Video-sampled prompt file is empty: ${promptPath}`);
+  }
+  return trimmed;
+}
+
 const ANALYSIS_PROMPT = loadAnalysisPrompt();
+const VIDEO_SAMPLED_PROMPT = loadVideoSampledPrompt();
 
 const activityEnum = z.enum([
   'run',
@@ -79,14 +113,33 @@ const geminiAnalysisSchema = z.object({
       'suggested_filename_core must be lowercase segments separated by hyphens',
     ),
   tags: z.array(z.string()),
+  nonverbal_cues: z
+    .preprocess((v) => (Array.isArray(v) ? v : []), z.array(z.string()).max(20))
+    .default([]),
   quality_score: z.number().min(0).max(10),
   mission_score: z.number().min(0).max(10),
   human_score: z.number().min(0).max(10),
   sponsor_safety_score: z.number().min(0).max(10),
   publish_recommendation: publishRecommendationEnum,
+  needs_full_video_review: z
+    .preprocess((v) => (typeof v === 'boolean' ? v : false), z.boolean())
+    .default(false),
+  reason_full_video_review_needed: z
+    .preprocess((v) => (typeof v === 'string' ? v : ''), z.string())
+    .default(''),
 });
 
 export type GeminiAnalysis = z.infer<typeof geminiAnalysisSchema>;
+
+export type AnalysisStrategy =
+  | 'image_direct'
+  | 'video_frames_only'
+  | 'video_frames_plus_audio'
+  | 'video_full_low_res'
+  | 'audio_only'
+  | 'too_large';
+
+type MediaCategory = 'image' | 'video' | 'audio' | 'other';
 
 type PendingAsset = {
   id: string;
@@ -350,9 +403,11 @@ export async function analyzeWithGemini(
     mimeType: string;
     displayName: string;
     model: string;
+    prompt?: string;
   },
 ): Promise<{ analysis: GeminiAnalysis; rawResponse: Record<string, unknown>; uploadedFileName: string }> {
   const { buffer, mimeType, displayName, model } = params;
+  const prompt = params.prompt ?? ANALYSIS_PROMPT;
 
   const blob = new Blob([new Uint8Array(buffer)], { type: mimeType });
 
@@ -369,38 +424,239 @@ export async function analyzeWithGemini(
     throw new Error('Gemini files.upload returned no file name');
   }
 
-  await waitForGeminiFileActive(ai, uploadedName);
+  try {
+    await waitForGeminiFileActive(ai, uploadedName);
 
-  const refreshed = await ai.files.get({ name: uploadedName });
-  const uri = refreshed.uri;
-  if (!uri) {
+    const refreshed = await ai.files.get({ name: uploadedName });
+    const uri = refreshed.uri;
+    if (!uri) {
+      throw new Error('Gemini file has no uri after ACTIVE');
+    }
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: [
+        createPartFromUri(uri, mimeType),
+        createPartFromText(prompt),
+      ],
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const text = response.text?.trim();
+    if (!text) {
+      throw new Error('Gemini returned empty text');
+    }
+
+    const analysis = parseGeminiJson(text);
+    const rawResponse = responseToJson(response);
+
+    return { analysis, rawResponse, uploadedFileName: uploadedName };
+  } finally {
     await safeDeleteGeminiFile(ai, uploadedName);
-    throw new Error('Gemini file has no uri after ACTIVE');
   }
+}
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: [
-      createPartFromUri(uri, mimeType),
-      createPartFromText(ANALYSIS_PROMPT),
-    ],
-    config: {
-      responseMimeType: 'application/json',
-    },
+export function mediaCategoryFromMime(mimeType: string | null | undefined): MediaCategory {
+  const m = (mimeType ?? '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  return 'other';
+}
+
+function fileExtensionFromAsset(asset: PendingAsset): string {
+  const filename = asset.current_filename ?? asset.original_filename ?? '';
+  const i = filename.lastIndexOf('.');
+  if (i > 0 && i < filename.length - 1) {
+    return filename.slice(i + 1).toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+  }
+  const m = (asset.mime_type ?? '').toLowerCase();
+  if (m === 'video/mp4') return 'mp4';
+  if (m === 'video/quicktime') return 'mov';
+  if (m === 'video/webm') return 'webm';
+  if (m === 'video/x-matroska') return 'mkv';
+  return 'mp4';
+}
+
+async function transcribeAudioWithGemini(
+  ai: GoogleGenAI,
+  params: { wavBuffer: Buffer; displayName: string; model: string },
+): Promise<string> {
+  const { wavBuffer, displayName, model } = params;
+  const blob = new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' });
+
+  const uploaded = await ai.files.upload({
+    file: blob,
+    config: { mimeType: 'audio/wav', displayName: displayName.slice(0, 480) },
   });
 
-  const text = response.text?.trim();
-  if (!text) {
-    await safeDeleteGeminiFile(ai, uploadedName);
-    throw new Error('Gemini returned empty text');
+  const uploadedName = uploaded.name;
+  if (!uploadedName) {
+    throw new Error('Audio upload returned no file name');
   }
 
-  const analysis = parseGeminiJson(text);
-  const rawResponse = responseToJson(response);
+  try {
+    await waitForGeminiFileActive(ai, uploadedName);
+    const refreshed = await ai.files.get({ name: uploadedName });
+    const uri = refreshed.uri;
+    if (!uri) {
+      throw new Error('Audio file has no uri after ACTIVE');
+    }
 
-  await safeDeleteGeminiFile(ai, uploadedName);
+    const response = await ai.models.generateContent({
+      model,
+      contents: [
+        createPartFromUri(uri, 'audio/wav'),
+        createPartFromText(
+          'Transcribe the spoken words in this audio. Return only the plain transcript text in the language spoken, no timestamps, no labels, no JSON. If there is no speech, return an empty response.',
+        ),
+      ],
+    });
 
-  return { analysis, rawResponse, uploadedFileName: uploadedName };
+    return response.text?.trim() ?? '';
+  } finally {
+    await safeDeleteGeminiFile(ai, uploadedName);
+  }
+}
+
+export type VideoSampledResult = {
+  analysis: GeminiAnalysis;
+  rawResponse: Record<string, unknown>;
+  strategy: 'video_frames_only' | 'video_frames_plus_audio';
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+  frameSamplePaths: string[];
+  audioTranscript: string;
+};
+
+export async function analyzeVideoSampled(
+  ai: GoogleGenAI,
+  params: {
+    buffer: Buffer;
+    mimeType: string;
+    displayName: string;
+    fileExtension: string;
+    model: string;
+    config: {
+      mode: 'sampled' | 'frames_only';
+      frameMaxWidth: number;
+      maxSampleFrames: number;
+    };
+  },
+): Promise<VideoSampledResult> {
+  const { buffer, mimeType, displayName, fileExtension, model, config } = params;
+
+  return await withTempDir('fr94-video-', async (dir) => {
+    const inputPath = path.join(dir, `input.${fileExtension}`);
+    fs.writeFileSync(inputPath, buffer);
+
+    const probe = await probeVideo(inputPath);
+    console.log(
+      `[ffprobe]\tduration=${probe.durationSeconds ?? 'null'}s\t${probe.width ?? '?'}x${probe.height ?? '?'}\taudio=${probe.hasAudio}`,
+    );
+
+    if (probe.durationSeconds == null) {
+      throw new Error('ffprobe did not return a duration; cannot sample frames.');
+    }
+
+    const timestamps = pickFrameTimestamps(probe.durationSeconds, config.maxSampleFrames);
+    if (timestamps.length === 0) {
+      throw new Error(`Could not pick any frame timestamps for duration=${probe.durationSeconds}`);
+    }
+
+    const framePaths = await extractFrames(inputPath, timestamps, dir, config.frameMaxWidth);
+    console.log(`[ffmpeg]\textracted ${framePaths.length} frames at [${timestamps.join(', ')}]s`);
+
+    let strategy: 'video_frames_only' | 'video_frames_plus_audio' = 'video_frames_only';
+    let audioTranscript = '';
+
+    if (probe.hasAudio && config.mode === 'sampled') {
+      const audioPath = path.join(dir, 'audio.wav');
+      try {
+        await extractAudio(inputPath, audioPath);
+        const wavBuf = fs.readFileSync(audioPath);
+        audioTranscript = await transcribeAudioWithGemini(ai, {
+          wavBuffer: wavBuf,
+          displayName: `${displayName}.audio`,
+          model,
+        });
+        if (audioTranscript.trim()) {
+          strategy = 'video_frames_plus_audio';
+        }
+        console.log(`[gemini]\ttranscribed audio chars=${audioTranscript.length}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[warn] audio transcription failed; continuing frames-only: ${msg}`);
+        audioTranscript = '';
+        strategy = 'video_frames_only';
+      }
+    }
+
+    const frameParts = framePaths.map((p) => ({
+      inlineData: {
+        mimeType: 'image/jpeg',
+        data: fs.readFileSync(p).toString('base64'),
+      },
+    }));
+
+    const metadataBlock =
+      `\n\nAsset metadata (JSON):\n` +
+      JSON.stringify(
+        {
+          original_filename: displayName,
+          mime_type: mimeType,
+          duration_seconds: probe.durationSeconds,
+          width: probe.width,
+          height: probe.height,
+          frame_count: framePaths.length,
+          frame_timestamps_seconds: timestamps,
+          has_audio: probe.hasAudio,
+        },
+        null,
+        2,
+      );
+
+    const promptParts: Array<ReturnType<typeof createPartFromText> | { inlineData: { mimeType: string; data: string } }> = [
+      createPartFromText(VIDEO_SAMPLED_PROMPT + metadataBlock),
+      ...frameParts,
+    ];
+
+    if (audioTranscript.trim()) {
+      promptParts.push(
+        createPartFromText(`\nAudio transcript (already extracted from sampled audio):\n${audioTranscript}`),
+      );
+    }
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: promptParts,
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const text = response.text?.trim();
+    if (!text) {
+      throw new Error('Gemini returned empty text for video sampled analysis');
+    }
+
+    const analysis = parseGeminiJson(text);
+    const rawResponse = responseToJson(response);
+
+    return {
+      analysis,
+      rawResponse,
+      strategy,
+      durationSeconds: probe.durationSeconds,
+      width: probe.width,
+      height: probe.height,
+      frameSamplePaths: framePaths.map((p) => path.basename(p)),
+      audioTranscript,
+    };
+  });
 }
 
 export async function updateAssetAnalysis(
@@ -411,10 +667,29 @@ export async function updateAssetAnalysis(
     llm_model: string;
     llm_raw: Record<string, unknown>;
     drive_web_view_link: string;
+    analysis_strategy: AnalysisStrategy;
+    duration_seconds?: number | null;
+    video_width?: number | null;
+    video_height?: number | null;
+    frame_sample_count?: number | null;
+    frame_sample_paths?: string[] | null;
+    audio_transcript?: string | null;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
-  const { analysis, llm_model, llm_raw, drive_web_view_link } = payload;
+  const {
+    analysis,
+    llm_model,
+    llm_raw,
+    drive_web_view_link,
+    analysis_strategy,
+    duration_seconds = null,
+    video_width = null,
+    video_height = null,
+    frame_sample_count = null,
+    frame_sample_paths = null,
+    audio_transcript = null,
+  } = payload;
 
   const { error } = await supabase
     .from('content_assets')
@@ -430,11 +705,22 @@ export async function updateAssetAnalysis(
       suggested_title: analysis.suggested_title,
       suggested_filename_core: analysis.suggested_filename_core,
       tags: analysis.tags,
+      nonverbal_cues: analysis.nonverbal_cues,
       quality_score: analysis.quality_score,
       mission_score: analysis.mission_score,
       human_score: analysis.human_score,
       sponsor_safety_score: analysis.sponsor_safety_score,
       publish_recommendation: analysis.publish_recommendation,
+      analysis_strategy,
+      duration_seconds,
+      video_width,
+      video_height,
+      frame_sample_count,
+      frame_sample_paths,
+      audio_transcript,
+      needs_full_video_review: analysis.needs_full_video_review,
+      reason_full_video_review_needed:
+        analysis.reason_full_video_review_needed?.trim() ? analysis.reason_full_video_review_needed : null,
       llm_model,
       llm_raw,
       status: 'analyzed',
@@ -474,11 +760,22 @@ export async function markAssetError(
   if (updateErr) throw updateErr;
 }
 
+function resolveVideoAnalysisMode(): 'sampled' | 'frames_only' {
+  const raw = process.env.VIDEO_ANALYSIS_MODE?.trim().toLowerCase();
+  if (!raw) return 'sampled';
+  if (raw === 'sampled' || raw === 'frames_only') return raw;
+  throw new Error(`Invalid VIDEO_ANALYSIS_MODE: ${raw} (expected sampled or frames_only)`);
+}
+
 export async function analyzePendingAssets(): Promise<void> {
   const batchSize = envInt('CONTENT_ANALYSIS_BATCH_SIZE', 5);
   const maxMb = envInt('MAX_ANALYSIS_FILE_SIZE_MB', 500);
   const maxBytes = maxMb * 1024 * 1024;
   const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+
+  const videoMode = resolveVideoAnalysisMode();
+  const videoFrameMaxWidth = envInt('VIDEO_FRAME_MAX_WIDTH', 768);
+  const videoMaxSampleFrames = envInt('VIDEO_MAX_SAMPLE_FRAMES', 12);
 
   requireEnv('GEMINI_API_KEY');
 
@@ -544,16 +841,56 @@ export async function analyzePendingAssets(): Promise<void> {
 
     console.log(`[drive]\tfetched bytes=${buffer.length}\t${asset.id}`);
 
-    try {
-      console.log(`[gemini]\tupload + analyze\t${asset.id}`);
-      const { analysis, rawResponse } = await analyzeWithGemini(ai, {
-        buffer,
-        mimeType,
-        displayName: label,
-        model,
-      });
+    const category = mediaCategoryFromMime(mimeType);
 
-      console.log(`[gemini]\tsuccess\t${asset.id}`);
+    try {
+      let analysis: GeminiAnalysis;
+      let rawResponse: Record<string, unknown>;
+      let strategy: AnalysisStrategy;
+      let durationSeconds: number | null = null;
+      let videoWidth: number | null = null;
+      let videoHeight: number | null = null;
+      let frameSampleCount: number | null = null;
+      let frameSamplePaths: string[] | null = null;
+      let audioTranscript: string | null = null;
+
+      if (category === 'video') {
+        console.log(`[video]\tsampled preprocess + analyze\t${asset.id}`);
+        const result = await analyzeVideoSampled(ai, {
+          buffer,
+          mimeType,
+          displayName: label,
+          fileExtension: fileExtensionFromAsset(asset),
+          model,
+          config: {
+            mode: videoMode,
+            frameMaxWidth: videoFrameMaxWidth,
+            maxSampleFrames: videoMaxSampleFrames,
+          },
+        });
+        analysis = result.analysis;
+        rawResponse = result.rawResponse;
+        strategy = result.strategy;
+        durationSeconds = result.durationSeconds;
+        videoWidth = result.width;
+        videoHeight = result.height;
+        frameSampleCount = result.frameSamplePaths.length;
+        frameSamplePaths = result.frameSamplePaths;
+        audioTranscript = result.audioTranscript || null;
+      } else {
+        console.log(`[gemini]\tupload + analyze\t${asset.id}`);
+        const result = await analyzeWithGemini(ai, {
+          buffer,
+          mimeType,
+          displayName: label,
+          model,
+        });
+        analysis = result.analysis;
+        rawResponse = result.rawResponse;
+        strategy = category === 'audio' ? 'audio_only' : 'image_direct';
+      }
+
+      console.log(`[gemini]\tsuccess strategy=${strategy}\t${asset.id}`);
 
       let driveWebViewLink: string;
       try {
@@ -569,6 +906,11 @@ export async function analyzePendingAssets(): Promise<void> {
         drive_file_id: asset.drive_file_id,
         drive_web_view_link: driveWebViewLink,
         llm_model: model,
+        analysis_strategy: strategy,
+        duration_seconds: durationSeconds,
+        video_width: videoWidth,
+        video_height: videoHeight,
+        frame_sample_count: frameSampleCount,
         analysis,
       };
       console.log('[llm_result_json]');
@@ -579,6 +921,13 @@ export async function analyzePendingAssets(): Promise<void> {
         llm_model: model,
         llm_raw: rawResponse,
         drive_web_view_link: driveWebViewLink,
+        analysis_strategy: strategy,
+        duration_seconds: durationSeconds,
+        video_width: videoWidth,
+        video_height: videoHeight,
+        frame_sample_count: frameSampleCount,
+        frame_sample_paths: frameSamplePaths,
+        audio_transcript: audioTranscript,
       });
 
       console.log(`[supabase]\tstatus=analyzed\t${asset.id}`);
