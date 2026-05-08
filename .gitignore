@@ -7,3 +7,4 @@ node_modules/
 # Google OAuth client secrets (download from GCP; never commit)
 f94client.json
 **/f94client.json
+*.sql
