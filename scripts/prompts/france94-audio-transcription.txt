@@ -1,0 +1,1 @@
+Transcribe the spoken words in this audio. Return only the plain transcript text in the language spoken, no timestamps, no labels, no JSON. If there is no speech, return an empty response.

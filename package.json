@@ -6,6 +6,7 @@
     "ingest:drive": "tsx scripts/ingest-drive-content.ts",
     "analyze:content": "tsx scripts/analyze-content-assets.ts",
     "process:assets": "tsx scripts/process-analyzed-assets.ts",
+    "generate:posts": "tsx scripts/generate-post-candidates.ts",
     "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts",
     "check:drive-token": "tsx scripts/check-google-drive-token.ts"

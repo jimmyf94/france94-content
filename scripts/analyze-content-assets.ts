@@ -20,6 +20,7 @@ import {
 
 const DEFAULT_ANALYSIS_PROMPT_REL = path.join('prompts', 'france94-media-analysis.txt');
 const DEFAULT_VIDEO_SAMPLED_PROMPT_REL = path.join('prompts', 'france94-video-sampled-analysis.txt');
+const DEFAULT_AUDIO_TRANSCRIPTION_PROMPT_REL = path.join('prompts', 'france94-audio-transcription.txt');
 
 function resolveAnalysisPromptPath(): string {
   const fromEnv = process.env.CONTENT_ANALYSIS_PROMPT_PATH?.trim();
@@ -71,8 +72,34 @@ function loadVideoSampledPrompt(): string {
   return trimmed;
 }
 
+function resolveAudioTranscriptionPromptPath(): string {
+  const fromEnv = process.env.AUDIO_TRANSCRIPTION_PROMPT_PATH?.trim();
+  if (fromEnv) {
+    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+  }
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_AUDIO_TRANSCRIPTION_PROMPT_REL);
+}
+
+function loadAudioTranscriptionPrompt(): string {
+  const promptPath = resolveAudioTranscriptionPromptPath();
+  let raw: string;
+  try {
+    raw = fs.readFileSync(promptPath, 'utf8');
+  } catch {
+    throw new Error(
+      `Cannot read audio transcription prompt file: ${promptPath}. Set AUDIO_TRANSCRIPTION_PROMPT_PATH or add scripts/prompts/france94-audio-transcription.txt.`,
+    );
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`Audio transcription prompt file is empty: ${promptPath}`);
+  }
+  return trimmed;
+}
+
 const ANALYSIS_PROMPT = loadAnalysisPrompt();
 const VIDEO_SAMPLED_PROMPT = loadVideoSampledPrompt();
+const AUDIO_TRANSCRIPTION_PROMPT = loadAudioTranscriptionPrompt();
 
 const activityEnum = z.enum([
   'run',
@@ -509,9 +536,7 @@ async function transcribeAudioWithGemini(
       model,
       contents: [
         createPartFromUri(uri, 'audio/wav'),
-        createPartFromText(
-          'Transcribe the spoken words in this audio. Return only the plain transcript text in the language spoken, no timestamps, no labels, no JSON. If there is no speech, return an empty response.',
-        ),
+        createPartFromText(AUDIO_TRANSCRIPTION_PROMPT),
       ],
     });
 
