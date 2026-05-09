@@ -2,6 +2,9 @@
   "name": "france94-content-manager",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "ingest:drive": "tsx scripts/ingest-drive-content.ts",
     "analyze:content": "tsx scripts/analyze-content-assets.ts",
@@ -9,7 +12,9 @@
     "generate:posts": "tsx scripts/generate-post-candidates.ts",
     "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts",
-    "check:drive-token": "tsx scripts/check-google-drive-token.ts"
+    "check:drive-token": "tsx scripts/check-google-drive-token.ts",
+    "review:dev": "npm run dev -w france94-review-web",
+    "review:build": "npm run build -w france94-review-web"
   },
   "dependencies": {
     "@google/genai": "^2.0.0",
