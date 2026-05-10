@@ -29,6 +29,8 @@ export type PostCandidate = {
   updated_at: string | null;
   llm_model?: string | null;
   llm_raw?: unknown;
+  last_regenerated_at?: string | null;
+  regeneration_count?: number | null;
 };
 
 export type ReviewDriveFile = {

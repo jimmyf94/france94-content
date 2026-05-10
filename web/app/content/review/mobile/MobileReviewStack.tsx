@@ -40,6 +40,20 @@ function appendNote(notes: string, chip: string): string {
   return notes.trim() ? `${notes.trim()} · ${chip}` : chip;
 }
 
+function formatRelativeFromNow(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  const diffSec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (diffSec < 45) return 'just now';
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} h ago`;
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay} d ago`;
+}
+
 function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
     needs_review: 'border-[var(--accent)] text-[var(--accent)]',
@@ -92,6 +106,8 @@ export function MobileReviewStack({
   mediaReloadNonce,
   onCandidateUpdated,
   onRemoveReviewAsset,
+  onRegenerate,
+  regenerating,
 }: {
   candidates: PostCandidate[];
   counts: Record<StatusTab, number>;
@@ -118,6 +134,8 @@ export function MobileReviewStack({
   mediaReloadNonce: number;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
+  onRegenerate?: () => void | Promise<void>;
+  regenerating?: boolean;
 }) {
   // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
   const sheetTab: MobileDetailSheetTab =
@@ -175,6 +193,8 @@ export function MobileReviewStack({
           mediaReloadNonce={mediaReloadNonce}
           onCandidateUpdated={onCandidateUpdated}
           onRemoveReviewAsset={onRemoveReviewAsset}
+          onRegenerate={onRegenerate}
+          regenerating={regenerating}
         />
       )}
 
@@ -271,6 +291,8 @@ function MobileCandidateView({
   mediaReloadNonce,
   onCandidateUpdated,
   onRemoveReviewAsset,
+  onRegenerate,
+  regenerating,
 }: {
   candidate: PostCandidate;
   notes: string;
@@ -285,8 +307,16 @@ function MobileCandidateView({
   mediaReloadNonce: number;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
+  onRegenerate?: () => void | Promise<void>;
+  regenerating?: boolean;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
+  const notesNonEmpty = (notes ?? '').trim().length > 0 || (savedNotes ?? '').trim().length > 0;
+  const showRegenerate =
+    !!onRegenerate && (candidate.status === 'needs_rewrite' || notesNonEmpty);
+  const regenerateDisabled =
+    !!regenerating ||
+    (candidate.status === 'needs_rewrite' && !notesNonEmpty);
   const { files, loading, error } = useCandidateMedia(candidate.id, mediaReloadNonce);
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
   const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
@@ -469,6 +499,32 @@ function MobileCandidateView({
               Save notes
             </button>
           </div>
+          {showRegenerate && (
+            <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  disabled={regenerateDisabled}
+                  onClick={() => void onRegenerate?.()}
+                  title={
+                    candidate.status === 'needs_rewrite' && !notesNonEmpty
+                      ? 'Add reviewer notes first'
+                      : 'Re-run the planner using current assets and reviewer notes'
+                  }
+                  className="rounded-md border border-[var(--warn)] bg-[var(--warn)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--warn)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {regenerating ? 'Regenerating…' : 'Regenerate Candidate'}
+                </button>
+              </div>
+              {(candidate.regeneration_count ?? 0) > 0 && (
+                <p className="text-right text-[10px] text-[var(--muted)]">
+                  Regenerated {candidate.regeneration_count}×
+                  {formatRelativeFromNow(candidate.last_regenerated_at) &&
+                    ` · ${formatRelativeFromNow(candidate.last_regenerated_at)}`}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </section>
 

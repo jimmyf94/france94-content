@@ -76,6 +76,7 @@ export function ReviewDashboard() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
   const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
+  const [regenerating, setRegenerating] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -349,6 +350,63 @@ export function ReviewDashboard() {
     }
   }, [selected, draftNotes]);
 
+  const regenerate = useCallback(async () => {
+    if (!selected || regenerating) return;
+    const id = selected.id;
+    const draft = draftNotes[id] ?? '';
+    const saved = selected.reviewer_notes ?? '';
+
+    // Persist any unsaved notes first so the server reads the latest reviewer_notes from Supabase.
+    if (draft !== saved) {
+      try {
+        const res = await fetch(`/api/content-review/candidates/${id}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewer_notes: draft }),
+        });
+        const json = await readJsonResponse<{ error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        setCandidates((prev) =>
+          prev.map((c) =>
+            c.id === id ? { ...c, reviewer_notes: draft } : c,
+          ),
+        );
+      } catch (e) {
+        setToast({
+          kind: 'bad',
+          msg: e instanceof Error ? `Save notes failed: ${e.message}` : 'Save notes failed',
+        });
+        return;
+      }
+    }
+
+    setRegenerating(true);
+    try {
+      const res = await fetch(`/api/content-review/candidates/${id}/regenerate`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+      if (!res.ok || !json.candidate) {
+        throw new Error(json.error || res.statusText);
+      }
+      handleCandidateUpdated(json.candidate);
+      setDraftNotes((prev) => ({
+        ...prev,
+        [id]: json.candidate?.reviewer_notes ?? '',
+      }));
+      setToast({ kind: 'good', msg: 'Candidate regenerated' });
+    } catch (e) {
+      setToast({
+        kind: 'bad',
+        msg: e instanceof Error ? `Regenerate failed: ${e.message}` : 'Regenerate failed',
+      });
+    } finally {
+      setRegenerating(false);
+    }
+  }, [selected, regenerating, draftNotes, handleCandidateUpdated]);
+
   return (
     <div className="flex h-[100dvh] flex-col bg-[var(--bg)] text-[var(--text)]">
       <ReviewHeader
@@ -412,6 +470,8 @@ export function ReviewDashboard() {
           activeTab={activeDetailTab}
           onChangeTab={setActiveDetailTab}
           onCandidateUpdated={handleCandidateUpdated}
+          onRegenerate={regenerate}
+          regenerating={regenerating}
         />
       </div>
 
@@ -443,6 +503,8 @@ export function ReviewDashboard() {
           mediaReloadNonce={mediaReloadNonce}
           onCandidateUpdated={handleCandidateUpdated}
           onRemoveReviewAsset={handleRemoveReviewAsset}
+          onRegenerate={regenerate}
+          regenerating={regenerating}
         />
       </div>
 

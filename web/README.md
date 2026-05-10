@@ -24,6 +24,17 @@ When OAuth JSON lives at the repo root, set `GOOGLE_OAUTH_CLIENT_SECRETS_PATH` t
 
 Apply the Supabase migration `20260517120000_post_candidates_review_audit.sql` so `reviewed_at` and `reviewed_by` exist before relying on PATCH updates.
 
+For the **Regenerate Candidate** flow (v0.6), also apply the following columns to `post_candidates` (run once in the Supabase SQL editor):
+
+```sql
+alter table post_candidates
+  add column if not exists regeneration_count integer not null default 0,
+  add column if not exists last_regenerated_at timestamptz,
+  add column if not exists previous_versions jsonb not null default '[]'::jsonb;
+```
+
+The regenerate route requires `GEMINI_API_KEY` (same key used by `npm run generate:posts`) and reuses the same `GEMINI_MODEL` env (default `gemini-2.5-flash`).
+
 ## Optional access gate
 
 If `REVIEW_DASHBOARD_SECRET` is set, the middleware requires either:
@@ -39,6 +50,7 @@ Browse to `/content/review/unlock` once to enter the secret (or open that page f
 |--------|------|---------|
 | GET | `/api/content-review/candidates` | List/filter candidates (Supabase). |
 | PATCH | `/api/content-review/candidates/[id]` | Set `approved` / `rejected` / `needs_rewrite` + notes. |
+| POST | `/api/content-review/candidates/[id]/regenerate` | Re-run planner LLM in place using current row + attached assets + reviewer notes. Status is preserved (a `needs_rewrite` candidate stays in the rewrite queue). |
 | GET | `/api/content-review/candidates/[id]/files` | List files in `review_drive_folder_id`. |
 | GET | `/api/content-review/drive-file/[fileId]?candidateId=` | Stream file bytes after parent-folder check; forwards `Range` when supported. |
 | POST | `/api/content-review/unlock` | Set session cookie when `REVIEW_DASHBOARD_SECRET` is configured. |
