@@ -12,6 +12,7 @@ import { ScoreStrip } from '../ScoreStrip';
 import { CaptionTab } from '../tabs/CaptionTab';
 import { DebugTab } from '../tabs/DebugTab';
 import { StructureTab } from '../tabs/StructureTab';
+import { TranscriptTab } from '../tabs/TranscriptTab';
 import type { DecisionStatus, DetailTab, PostCandidate, StatusTab } from '../types';
 import { STATUS_TAB_LABEL } from '../types';
 import { useCandidateMedia } from '../useCandidateMedia';
@@ -19,6 +20,14 @@ import { useCandidateMedia } from '../useCandidateMedia';
 import { BottomSheet } from './BottomSheet';
 
 type MobileSheet = null | 'queue' | 'details' | 'filters';
+
+type MobileDetailSheetTab = Exclude<DetailTab, 'caption'>;
+
+const MOBILE_DETAIL_SHEET_TABS: { id: MobileDetailSheetTab; label: string }[] = [
+  { id: 'structure', label: 'Structure' },
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'debug', label: 'Debug' },
+];
 
 function appendNote(notes: string, chip: string): string {
   return notes.trim() ? `${notes.trim()} · ${chip}` : chip;
@@ -97,9 +106,13 @@ export function MobileReviewStack({
   onSwipeNext: () => void;
   onSwipePrev: () => void;
 }) {
-  // Caption isn't a tab on mobile (it's inline). Coerce when the sheet renders.
-  const sheetTab: 'structure' | 'debug' =
-    activeDetailTab === 'debug' ? 'debug' : 'structure';
+  // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
+  const sheetTab: MobileDetailSheetTab =
+    activeDetailTab === 'debug'
+      ? 'debug'
+      : activeDetailTab === 'transcript'
+        ? 'transcript'
+        : 'structure';
 
   const openDetails = () => {
     if (activeDetailTab === 'caption') onChangeDetailTab('structure');
@@ -176,23 +189,24 @@ export function MobileReviewStack({
         {selected && (
           <div className="flex min-h-0 flex-1 flex-col">
             <nav className="flex shrink-0 border-b border-[var(--border)] text-xs">
-              {(['structure', 'debug'] as const).map((t) => (
+              {MOBILE_DETAIL_SHEET_TABS.map((t) => (
                 <button
-                  key={t}
+                  key={t.id}
                   type="button"
-                  onClick={() => onChangeDetailTab(t)}
+                  onClick={() => onChangeDetailTab(t.id)}
                   className={`flex-1 border-b-2 px-3 py-2 transition-colors ${
-                    sheetTab === t
+                    sheetTab === t.id
                       ? 'border-[var(--accent)] text-[var(--text)]'
                       : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
                   }`}
                 >
-                  {t === 'structure' ? 'Structure' : 'Debug'}
+                  {t.label}
                 </button>
               ))}
             </nav>
             <div className="scrollbar-thin flex-1 overflow-auto p-4">
               {sheetTab === 'structure' && <StructureTab candidate={selected} />}
+              {sheetTab === 'transcript' && <TranscriptTab candidate={selected} />}
               {sheetTab === 'debug' && <DebugTab candidate={selected} />}
             </div>
           </div>

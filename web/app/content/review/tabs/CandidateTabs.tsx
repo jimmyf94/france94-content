@@ -5,10 +5,12 @@ import type { DetailTab, PostCandidate } from '../types';
 import { CaptionTab } from './CaptionTab';
 import { DebugTab } from './DebugTab';
 import { StructureTab } from './StructureTab';
+import { TranscriptTab } from './TranscriptTab';
 
 const TABS: { id: DetailTab; label: string }[] = [
   { id: 'caption', label: 'Caption' },
   { id: 'structure', label: 'Structure' },
+  { id: 'transcript', label: 'Transcript' },
   { id: 'debug', label: 'Debug' },
 ];
 
@@ -42,6 +44,7 @@ export function CandidateTabs({
       <div className="scrollbar-thin flex-1 overflow-auto p-4">
         {active === 'caption' && <CaptionTab candidate={candidate} />}
         {active === 'structure' && <StructureTab candidate={candidate} />}
+        {active === 'transcript' && <TranscriptTab candidate={candidate} />}
         {active === 'debug' && <DebugTab candidate={candidate} />}
       </div>
     </div>

@@ -23,6 +23,7 @@ export type PostCandidate = {
   reviewer_notes: string | null;
   review_drive_folder_id: string | null;
   review_drive_folder_url: string | null;
+  source_asset_ids?: string[] | null;
   created_at: string;
   updated_at: string | null;
   llm_model?: string | null;
@@ -43,7 +44,7 @@ export type ReviewDriveFile = {
 
 export type StatusTab = 'needs_review' | 'needs_rewrite' | 'approved' | 'rejected';
 
-export type DetailTab = 'caption' | 'structure' | 'debug';
+export type DetailTab = 'caption' | 'structure' | 'transcript' | 'debug';
 
 export type DecisionStatus = 'approved' | 'rejected' | 'needs_rewrite';
 
