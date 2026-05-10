@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { drive_v3 } from 'googleapis';
 
+import {
+  DRIVE_FILE_METADATA_FIELDS,
+  maxAnalysisFileBytes,
+} from './lib/drive-media-download.js';
+import { finalizeHeicIngest, resolveDriveFileForIngest, rollbackHeicUpload } from './lib/heic-normalize.js';
 import { getDriveClient } from './lib/google-drive-auth.js';
 
 export { getDriveClient };
@@ -42,6 +47,8 @@ type ContentAssetInsert = {
   camera_make: string | null;
   camera_model: string | null;
   geo_source: string | null;
+  /** Populated when ingesting a JPEG converted from HEIC/HEIF (`heic` / `heif`) */
+  original_format: string | null;
 };
 
 type ImageGeo = {
@@ -147,8 +154,7 @@ export async function listDriveFiles(
   do {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields:
-        'nextPageToken, files(id, name, mimeType, size, parents, md5Checksum, createdTime, modifiedTime, webViewLink, kind, spaces, version, imageMediaMetadata(location, time, cameraMake, cameraModel, width, height, rotation))',
+      fields: `nextPageToken, files(${DRIVE_FILE_METADATA_FIELDS})`,
       pageSize: 100,
       pageToken,
       supportsAllDrives: true,
@@ -216,6 +222,9 @@ function buildInsertRow(
   file: drive_v3.Schema$File,
   status: AssetStatus,
   errorMessage?: string,
+  original_format: string | null = null,
+  /** HEIC→JPEG: Drive metadata on the new JPEG often omits GPS; copy geo from the listed original */
+  driveFileForImageGeo: drive_v3.Schema$File | null = null,
 ): ContentAssetInsert {
   const name = file.name ?? 'unknown';
   const ext = fileExtension(name);
@@ -224,7 +233,22 @@ function buildInsertRow(
     throw new Error('Drive file missing id');
   }
 
-  const imageGeo = inferMediaType(file.mimeType) === 'image' ? extractImageGeo(file) : EMPTY_IMAGE_GEO;
+  let imageGeo: ImageGeo = EMPTY_IMAGE_GEO;
+  if (original_format != null && driveFileForImageGeo != null) {
+    const fromListed = extractImageGeo(driveFileForImageGeo);
+    const fromDerivative = inferMediaType(file.mimeType) === 'image' ? extractImageGeo(file) : EMPTY_IMAGE_GEO;
+    imageGeo = {
+      latitude: fromListed.latitude ?? fromDerivative.latitude,
+      longitude: fromListed.longitude ?? fromDerivative.longitude,
+      altitude: fromListed.altitude ?? fromDerivative.altitude,
+      capture_time: fromListed.capture_time ?? fromDerivative.capture_time,
+      camera_make: fromListed.camera_make ?? fromDerivative.camera_make,
+      camera_model: fromListed.camera_model ?? fromDerivative.camera_model,
+      geo_source: fromListed.geo_source ?? fromDerivative.geo_source,
+    };
+  } else if (inferMediaType(file.mimeType) === 'image') {
+    imageGeo = extractImageGeo(file);
+  }
 
   return {
     drive_file_id: driveFileId,
@@ -250,6 +274,7 @@ function buildInsertRow(
     camera_make: imageGeo.camera_make,
     camera_model: imageGeo.camera_model,
     geo_source: imageGeo.geo_source,
+    original_format,
   };
 }
 
@@ -281,12 +306,22 @@ export async function ingestDriveFolder(): Promise<void> {
   let skipped = 0;
   let errors = 0;
 
-  for (const file of files) {
+  const maxBytes = maxAnalysisFileBytes();
+
+  for (const listedFile of files) {
     scanned += 1;
-    const label = file.name ?? file.id ?? '(unknown)';
+    const label = listedFile.name ?? listedFile.id ?? '(unknown)';
+    let fileForRegistry = listedFile;
+    let heicRollbackJpegId: string | null = null;
 
     try {
-      const id = file.id;
+      const resolved = await resolveDriveFileForIngest(drive, listedFile, folderId, maxBytes);
+      fileForRegistry = resolved.file;
+      if (resolved.pendingDeleteDriveFileId && fileForRegistry.id) {
+        heicRollbackJpegId = fileForRegistry.id;
+      }
+
+      const id = fileForRegistry.id;
       if (!id) {
         errors += 1;
         console.log(`[error] ${label}\t(no drive_file_id)\tmissing file id`);
@@ -300,7 +335,7 @@ export async function ingestDriveFolder(): Promise<void> {
       }
 
       let status: 'new' | 'duplicate' = 'new';
-      const md5 = file.md5Checksum;
+      const md5 = fileForRegistry.md5Checksum;
       if (md5) {
         const dupByChecksum = await checksumExists(supabase, md5);
         if (dupByChecksum) {
@@ -310,24 +345,41 @@ export async function ingestDriveFolder(): Promise<void> {
         }
       }
 
-      await insertAsset(supabase, buildInsertRow(file, status));
+      await insertAsset(
+        supabase,
+        buildInsertRow(
+          fileForRegistry,
+          status,
+          undefined,
+          resolved.original_format,
+          resolved.original_format != null ? listedFile : null,
+        ),
+      );
+      heicRollbackJpegId = null;
+
+      await finalizeHeicIngest(drive, resolved.pendingDeleteDriveFileId, id);
+
       inserted += 1;
       const rowStatus = status === 'duplicate' ? 'duplicate' : 'new';
-      console.log(`[inserted] ${label}\t${id}\tdb_status=${rowStatus}`);
+      const outName = fileForRegistry.name ?? id;
+      console.log(`[inserted] ${outName}\t${id}\tdb_status=${rowStatus}`);
     } catch (e) {
+      if (heicRollbackJpegId) {
+        await rollbackHeicUpload(drive, heicRollbackJpegId);
+      }
       errors += 1;
       const msg = formatUnknownError(e);
-      const idPart = file.id ?? '(no drive_file_id)';
+      const idPart = listedFile.id ?? '(no drive_file_id)';
       console.log(`[error] ${label}\t${idPart}\t${truncateErrorMessage(msg, 500)}`);
 
-      if (file.id) {
+      if (listedFile.id) {
         try {
           await insertAsset(
             supabase,
-            buildInsertRow(file, 'error', truncateErrorMessage(msg)),
+            buildInsertRow(listedFile, 'error', truncateErrorMessage(msg)),
           );
           inserted += 1;
-          console.log(`[inserted] ${label}\t${file.id}\tdb_status=error (persisted)`);
+          console.log(`[inserted] ${label}\t${listedFile.id}\tdb_status=error (persisted)`);
         } catch (inner) {
           console.error(
             `error: failed to persist error row for ${label}: ${truncateErrorMessage(formatUnknownError(inner), 500)}`,

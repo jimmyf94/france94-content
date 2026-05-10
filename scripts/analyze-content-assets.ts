@@ -9,6 +9,11 @@ import { FileState, GoogleGenAI, createPartFromText, createPartFromUri } from '@
 import type { drive_v3 } from 'googleapis';
 import { z } from 'zod';
 
+import {
+  FileTooLargeError,
+  fetchDriveFileMedia,
+  maxAnalysisFileBytes,
+} from './lib/drive-media-download.js';
 import { driveFileViewUrl, getDriveClient } from './ingest-drive-content.js';
 import {
   extractAudio,
@@ -177,13 +182,6 @@ type PendingAsset = {
   current_filename: string | null;
 };
 
-class FileTooLargeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'FileTooLargeError';
-  }
-}
-
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v?.trim()) {
@@ -273,25 +271,6 @@ export async function markAssetAnalyzing(supabase: SupabaseClient, assetId: stri
 
 export const tryMarkAssetAnalyzing = markAssetAnalyzing;
 
-async function streamToBufferWithLimit(stream: NodeJS.ReadableStream, maxBytes: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-
-  for await (const chunk of stream) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array | string);
-    total += buf.length;
-    if (total > maxBytes) {
-      if ('destroy' in stream && typeof stream.destroy === 'function') {
-        stream.destroy();
-      }
-      throw new FileTooLargeError(`Download exceeded MAX_ANALYSIS_FILE_SIZE_MB (${maxBytes} bytes cap)`);
-    }
-    chunks.push(buf);
-  }
-
-  return Buffer.concat(chunks);
-}
-
 export async function fetchDriveWebViewLink(
   drive: drive_v3.Drive,
   driveFileId: string,
@@ -303,20 +282,6 @@ export async function fetchDriveWebViewLink(
   });
   const link = res.data.webViewLink?.trim();
   return link || driveFileViewUrl(driveFileId);
-}
-
-export async function fetchDriveFileForAnalysis(
-  drive: drive_v3.Drive,
-  driveFileId: string,
-  maxBytes: number,
-): Promise<Buffer> {
-  const res = await drive.files.get(
-    { fileId: driveFileId, alt: 'media', supportsAllDrives: true },
-    { responseType: 'stream' },
-  );
-
-  const stream = res.data as unknown as NodeJS.ReadableStream;
-  return streamToBufferWithLimit(stream, maxBytes);
 }
 
 export async function waitForGeminiFileActive(
@@ -828,8 +793,7 @@ function resolveVideoAnalysisMode(): 'sampled' | 'frames_only' {
 
 export async function analyzePendingAssets(): Promise<void> {
   const batchSize = envInt('CONTENT_ANALYSIS_BATCH_SIZE', 5);
-  const maxMb = envInt('MAX_ANALYSIS_FILE_SIZE_MB', 500);
-  const maxBytes = maxMb * 1024 * 1024;
+  const maxBytes = maxAnalysisFileBytes();
   const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
   const videoMode = resolveVideoAnalysisMode();
@@ -887,7 +851,7 @@ export async function analyzePendingAssets(): Promise<void> {
     let buffer: Buffer;
     try {
       console.log(`[drive]\tdownloading\t${asset.drive_file_id}`);
-      buffer = await fetchDriveFileForAnalysis(drive, asset.drive_file_id, maxBytes);
+      buffer = await fetchDriveFileMedia(drive, asset.drive_file_id, maxBytes);
     } catch (e) {
       if (e instanceof FileTooLargeError) {
         await markAssetError(supabase, asset.id, e, 'too_large');

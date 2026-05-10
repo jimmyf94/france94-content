@@ -4,23 +4,59 @@ import { useState } from 'react';
 
 import type { PostCandidate } from '../types';
 
+async function copyText(text: string): Promise<boolean> {
+  // Async Clipboard API: requires a secure context (HTTPS or localhost).
+  // Falls back to execCommand for HTTP dev access from a phone on the LAN.
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to fallback */
+    }
+  }
+  if (typeof document === 'undefined') return false;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.left = '0';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  const prevSelection = document.getSelection();
+  const prevRange =
+    prevSelection && prevSelection.rangeCount > 0 ? prevSelection.getRangeAt(0) : null;
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  if (prevSelection && prevRange) {
+    prevSelection.removeAllRanges();
+    prevSelection.addRange(prevRange);
+  }
+  return ok;
+}
+
 function CopyButton({ getText, label }: { getText: () => string; label?: string }) {
-  const [done, setDone] = useState(false);
+  const [state, setState] = useState<'idle' | 'done' | 'fail'>('idle');
   return (
     <button
       type="button"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(getText());
-          setDone(true);
-          setTimeout(() => setDone(false), 1500);
-        } catch {
-          /* ignore */
-        }
+        const ok = await copyText(getText());
+        setState(ok ? 'done' : 'fail');
+        setTimeout(() => setState('idle'), 1500);
       }}
       className="rounded border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--muted)] hover:text-[var(--text)]"
     >
-      {done ? 'Copied' : (label ?? 'Copy')}
+      {state === 'done' ? 'Copied' : state === 'fail' ? 'Failed' : (label ?? 'Copy')}
     </button>
   );
 }
