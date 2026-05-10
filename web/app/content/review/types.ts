@@ -24,6 +24,7 @@ export type PostCandidate = {
   review_drive_folder_id: string | null;
   review_drive_folder_url: string | null;
   source_asset_ids?: string[] | null;
+  source_drive_file_ids?: string[] | null;
   created_at: string;
   updated_at: string | null;
   llm_model?: string | null;

@@ -18,6 +18,7 @@ export function CandidateDecisionPanel({
   onDecide,
   activeTab,
   onChangeTab,
+  onCandidateUpdated,
 }: {
   candidate: PostCandidate | null;
   notes: string;
@@ -27,6 +28,7 @@ export function CandidateDecisionPanel({
   onDecide: (s: DecisionStatus) => void;
   activeTab: DetailTab;
   onChangeTab: (t: DetailTab) => void;
+  onCandidateUpdated?: (c: PostCandidate) => void;
 }) {
   if (!candidate) {
     return (
@@ -73,7 +75,12 @@ export function CandidateDecisionPanel({
         </section>
       </div>
 
-      <CandidateTabs candidate={candidate} active={activeTab} onChange={onChangeTab} />
+      <CandidateTabs
+        candidate={candidate}
+        active={activeTab}
+        onChange={onChangeTab}
+        onCandidateUpdated={onCandidateUpdated}
+      />
     </aside>
   );
 }

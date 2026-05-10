@@ -30,13 +30,25 @@ function MetaChip({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function CandidateOverviewHeader({ candidate }: { candidate: PostCandidate | null }) {
+export function CandidateOverviewHeader({
+  candidate,
+  mediaReloadNonce = 0,
+}: {
+  candidate: PostCandidate | null;
+  mediaReloadNonce?: number;
+}) {
   if (!candidate) return null;
-  return <Inner candidate={candidate} />;
+  return <Inner candidate={candidate} mediaReloadNonce={mediaReloadNonce} />;
 }
 
-function Inner({ candidate }: { candidate: PostCandidate }) {
-  const { files } = useCandidateMedia(candidate.id);
+function Inner({
+  candidate,
+  mediaReloadNonce,
+}: {
+  candidate: PostCandidate;
+  mediaReloadNonce: number;
+}) {
+  const { files } = useCandidateMedia(candidate.id, mediaReloadNonce);
   const assets = assetSummary(files);
 
   return (

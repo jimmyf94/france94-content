@@ -34,15 +34,19 @@ function formatCreatedAge(iso: string): string {
 function PostTypeAvatar({
   candidate,
   thumbnailUrl,
+  className = 'h-24 w-24 shrink-0',
 }: {
   candidate: PostCandidate;
   thumbnailUrl: string | null;
+  /** Tall queue thumbs use e.g. `h-[98%] min-h-[4rem] w-full shrink-0`. */
+  className?: string;
 }) {
   const k = postTypeKey(candidate.post_type);
+  const shell = `overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-2)] ${className}`;
 
   if (thumbnailUrl) {
     return (
-      <div className="h-24 w-24 shrink-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
+      <div className={shell}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={thumbnailUrl} alt="" className="h-full w-full object-cover" />
       </div>
@@ -51,7 +55,7 @@ function PostTypeAvatar({
   return (
     <div
       data-post-type={k}
-      className="post-type-avatar flex h-24 w-24 shrink-0 items-center justify-center rounded-lg text-2xl font-semibold uppercase"
+      className={`post-type-avatar flex items-center justify-center text-2xl font-semibold uppercase ${shell}`}
     >
       {postTypeInitial(candidate.post_type)}
     </div>
@@ -62,13 +66,19 @@ export function QueueRow({
   candidate,
   selected,
   onClick,
+  mediaReloadNonce = 0,
 }: {
   candidate: PostCandidate;
   selected: boolean;
   onClick: () => void;
+  mediaReloadNonce?: number;
 }) {
-  const { files } = useCandidateMedia(candidate.id);
+  const { files } = useCandidateMedia(candidate.id, mediaReloadNonce);
   const firstThumb = files.find((f) => f.thumbnailLink)?.thumbnailLink ?? null;
+  const dbAssetLen =
+    candidate.source_asset_ids?.length ?? candidate.source_drive_file_ids?.length ?? null;
+  const assetCount =
+    typeof dbAssetLen === 'number' && dbAssetLen > 0 ? dbAssetLen : files.length;
   const age = formatCreatedAge(candidate.created_at);
   const priority =
     candidate.priority_score != null
@@ -79,17 +89,30 @@ export function QueueRow({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors ${
+      className={`grid w-full grid-cols-[7rem_minmax(0,1fr)] items-stretch gap-3 rounded-xl border p-4 text-left transition-colors ${
         selected
           ? 'border-[color:rgb(91_140_255_/0.55)] bg-[var(--surface-2)] ring-1 ring-[var(--ring)]'
           : 'border-[color:rgb(42_49_66_/0.55)] hover:border-[color:rgb(58_66_88_/0.9)] hover:bg-[var(--surface-2)]/60'
       }`}
     >
-      <PostTypeAvatar candidate={candidate} thumbnailUrl={firstThumb} />
-      <div className="min-w-0 flex-1 py-1">
+      {/* Grid row height follows text column; this column fills it so % height resolves. */}
+      <div className="flex h-full min-h-[5rem] w-[7rem] flex-col justify-center justify-self-start">
+        <PostTypeAvatar
+          candidate={candidate}
+          thumbnailUrl={firstThumb}
+          className="h-[98%] min-h-[4.5rem] w-full shrink-0"
+        />
+      </div>
+      <div className="min-w-0 py-1">
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <PostTypeBadge postType={candidate.post_type} />
+            <span
+              className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--muted)]"
+              title="Source assets on this candidate"
+            >
+              {assetCount} {assetCount === 1 ? 'asset' : 'assets'}
+            </span>
             {age && (
               <span className="text-[11px] tabular-nums text-[var(--muted)]">{age}</span>
             )}

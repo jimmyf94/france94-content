@@ -1,6 +1,7 @@
 'use client';
 
 import { MainMediaPreview } from './MainMediaPreview';
+import { ReviewMediaTrashButton } from './ReviewMediaTrashButton';
 import type { PostCandidate, ReviewDriveFile } from './types';
 import { useCandidateMedia } from './useCandidateMedia';
 
@@ -16,9 +17,13 @@ function gridColsClass(n: number): string {
 export function MediaPreviewStage({
   candidate,
   videoRef,
+  mediaReloadNonce = 0,
+  onRemoveReviewAsset,
 }: {
   candidate: PostCandidate | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  mediaReloadNonce?: number;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   if (!candidate) {
     return (
@@ -27,17 +32,28 @@ export function MediaPreviewStage({
       </section>
     );
   }
-  return <Inner candidate={candidate} videoRef={videoRef} />;
+  return (
+    <Inner
+      candidate={candidate}
+      videoRef={videoRef}
+      mediaReloadNonce={mediaReloadNonce}
+      onRemoveReviewAsset={onRemoveReviewAsset}
+    />
+  );
 }
 
 function Inner({
   candidate,
   videoRef,
+  mediaReloadNonce,
+  onRemoveReviewAsset,
 }: {
   candidate: PostCandidate;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  mediaReloadNonce: number;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
-  const { files, loading, error } = useCandidateMedia(candidate.id);
+  const { files, loading, error } = useCandidateMedia(candidate.id, mediaReloadNonce);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-[var(--bg)]">
@@ -62,7 +78,13 @@ function Inner({
           </div>
         )}
         {!loading && !error && files.length > 0 && (
-          <MediaGrid files={files} candidateId={candidate.id} videoRef={videoRef} />
+          <MediaGrid
+            candidate={candidate}
+            files={files}
+            candidateId={candidate.id}
+            videoRef={videoRef}
+            onRemoveReviewAsset={onRemoveReviewAsset}
+          />
         )}
       </div>
     </section>
@@ -70,29 +92,43 @@ function Inner({
 }
 
 function MediaGrid({
+  candidate,
   files,
   candidateId,
   videoRef,
+  onRemoveReviewAsset,
 }: {
+  candidate: PostCandidate;
   files: ReviewDriveFile[];
   candidateId: string;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
+  const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
   return (
     <div
       className={`grid h-full w-full auto-rows-fr gap-3 ${gridColsClass(files.length)}`}
     >
-      {files.map((f, i) => (
-        <div key={f.id} className="flex min-h-0 min-w-0 items-center justify-center">
-          <MainMediaPreview
-            file={f}
-            candidateId={candidateId}
-            videoRef={i === firstVideoIdx ? videoRef : undefined}
-            compact
-          />
-        </div>
-      ))}
+      {files.map((f, i) => {
+        const showTrash = !!onRemoveReviewAsset && canDetachSource;
+        return (
+          <div
+            key={f.id}
+            className="relative flex min-h-0 min-w-0 items-center justify-center"
+          >
+            {showTrash && (
+              <ReviewMediaTrashButton file={f} onRemove={onRemoveReviewAsset} />
+            )}
+            <MainMediaPreview
+              file={f}
+              candidateId={candidateId}
+              videoRef={i === firstVideoIdx ? videoRef : undefined}
+              compact
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

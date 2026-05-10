@@ -4,14 +4,35 @@ import { z } from 'zod';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
+const reelStructureRowSchema = z.object({
+  time: z.string(),
+  instruction: z.string(),
+});
+
 const patchSchema = z
   .object({
     status: z.enum(['approved', 'rejected', 'needs_rewrite']).optional(),
     reviewer_notes: z.string().optional().nullable(),
+    caption_fr: z.string().optional().nullable(),
+    caption_en: z.string().optional().nullable(),
+    hashtags: z.array(z.string()).optional().nullable(),
+    reel_instructions: z
+      .object({
+        structure: z.array(reelStructureRowSchema),
+        overlay_text: z.array(z.string()),
+      })
+      .strict()
+      .optional(),
   })
   .refine(
-    (v) => v.status !== undefined || v.reviewer_notes !== undefined,
-    { message: 'Provide status or reviewer_notes' },
+    (v) =>
+      v.status !== undefined ||
+      v.reviewer_notes !== undefined ||
+      v.caption_fr !== undefined ||
+      v.caption_en !== undefined ||
+      v.hashtags !== undefined ||
+      v.reel_instructions !== undefined,
+    { message: 'Provide at least one field to update' },
   );
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -35,9 +56,40 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const { status, reviewer_notes } = parsed.data;
+  const {
+    status,
+    reviewer_notes,
+    caption_fr,
+    caption_en,
+    hashtags,
+    reel_instructions,
+  } = parsed.data;
   const now = new Date().toISOString();
   const reviewedBy = process.env.REVIEWED_BY?.trim() || null;
+
+  const supabase = getSupabaseServiceRole();
+
+  let mergedReel: Record<string, unknown> | undefined;
+  if (reel_instructions !== undefined) {
+    const { data: existing, error: readErr } = await supabase
+      .from('post_candidates')
+      .select('reel_instructions')
+      .eq('id', id)
+      .maybeSingle();
+    if (readErr) {
+      console.error('[candidate patch] read reel', readErr);
+      return NextResponse.json({ error: readErr.message }, { status: 500 });
+    }
+    const prev =
+      existing?.reel_instructions != null && typeof existing.reel_instructions === 'object'
+        ? (existing.reel_instructions as Record<string, unknown>)
+        : {};
+    mergedReel = {
+      ...prev,
+      structure: reel_instructions.structure,
+      overlay_text: reel_instructions.overlay_text,
+    };
+  }
 
   const update: Record<string, unknown> = {
     updated_at: now,
@@ -50,8 +102,19 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     update.reviewed_at = now;
     update.reviewed_by = reviewedBy;
   }
+  if (caption_fr !== undefined) {
+    update.caption_fr = caption_fr ?? null;
+  }
+  if (caption_en !== undefined) {
+    update.caption_en = caption_en ?? null;
+  }
+  if (hashtags !== undefined) {
+    update.hashtags = hashtags ?? null;
+  }
+  if (mergedReel !== undefined) {
+    update.reel_instructions = mergedReel;
+  }
 
-  const supabase = getSupabaseServiceRole();
   const { data, error } = await supabase
     .from('post_candidates')
     .update(update)

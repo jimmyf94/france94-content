@@ -1,18 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+import { readJsonResponse } from '@/lib/read-json-response';
 
 import type { PostCandidate } from '../types';
 
 async function copyText(text: string): Promise<boolean> {
-  // Async Clipboard API: requires a secure context (HTTPS or localhost).
-  // Falls back to execCommand for HTTP dev access from a phone on the LAN.
   if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      /* fall through to fallback */
+      /* fall through */
     }
   }
   if (typeof document === 'undefined') return false;
@@ -83,36 +83,141 @@ function Section({
   );
 }
 
-export function CaptionTab({ candidate }: { candidate: PostCandidate }) {
-  const fr = candidate.caption_fr ?? '';
-  const en = candidate.caption_en ?? '';
-  const tags = (candidate.hashtags ?? []).map((h) => (h.startsWith('#') ? h : `#${h}`));
-
-  if (!fr && !en && tags.length === 0) {
-    return <p className="text-sm text-[var(--muted)]">No captions yet.</p>;
+function parseHashtagInput(raw: string): string[] {
+  const parts = raw.split(/[\n,]+/);
+  const out: string[] = [];
+  for (const p of parts) {
+    const t = p.trim().replace(/^#+/, '');
+    if (t) out.push(t);
   }
+  return out;
+}
 
-  const allText = [fr, en, tags.join(' ')].filter(Boolean).join('\n\n');
+export function CaptionTab({
+  candidate,
+  onCandidateUpdated,
+}: {
+  candidate: PostCandidate;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+}) {
+  const [fr, setFr] = useState(candidate.caption_fr ?? '');
+  const [en, setEn] = useState(candidate.caption_en ?? '');
+  const [tagsRaw, setTagsRaw] = useState(() =>
+    (candidate.hashtags ?? [])
+      .map((h) => (String(h).startsWith('#') ? String(h).slice(1) : String(h)))
+      .join('\n'),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFr(candidate.caption_fr ?? '');
+    setEn(candidate.caption_en ?? '');
+    setTagsRaw(
+      (candidate.hashtags ?? [])
+        .map((h) => (String(h).startsWith('#') ? String(h).slice(1) : String(h)))
+        .join('\n'),
+    );
+    setError(null);
+  }, [
+    candidate.id,
+    candidate.caption_fr,
+    candidate.caption_en,
+    candidate.hashtags,
+  ]);
+
+  const savedTagsStr = useMemo(
+    () =>
+      (candidate.hashtags ?? [])
+        .map((h) => (String(h).startsWith('#') ? String(h).slice(1) : String(h)))
+        .join('\n'),
+    [candidate.hashtags],
+  );
+
+  const dirty =
+    fr !== (candidate.caption_fr ?? '') ||
+    en !== (candidate.caption_en ?? '') ||
+    tagsRaw !== savedTagsStr;
+
+  const tagsForCopy = parseHashtagInput(tagsRaw).map((t) => `#${t}`);
+  const allText = [fr, en, tagsForCopy.join(' ')].filter(Boolean).join('\n\n');
+
+  const save = async () => {
+    if (!onCandidateUpdated) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const hashtags = parseHashtagInput(tagsRaw);
+      const res = await fetch(`/api/content-review/candidates/${candidate.id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          caption_fr: fr.trim() === '' ? null : fr,
+          caption_en: en.trim() === '' ? null : en,
+          hashtags: hashtags.length === 0 ? null : hashtags,
+        }),
+      });
+      const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      if (json.candidate) onCandidateUpdated(json.candidate);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="space-y-4 text-sm">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <CopyButton getText={() => allText} label="Copy all" />
       </div>
-      {fr && (
-        <Section title="Caption FR" actions={<CopyButton getText={() => fr} />}>
-          <p className="whitespace-pre-wrap leading-relaxed">{fr}</p>
-        </Section>
-      )}
-      {en && (
-        <Section title="Caption EN" actions={<CopyButton getText={() => en} />}>
-          <p className="whitespace-pre-wrap leading-relaxed">{en}</p>
-        </Section>
-      )}
-      {tags.length > 0 && (
-        <Section title="Hashtags" actions={<CopyButton getText={() => tags.join(' ')} />}>
-          <p className="break-words text-[var(--accent)]">{tags.join(' ')}</p>
-        </Section>
+      {error && <p className="text-[var(--bad)]">{error}</p>}
+
+      <Section title="Caption FR" actions={<CopyButton getText={() => fr} />}>
+        <textarea
+          value={fr}
+          onChange={(e) => setFr(e.target.value)}
+          placeholder="Caption (French)…"
+          className="min-h-[72px] w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm leading-relaxed placeholder:text-[var(--muted)]"
+        />
+      </Section>
+
+      <Section title="Caption EN" actions={<CopyButton getText={() => en} />}>
+        <textarea
+          value={en}
+          onChange={(e) => setEn(e.target.value)}
+          placeholder="Caption (English)…"
+          className="min-h-[72px] w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm leading-relaxed placeholder:text-[var(--muted)]"
+        />
+      </Section>
+
+      <Section title="Hashtags" actions={<CopyButton getText={() => tagsForCopy.join(' ')} />}>
+        <textarea
+          value={tagsRaw}
+          onChange={(e) => setTagsRaw(e.target.value)}
+          placeholder="One tag per line (with or without #)"
+          className="min-h-[64px] w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm placeholder:text-[var(--muted)]"
+        />
+      </Section>
+
+      {onCandidateUpdated && (
+        <div className="flex items-center justify-end gap-2">
+          {dirty && (
+            <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">
+              Unsaved
+            </span>
+          )}
+          <button
+            type="button"
+            disabled={!dirty || saving}
+            onClick={() => void save()}
+            className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {saving ? 'Saving…' : 'Save caption & hashtags'}
+          </button>
+        </div>
       )}
     </div>
   );

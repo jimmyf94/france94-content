@@ -7,13 +7,20 @@ import { DecisionButtons } from '../decision/DecisionButtons';
 import { RewriteChips } from '../decision/RewriteChips';
 import { FilterForm, type ReviewFilters } from '../FilterDrawer';
 import { MainMediaPreview } from '../MainMediaPreview';
+import { ReviewMediaTrashButton } from '../ReviewMediaTrashButton';
 import { PostTypeBadge } from '../PostTypeBadge';
 import { ScoreStrip } from '../ScoreStrip';
 import { CaptionTab } from '../tabs/CaptionTab';
 import { DebugTab } from '../tabs/DebugTab';
 import { StructureTab } from '../tabs/StructureTab';
 import { TranscriptTab } from '../tabs/TranscriptTab';
-import type { DecisionStatus, DetailTab, PostCandidate, StatusTab } from '../types';
+import type {
+  DecisionStatus,
+  DetailTab,
+  PostCandidate,
+  ReviewDriveFile,
+  StatusTab,
+} from '../types';
 import { STATUS_TAB_LABEL } from '../types';
 import { useCandidateMedia } from '../useCandidateMedia';
 
@@ -82,6 +89,9 @@ export function MobileReviewStack({
   onRefresh,
   onSwipeNext,
   onSwipePrev,
+  mediaReloadNonce,
+  onCandidateUpdated,
+  onRemoveReviewAsset,
 }: {
   candidates: PostCandidate[];
   counts: Record<StatusTab, number>;
@@ -105,6 +115,9 @@ export function MobileReviewStack({
   onRefresh: () => void;
   onSwipeNext: () => void;
   onSwipePrev: () => void;
+  mediaReloadNonce: number;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
   const sheetTab: MobileDetailSheetTab =
@@ -159,6 +172,9 @@ export function MobileReviewStack({
           onOpenDetails={openDetails}
           onSwipeNext={onSwipeNext}
           onSwipePrev={onSwipePrev}
+          mediaReloadNonce={mediaReloadNonce}
+          onCandidateUpdated={onCandidateUpdated}
+          onRemoveReviewAsset={onRemoveReviewAsset}
         />
       )}
 
@@ -178,6 +194,7 @@ export function MobileReviewStack({
             onChangeSheet(null);
           }}
           loading={loading}
+          mediaReloadNonce={mediaReloadNonce}
         />
       </BottomSheet>
 
@@ -205,7 +222,9 @@ export function MobileReviewStack({
               ))}
             </nav>
             <div className="scrollbar-thin flex-1 overflow-auto p-4">
-              {sheetTab === 'structure' && <StructureTab candidate={selected} />}
+              {sheetTab === 'structure' && (
+                <StructureTab candidate={selected} onCandidateUpdated={onCandidateUpdated} />
+              )}
               {sheetTab === 'transcript' && <TranscriptTab candidate={selected} />}
               {sheetTab === 'debug' && <DebugTab candidate={selected} />}
             </div>
@@ -249,6 +268,9 @@ function MobileCandidateView({
   onOpenDetails,
   onSwipeNext,
   onSwipePrev,
+  mediaReloadNonce,
+  onCandidateUpdated,
+  onRemoveReviewAsset,
 }: {
   candidate: PostCandidate;
   notes: string;
@@ -260,10 +282,14 @@ function MobileCandidateView({
   onOpenDetails: () => void;
   onSwipeNext: () => void;
   onSwipePrev: () => void;
+  mediaReloadNonce: number;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
-  const { files, loading, error } = useCandidateMedia(candidate.id);
+  const { files, loading, error } = useCandidateMedia(candidate.id, mediaReloadNonce);
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
+  const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
 
   const carouselRef = useRef<HTMLDivElement | null>(null);
   const [assetIndex, setAssetIndex] = useState(0);
@@ -377,19 +403,25 @@ function MobileCandidateView({
               onScroll={onCarouselScroll}
               className="scrollbar-thin flex w-full snap-x-mandatory overflow-x-auto"
             >
-              {files.map((f, i) => (
-                <div
-                  key={f.id}
-                  className="snap-start-always flex aspect-square w-full shrink-0 items-center justify-center"
-                >
-                  <MainMediaPreview
-                    file={f}
-                    candidateId={candidate.id}
-                    videoRef={i === firstVideoIdx ? videoRef : undefined}
-                    compact
-                  />
-                </div>
-              ))}
+              {files.map((f, i) => {
+                const showTrash = !!onRemoveReviewAsset && canDetachSource;
+                return (
+                  <div
+                    key={f.id}
+                    className="snap-start-always relative flex aspect-square w-full shrink-0 items-center justify-center"
+                  >
+                    {showTrash && (
+                      <ReviewMediaTrashButton file={f} onRemove={onRemoveReviewAsset} />
+                    )}
+                    <MainMediaPreview
+                      file={f}
+                      candidateId={candidate.id}
+                      videoRef={i === firstVideoIdx ? videoRef : undefined}
+                      compact
+                    />
+                  </div>
+                );
+              })}
             </div>
             {files.length > 1 && (
               <div className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white">
@@ -401,7 +433,7 @@ function MobileCandidateView({
       </section>
 
       <section className="space-y-3 px-4 py-4">
-        <CaptionTab candidate={candidate} />
+        <CaptionTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
       </section>
 
       <section className="px-3 pb-2">

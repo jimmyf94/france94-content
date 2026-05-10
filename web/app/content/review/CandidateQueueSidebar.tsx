@@ -16,6 +16,7 @@ export function CandidateQueueSidebar({
   selectedId,
   onSelect,
   loading,
+  mediaReloadNonce = 0,
 }: {
   candidates: PostCandidate[];
   counts: Record<StatusTab, number>;
@@ -24,6 +25,7 @@ export function CandidateQueueSidebar({
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading: boolean;
+  mediaReloadNonce?: number;
 }) {
   const visible = useMemo(
     () => candidates.filter((c) => c.status === activeTab),
@@ -76,6 +78,7 @@ export function CandidateQueueSidebar({
                 candidate={c}
                 selected={c.id === selectedId}
                 onClick={() => onSelect(c.id)}
+                mediaReloadNonce={mediaReloadNonce}
               />
             </li>
           ))}

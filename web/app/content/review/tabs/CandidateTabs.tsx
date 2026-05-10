@@ -18,10 +18,12 @@ export function CandidateTabs({
   candidate,
   active,
   onChange,
+  onCandidateUpdated,
 }: {
   candidate: PostCandidate;
   active: DetailTab;
   onChange: (t: DetailTab) => void;
+  onCandidateUpdated?: (c: PostCandidate) => void;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -42,8 +44,12 @@ export function CandidateTabs({
         ))}
       </nav>
       <div className="scrollbar-thin flex-1 overflow-auto p-4">
-        {active === 'caption' && <CaptionTab candidate={candidate} />}
-        {active === 'structure' && <StructureTab candidate={candidate} />}
+        {active === 'caption' && (
+          <CaptionTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
+        )}
+        {active === 'structure' && (
+          <StructureTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
+        )}
         {active === 'transcript' && <TranscriptTab candidate={candidate} />}
         {active === 'debug' && <DebugTab candidate={candidate} />}
       </div>

@@ -11,6 +11,7 @@ import { CandidateQueueSidebar } from './CandidateQueueSidebar';
 import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
 import { MediaPreviewStage } from './MediaPreviewStage';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
+import { invalidateCandidateMediaCache } from './useCandidateMedia';
 import { ReviewHeader } from './ReviewHeader';
 import { ShortcutsBanner } from './ShortcutsBanner';
 import { Toast, type ToastState } from './Toast';
@@ -18,6 +19,7 @@ import type {
   DecisionStatus,
   DetailTab,
   PostCandidate,
+  ReviewDriveFile,
   StatusTab,
 } from './types';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
@@ -73,6 +75,7 @@ export function ReviewDashboard() {
   const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<ToastState | null>(null);
   const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
+  const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -156,6 +159,41 @@ export function ReviewDashboard() {
   const selected = useMemo(
     () => candidates.find((c) => c.id === selectedId) ?? null,
     [candidates, selectedId],
+  );
+
+  const handleCandidateUpdated = useCallback((c: PostCandidate) => {
+    setCandidates((prev) => prev.map((x) => (x.id === c.id ? { ...x, ...c } : x)));
+  }, []);
+
+  const handleRemoveReviewAsset = useCallback(
+    (file: ReviewDriveFile) => {
+      if (!selected) return;
+      const cid = selected.id;
+      const msg = `Remove "${file.name}" from this candidate? The copy in the review folder will be deleted from Drive; the asset stays in your library (Supabase content_assets).`;
+      if (!window.confirm(msg)) return;
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/content-review/candidates/${cid}/review-assets/${encodeURIComponent(file.id)}`,
+            { method: 'DELETE', credentials: 'include' },
+          );
+          const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+          if (!res.ok) throw new Error(json.error || res.statusText);
+          invalidateCandidateMediaCache(cid);
+          setMediaReloadNonce((n) => n + 1);
+          if (json.candidate) {
+            handleCandidateUpdated(json.candidate);
+          }
+          setToast({ kind: 'good', msg: 'Removed from candidate (library unchanged)' });
+        } catch (e) {
+          setToast({
+            kind: 'bad',
+            msg: e instanceof Error ? e.message : 'Remove failed',
+          });
+        }
+      })();
+    },
+    [selected, handleCandidateUpdated],
   );
 
   const decide = useCallback(
@@ -352,11 +390,17 @@ export function ReviewDashboard() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             loading={loading}
+            mediaReloadNonce={mediaReloadNonce}
           />
         </div>
         <div className="flex min-h-0 flex-col">
-          <CandidateOverviewHeader candidate={selected} />
-          <MediaPreviewStage candidate={selected} videoRef={videoRef} />
+          <CandidateOverviewHeader candidate={selected} mediaReloadNonce={mediaReloadNonce} />
+          <MediaPreviewStage
+            candidate={selected}
+            videoRef={videoRef}
+            mediaReloadNonce={mediaReloadNonce}
+            onRemoveReviewAsset={handleRemoveReviewAsset}
+          />
         </div>
         <CandidateDecisionPanel
           candidate={selected}
@@ -367,6 +411,7 @@ export function ReviewDashboard() {
           onDecide={decide}
           activeTab={activeDetailTab}
           onChangeTab={setActiveDetailTab}
+          onCandidateUpdated={handleCandidateUpdated}
         />
       </div>
 
@@ -395,6 +440,9 @@ export function ReviewDashboard() {
           onRefresh={() => void fetchCandidates()}
           onSwipeNext={swipeNext}
           onSwipePrev={swipePrev}
+          mediaReloadNonce={mediaReloadNonce}
+          onCandidateUpdated={handleCandidateUpdated}
+          onRemoveReviewAsset={handleRemoveReviewAsset}
         />
       </div>
 

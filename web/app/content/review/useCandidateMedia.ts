@@ -1,87 +1,68 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import type { ReviewDriveFile } from './types';
 
 const cache = new Map<string, ReviewDriveFile[]>();
-const inflight = new Map<string, Promise<ReviewDriveFile[]>>();
 
-export function useCandidateMedia(candidateId: string | null) {
-  const [files, setFiles] = useState<ReviewDriveFile[]>(() =>
-    candidateId ? (cache.get(candidateId) ?? []) : [],
-  );
-  const [loading, setLoading] = useState(
-    candidateId ? !cache.has(candidateId) : false,
-  );
+/** Drop cached folder listing so the next fetch picks up Drive changes. */
+export function invalidateCandidateMediaCache(candidateId: string) {
+  cache.delete(candidateId);
+}
+
+/**
+ * Lists files in the candidate review Drive folder.
+ * Uses `fetchGen` so a slow in-flight fetch cannot overwrite results after `invalidateCandidateMediaCache` + reload.
+ */
+export function useCandidateMedia(candidateId: string | null, reloadNonce = 0) {
+  const [files, setFiles] = useState<ReviewDriveFile[]>([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // When candidateId changes, React keeps hook state — clear or hydrate from cache
-  // before paint so we never render another candidate's file IDs with this id.
-  useLayoutEffect(() => {
-    if (!candidateId) {
-      setFiles([]);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    const cached = cache.get(candidateId);
-    if (cached) {
-      setFiles(cached);
-      setLoading(false);
-      setError(null);
-    } else {
-      setFiles([]);
-      setLoading(true);
-      setError(null);
-    }
-  }, [candidateId]);
+  const fetchGen = useRef(0);
 
   useEffect(() => {
     if (!candidateId) {
+      fetchGen.current += 1;
+      setFiles([]);
+      setLoading(false);
+      setError(null);
       return;
     }
-
-    let cancelled = false;
 
     const cached = cache.get(candidateId);
-    if (cached) {
+    if (reloadNonce === 0 && cached) {
+      setFiles(cached);
+      setLoading(false);
+      setError(null);
       return;
     }
 
-    let p = inflight.get(candidateId);
-    if (!p) {
-      p = (async () => {
+    const gen = ++fetchGen.current;
+    setLoading(true);
+    setError(null);
+
+    void (async () => {
+      try {
         const res = await fetch(`/api/content-review/candidates/${candidateId}/files`, {
           credentials: 'include',
         });
         const json = await readJsonResponse<{ files?: ReviewDriveFile[]; error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
-        return json.files ?? [];
-      })();
-      inflight.set(candidateId, p);
-    }
-
-    p.then((list) => {
-      cache.set(candidateId, list);
-      inflight.delete(candidateId);
-      if (cancelled) return;
-      setFiles(list);
-      setLoading(false);
-    }).catch((e: unknown) => {
-      inflight.delete(candidateId);
-      if (cancelled) return;
-      setError(e instanceof Error ? e.message : String(e));
-      setLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [candidateId]);
+        const list = json.files ?? [];
+        if (gen !== fetchGen.current) return;
+        cache.set(candidateId, list);
+        setFiles(list);
+        setLoading(false);
+      } catch (e) {
+        if (gen !== fetchGen.current) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      }
+    })();
+  }, [candidateId, reloadNonce]);
 
   return { files, loading, error };
 }

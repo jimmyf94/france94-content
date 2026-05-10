@@ -1,4 +1,12 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+
+import { readJsonResponse } from '@/lib/read-json-response';
+
 import type { PostCandidate } from '../types';
+
+type StructureRow = { time: string; instruction: string };
 
 function SectionWrap({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -11,49 +19,231 @@ function SectionWrap({ title, children }: { title: string; children: React.React
   );
 }
 
-function ReelView({ data }: { data: Record<string, unknown> }) {
-  const dur = typeof data.estimated_duration_seconds === 'number' ? data.estimated_duration_seconds : null;
-  const structure = Array.isArray(data.structure) ? data.structure : [];
-  const overlays = Array.isArray(data.overlay_text) ? data.overlay_text : [];
+function parseReelData(data: Record<string, unknown>): {
+  dur: number | null;
+  structure: StructureRow[];
+  overlays: string[];
+  thumb: string | null;
+} {
+  const dur =
+    typeof data.estimated_duration_seconds === 'number' ? data.estimated_duration_seconds : null;
+  const structureRaw = Array.isArray(data.structure) ? data.structure : [];
+  const structure: StructureRow[] = structureRaw.map((row) => {
+    const r = (row ?? {}) as Record<string, unknown>;
+    return {
+      time: typeof r.time === 'string' ? r.time : '',
+      instruction: typeof r.instruction === 'string' ? r.instruction : '',
+    };
+  });
+  const overlaysRaw = Array.isArray(data.overlay_text) ? data.overlay_text : [];
+  const overlays = overlaysRaw.map((o) => String(o));
   const thumb = typeof data.thumbnail_text === 'string' ? data.thumbnail_text : null;
+  return { dur, structure, overlays, thumb };
+}
+
+function EditableReelTimeline({
+  candidate,
+  onCandidateUpdated,
+}: {
+  candidate: PostCandidate;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+}) {
+  const base = (
+    candidate.reel_instructions != null && typeof candidate.reel_instructions === 'object'
+      ? candidate.reel_instructions
+      : {}
+  ) as Record<string, unknown>;
+  const parsed = useMemo(() => parseReelData(base), [candidate.reel_instructions]);
+
+  const [structure, setStructure] = useState<StructureRow[]>(parsed.structure);
+  const [overlays, setOverlays] = useState<string[]>(
+    parsed.overlays.length > 0 ? parsed.overlays : [''],
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const p = parseReelData((candidate.reel_instructions ?? {}) as Record<string, unknown>);
+    setStructure(p.structure.length > 0 ? p.structure : [{ time: '', instruction: '' }]);
+    setOverlays(p.overlays.length > 0 ? p.overlays : ['']);
+    setError(null);
+  }, [candidate.id, candidate.reel_instructions]);
+
+  const normalizedOverlays = overlays.map((o) => o.trim()).filter(Boolean);
+  const normalizedStructure = structure.map((r) => ({
+    time: r.time.trim(),
+    instruction: r.instruction.trim(),
+  }));
+
+  const savedStructureClean = parsed.structure.filter(
+    (r) => r.time.trim() || r.instruction.trim(),
+  );
+  const draftStructureClean = normalizedStructure.filter((r) => r.time || r.instruction);
+
+  const dirty =
+    JSON.stringify(savedStructureClean) !== JSON.stringify(draftStructureClean) ||
+    JSON.stringify(parsed.overlays) !== JSON.stringify(normalizedOverlays);
+
+  const save = async () => {
+    if (!onCandidateUpdated) return;
+    const structurePayload = normalizedStructure.some((r) => r.time || r.instruction)
+      ? normalizedStructure
+      : [];
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/content-review/candidates/${candidate.id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reel_instructions: {
+            structure: structurePayload,
+            overlay_text: normalizedOverlays,
+          },
+        }),
+      });
+      const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      if (json.candidate) onCandidateUpdated(json.candidate);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const dur = parsed.dur;
+  const thumb = parsed.thumb;
+
   return (
-    <div className="space-y-3">
-      {dur != null && (
-        <p>
-          <span className="text-[var(--muted)]">Duration:</span> {dur}s
-        </p>
-      )}
-      {structure.length > 0 && (
-        <ol className="space-y-1">
-          {structure.map((row, i) => {
-            const r = (row ?? {}) as Record<string, unknown>;
-            const time = typeof r.time === 'string' ? r.time : '';
-            const inst = typeof r.instruction === 'string' ? r.instruction : '';
-            return (
-              <li key={i} className="rounded border border-[var(--border)] px-2 py-1.5">
-                <span className="font-medium tabular-nums text-[var(--accent)]">{time}</span>{' '}
-                {inst}
-              </li>
-            );
-          })}
-        </ol>
-      )}
-      {overlays.length > 0 && (
+    <SectionWrap title="Reel timeline">
+      <div className="space-y-4">
+        {error && <p className="text-[var(--bad)]">{error}</p>}
+        {dur != null && (
+          <p>
+            <span className="text-[var(--muted)]">Duration:</span> {dur}s
+          </p>
+        )}
+        {thumb && (
+          <p>
+            <span className="text-[var(--muted)]">Thumbnail text:</span> {thumb}
+          </p>
+        )}
+
         <div>
-          <p className="mb-1 text-[var(--muted)]">Overlays</p>
-          <ul className="list-inside list-decimal space-y-1">
-            {overlays.map((o, i) => (
-              <li key={i}>{String(o)}</li>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Structure
+          </p>
+          <ol className="space-y-2">
+            {structure.map((row, i) => (
+              <li
+                key={i}
+                className="flex flex-col gap-2 rounded border border-[var(--border)] p-2 sm:flex-row sm:items-start"
+              >
+                <input
+                  type="text"
+                  value={row.time}
+                  onChange={(e) =>
+                    setStructure((prev) =>
+                      prev.map((r, j) => (j === i ? { ...r, time: e.target.value } : r)),
+                    )
+                  }
+                  placeholder="0:00"
+                  className="w-full shrink-0 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs tabular-nums sm:w-24"
+                />
+                <textarea
+                  value={row.instruction}
+                  onChange={(e) =>
+                    setStructure((prev) =>
+                      prev.map((r, j) =>
+                        j === i ? { ...r, instruction: e.target.value } : r,
+                      ),
+                    )
+                  }
+                  placeholder="Beat / instruction…"
+                  className="min-h-[48px] flex-1 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStructure((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  disabled={structure.length <= 1}
+                  className="shrink-0 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted)] disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ol>
+          <button
+            type="button"
+            onClick={() =>
+              setStructure((prev) => [...prev, { time: '', instruction: '' }])
+            }
+            className="mt-2 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--accent)]"
+          >
+            Add beat
+          </button>
+        </div>
+
+        <div>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Overlays
+          </p>
+          <ul className="space-y-2">
+            {overlays.map((line, i) => (
+              <li key={i} className="flex gap-2">
+                <textarea
+                  value={line}
+                  onChange={(e) =>
+                    setOverlays((prev) =>
+                      prev.map((x, j) => (j === i ? e.target.value : x)),
+                    )
+                  }
+                  placeholder="On-screen text…"
+                  className="min-h-[40px] flex-1 resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => setOverlays((prev) => prev.filter((_, j) => j !== i))}
+                  disabled={overlays.length <= 1}
+                  className="shrink-0 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted)] disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </li>
             ))}
           </ul>
+          <button
+            type="button"
+            onClick={() => setOverlays((prev) => [...prev, ''])}
+            className="mt-2 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--accent)]"
+          >
+            Add overlay line
+          </button>
         </div>
-      )}
-      {thumb && (
-        <p>
-          <span className="text-[var(--muted)]">Thumbnail text:</span> {thumb}
-        </p>
-      )}
-    </div>
+
+        {onCandidateUpdated && (
+          <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] pt-3">
+            {dirty && (
+              <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">
+                Unsaved
+              </span>
+            )}
+            <button
+              type="button"
+              disabled={!dirty || saving}
+              onClick={() => void save()}
+              className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saving ? 'Saving…' : 'Save structure & overlays'}
+            </button>
+          </div>
+        )}
+      </div>
+    </SectionWrap>
   );
 }
 
@@ -142,17 +332,17 @@ function StaticView({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-export function StructureTab({ candidate }: { candidate: PostCandidate }) {
+export function StructureTab({
+  candidate,
+  onCandidateUpdated,
+}: {
+  candidate: PostCandidate;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+}) {
   const t = candidate.post_type;
-  if (
-    t === 'reel' &&
-    candidate.reel_instructions &&
-    typeof candidate.reel_instructions === 'object'
-  ) {
+  if (t === 'reel') {
     return (
-      <SectionWrap title="Reel timeline">
-        <ReelView data={candidate.reel_instructions as Record<string, unknown>} />
-      </SectionWrap>
+      <EditableReelTimeline candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
     );
   }
   if (t === 'story_sequence' && Array.isArray(candidate.story_frames)) {
