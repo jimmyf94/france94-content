@@ -1,6 +1,5 @@
 import 'dotenv/config';
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +12,14 @@ import { z } from 'zod';
 import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
+import { callGeminiWithLogging, responseToJson } from './lib/ai/gemini-client.js';
+import { cacheKeyPostPlanner, getFr94PromptVersion } from './lib/ai/prompt-version.js';
+import {
+  buildPostPlannerPromptParts,
+  loadPostPlannerStablePrompt,
+} from './lib/ai/prompts/post-planner.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-
-const DEFAULT_PROMPT_REL = path.join('prompts', 'france94-post-candidates.txt');
 
 const postTypeEnum = z.enum([
   'reel',
@@ -187,31 +190,6 @@ function getSupabaseClient(): SupabaseClient {
   });
 }
 
-function resolvePromptPath(): string {
-  const fromEnv = process.env.POST_CANDIDATE_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_PROMPT_REL);
-}
-
-function loadPlannerPrompt(): string {
-  const promptPath = resolvePromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read post candidate prompt: ${promptPath}. Set POST_CANDIDATE_PROMPT_PATH or add scripts/prompts/france94-post-candidates.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Post candidate prompt is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
 function storyFramesValue(v: unknown): unknown[] | null {
   if (v == null) return null;
   if (Array.isArray(v)) return v;
@@ -358,19 +336,12 @@ export function validatePostCandidateOutput(
   };
 }
 
-function responseToJson(raw: unknown): Record<string, unknown> {
-  try {
-    return JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
 export async function generatePostCandidatesWithLLM(params: {
   summaries: AssetSummaryForLLM[];
   dailyTarget: number;
   batchDays: number;
   model: string;
+  supabase: SupabaseClient | null;
 }): Promise<{
   candidates: ValidatedPostCandidate[];
   llmRaw: Record<string, unknown>;
@@ -380,25 +351,28 @@ export async function generatePostCandidatesWithLLM(params: {
 }> {
   const apiKey = requireEnv('GEMINI_API_KEY');
   const ai = new GoogleGenAI({ apiKey });
-  const template = loadPlannerPrompt();
+  const stableTemplate = loadPostPlannerStablePrompt();
+  const { stableSystemInstruction, dynamicText } = buildPostPlannerPromptParts({
+    stableText: stableTemplate,
+    summaries: params.summaries as unknown[],
+    dailyTarget: params.dailyTarget,
+    batchDays: params.batchDays,
+  });
+  const promptVersion = getFr94PromptVersion();
 
-  const inputPayload = {
-    constraints: {
-      batch_days: params.batchDays,
-      daily_target: params.dailyTarget,
-      asset_count: params.summaries.length,
-    },
-    assets: params.summaries,
-  };
-
-  const assetsJson = JSON.stringify(inputPayload, null, 2);
-  const prompt = template
-    .replace(/\{\{POST_CANDIDATE_DAILY_TARGET\}\}/g, String(params.dailyTarget))
-    .replace(/\{\{INPUT_ASSETS_JSON\}\}/g, assetsJson);
-
-  const response = await ai.models.generateContent({
+  const response = await callGeminiWithLogging({
+    ai,
+    supabase: params.supabase,
+    operation: 'post_candidate_generation',
     model: params.model,
-    contents: [createPartFromText(prompt)],
+    promptVersion,
+    cacheKey: cacheKeyPostPlanner(promptVersion),
+    stableSystemInstruction,
+    getContentsImplicit: () => [
+      createPartFromText(stableSystemInstruction),
+      createPartFromText(dynamicText),
+    ],
+    getContentsExplicit: () => [createPartFromText(dynamicText)],
     config: {
       responseMimeType: 'application/json',
     },
@@ -645,6 +619,7 @@ export async function generatePostCandidates(): Promise<void> {
       dailyTarget,
       batchDays,
       model,
+      supabase,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

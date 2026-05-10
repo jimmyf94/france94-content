@@ -5,9 +5,9 @@ France94 is an endurance and charity project where Jimmy will complete 94 Olympi
 You are rewriting one existing Instagram post candidate after human review.
 
 Important:
-- Use only the current candidate structure and the current attached source assets.
+- Use only the current candidate structure and the current attached source assets from the dynamic JSON payload.
 - Do not invent facts not supported by the asset summaries.
-- Respect the reviewer notes.
+- Respect the reviewer notes from the dynamic JSON payload.
 - Keep the same general post_type unless the reviewer notes clearly imply the format is wrong.
 - Keep French-first.
 - English is optional and should be concise.
@@ -16,14 +16,7 @@ Important:
 - You are not creating final designed assets.
 - Return strict JSON only.
 
-Reviewer notes:
-{{REVIEWER_NOTES}}
-
-Current candidate:
-{{CANDIDATE_JSON}}
-
-Current attached asset summaries:
-{{ASSET_SUMMARIES_JSON}}
+The dynamic JSON payload contains reviewer_notes, candidate, and asset_summaries.
 
 Return exactly one rewritten candidate using this schema:
 

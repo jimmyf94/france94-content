@@ -1,14 +1,13 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { GoogleGenAI, createPartFromText } from '@google/genai';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
-const DEFAULT_PROMPT_REL = path.join(
-  'scripts',
-  'prompts',
-  'france94-post-candidate-rewrite.txt',
-);
+import { callGeminiWithLogging, responseToJson } from '@fr94/ai/gemini-client.js';
+import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
+import {
+  buildCandidateRegenerationDynamicPayload,
+  loadCandidateRegenerationStablePrompt,
+} from '@fr94/ai/prompts/candidate-regeneration.js';
 
 const postTypeEnum = z.enum([
   'reel',
@@ -214,40 +213,6 @@ function parseJsonToRecord(rawText: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function resolvePromptPath(): string {
-  const fromEnv = process.env.POST_CANDIDATE_REWRITE_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  // The Next.js server runs with CWD = repo-root or web/. Try web parent (= repo root) first,
-  // then CWD, so both `npm run review:dev` and `cd web && npm run dev` work.
-  const candidates = [
-    path.resolve(process.cwd(), DEFAULT_PROMPT_REL),
-    path.resolve(process.cwd(), '..', DEFAULT_PROMPT_REL),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
-  }
-  return candidates[0];
-}
-
-function loadRewritePrompt(): string {
-  const promptPath = resolvePromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read post candidate rewrite prompt: ${promptPath}. Set POST_CANDIDATE_REWRITE_PROMPT_PATH or add scripts/prompts/france94-post-candidate-rewrite.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Post candidate rewrite prompt is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
 function buildCandidateJsonForLLM(c: RegenerateInputCandidate): Record<string, unknown> {
   return {
     post_type: c.post_type,
@@ -268,14 +233,6 @@ function buildCandidateJsonForLLM(c: RegenerateInputCandidate): Record<string, u
     sponsor_safety_score: c.sponsor_safety_score,
     effort_score: c.effort_score,
   };
-}
-
-function responseToJson(raw: unknown): Record<string, unknown> {
-  try {
-    return JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -325,6 +282,7 @@ export async function regenerateCandidateWithLLM(params: {
   reviewerNotes: string;
   assetSummaries: AssetSummaryForRewrite[];
   validAssetIds: string[];
+  supabase?: SupabaseClient | null;
 }): Promise<RegenerateLLMResult> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -332,21 +290,29 @@ export async function regenerateCandidateWithLLM(params: {
   }
   const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
-  const template = loadRewritePrompt();
-
-  const candidateJson = JSON.stringify(buildCandidateJsonForLLM(params.candidate), null, 2);
-  const assetSummariesJson = JSON.stringify(params.assetSummaries, null, 2);
+  const stable = loadCandidateRegenerationStablePrompt();
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';
-
-  const prompt = template
-    .replace(/\{\{REVIEWER_NOTES\}\}/g, reviewerNotes)
-    .replace(/\{\{CANDIDATE_JSON\}\}/g, candidateJson)
-    .replace(/\{\{ASSET_SUMMARIES_JSON\}\}/g, assetSummariesJson);
+  const dynamicText = buildCandidateRegenerationDynamicPayload({
+    reviewerNotes,
+    candidate: buildCandidateJsonForLLM(params.candidate),
+    assetSummaries: params.assetSummaries,
+  });
 
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
+  const promptVersion = getFr94PromptVersion();
+  const response = await callGeminiWithLogging({
+    ai,
+    supabase: params.supabase ?? null,
+    operation: 'candidate_regeneration',
     model,
-    contents: [createPartFromText(prompt)],
+    promptVersion,
+    cacheKey: cacheKeyCandidateRegeneration(promptVersion),
+    stableSystemInstruction: stable,
+    getContentsImplicit: () => [
+      createPartFromText(stable),
+      createPartFromText(dynamicText),
+    ],
+    getContentsExplicit: () => [createPartFromText(dynamicText)],
     config: {
       responseMimeType: 'application/json',
     },

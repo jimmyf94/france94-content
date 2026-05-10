@@ -22,89 +22,21 @@ import {
   probeVideo,
   withTempDir,
 } from './lib/video-preprocess.js';
-
-const DEFAULT_ANALYSIS_PROMPT_REL = path.join('prompts', 'france94-media-analysis.txt');
-const DEFAULT_VIDEO_SAMPLED_PROMPT_REL = path.join('prompts', 'france94-video-sampled-analysis.txt');
-const DEFAULT_AUDIO_TRANSCRIPTION_PROMPT_REL = path.join('prompts', 'france94-audio-transcription.txt');
-
-function resolveAnalysisPromptPath(): string {
-  const fromEnv = process.env.CONTENT_ANALYSIS_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_ANALYSIS_PROMPT_REL);
-}
-
-function loadAnalysisPrompt(): string {
-  const promptPath = resolveAnalysisPromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read analysis prompt file: ${promptPath}. Set CONTENT_ANALYSIS_PROMPT_PATH or add scripts/prompts/france94-media-analysis.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Analysis prompt file is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
-function resolveVideoSampledPromptPath(): string {
-  const fromEnv = process.env.VIDEO_SAMPLED_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_VIDEO_SAMPLED_PROMPT_REL);
-}
-
-function loadVideoSampledPrompt(): string {
-  const promptPath = resolveVideoSampledPromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read video-sampled prompt file: ${promptPath}. Set VIDEO_SAMPLED_PROMPT_PATH or add scripts/prompts/france94-video-sampled-analysis.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Video-sampled prompt file is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
-function resolveAudioTranscriptionPromptPath(): string {
-  const fromEnv = process.env.AUDIO_TRANSCRIPTION_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  return path.join(path.dirname(fileURLToPath(import.meta.url)), DEFAULT_AUDIO_TRANSCRIPTION_PROMPT_REL);
-}
-
-function loadAudioTranscriptionPrompt(): string {
-  const promptPath = resolveAudioTranscriptionPromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read audio transcription prompt file: ${promptPath}. Set AUDIO_TRANSCRIPTION_PROMPT_PATH or add scripts/prompts/france94-audio-transcription.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Audio transcription prompt file is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
-const ANALYSIS_PROMPT = loadAnalysisPrompt();
-const VIDEO_SAMPLED_PROMPT = loadVideoSampledPrompt();
-const AUDIO_TRANSCRIPTION_PROMPT = loadAudioTranscriptionPrompt();
+import { callGeminiWithLogging, responseToJson } from './lib/ai/gemini-client.js';
+import {
+  cacheKeyAssetAnalysis,
+  cacheKeyAssetAnalysisVideoSampled,
+  cacheKeyAudioTranscription,
+  getFr94PromptVersion,
+} from './lib/ai/prompt-version.js';
+import {
+  buildDirectMediaAnalysisDynamicText,
+  buildVideoSampledMetadataDynamicText,
+  buildVideoSampledTranscriptSuffix,
+  loadAudioTranscriptionStablePrompt,
+  loadDirectMediaAnalysisStablePrompt,
+  loadVideoSampledAnalysisStablePrompt,
+} from './lib/ai/prompts/asset-analysis.js';
 
 const activityEnum = z.enum([
   'run',
@@ -362,32 +294,6 @@ async function safeDeleteGeminiFile(ai: GoogleGenAI, fileName: string | undefine
   }
 }
 
-function responseToJson(raw: unknown): Record<string, unknown> {
-  const r = raw as {
-    text?: string;
-    candidates?: unknown;
-    usageMetadata?: unknown;
-    promptFeedback?: unknown;
-    modelVersion?: string;
-    responseId?: string;
-  };
-  let cloned: Record<string, unknown> = {};
-  try {
-    cloned = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-  } catch {
-    cloned = {};
-  }
-  return {
-    ...cloned,
-    text: r.text,
-    candidates: r.candidates,
-    usageMetadata: r.usageMetadata,
-    promptFeedback: r.promptFeedback,
-    modelVersion: r.modelVersion,
-    responseId: r.responseId,
-  };
-}
-
 export async function analyzeWithGemini(
   ai: GoogleGenAI,
   params: {
@@ -396,10 +302,14 @@ export async function analyzeWithGemini(
     displayName: string;
     model: string;
     prompt?: string;
+    llm?: { supabase: SupabaseClient | null; promptVersion: string };
+    subOperation?: string;
   },
 ): Promise<{ analysis: GeminiAnalysis; rawResponse: Record<string, unknown>; uploadedFileName: string }> {
   const { buffer, mimeType, displayName, model } = params;
-  const prompt = params.prompt ?? ANALYSIS_PROMPT;
+  const stable = params.prompt ?? loadDirectMediaAnalysisStablePrompt();
+  const dynamic = buildDirectMediaAnalysisDynamicText();
+  const fullText = dynamic.trim() ? `${stable}\n\n${dynamic}` : stable;
 
   const blob = new Blob([new Uint8Array(buffer)], { type: mimeType });
 
@@ -425,12 +335,25 @@ export async function analyzeWithGemini(
       throw new Error('Gemini file has no uri after ACTIVE');
     }
 
-    const response = await ai.models.generateContent({
+    const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
+    const response = await callGeminiWithLogging({
+      ai,
+      supabase: params.llm?.supabase ?? null,
+      operation: 'asset_analysis',
+      subOperation: params.subOperation ?? 'direct_media',
       model,
-      contents: [
+      promptVersion,
+      cacheKey: cacheKeyAssetAnalysis(promptVersion),
+      stableSystemInstruction: stable,
+      disableExplicitCaching: params.prompt !== undefined,
+      getContentsImplicit: () => [
         createPartFromUri(uri, mimeType),
-        createPartFromText(prompt),
+        createPartFromText(fullText),
       ],
+      getContentsExplicit: () =>
+        dynamic.trim()
+          ? [createPartFromUri(uri, mimeType), createPartFromText(dynamic)]
+          : [createPartFromUri(uri, mimeType)],
       config: {
         responseMimeType: 'application/json',
       },
@@ -474,7 +397,12 @@ function fileExtensionFromAsset(asset: PendingAsset): string {
 
 async function transcribeAudioWithGemini(
   ai: GoogleGenAI,
-  params: { wavBuffer: Buffer; displayName: string; model: string },
+  params: {
+    wavBuffer: Buffer;
+    displayName: string;
+    model: string;
+    llm?: { supabase: SupabaseClient | null; promptVersion: string };
+  },
 ): Promise<string> {
   const { wavBuffer, displayName, model } = params;
   const blob = new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' });
@@ -497,12 +425,23 @@ async function transcribeAudioWithGemini(
       throw new Error('Audio file has no uri after ACTIVE');
     }
 
-    const response = await ai.models.generateContent({
+    const stable = loadAudioTranscriptionStablePrompt();
+    const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
+    const response = await callGeminiWithLogging({
+      ai,
+      supabase: params.llm?.supabase ?? null,
+      operation: 'asset_analysis',
+      subOperation: 'audio_transcription',
       model,
-      contents: [
+      promptVersion,
+      cacheKey: cacheKeyAudioTranscription(promptVersion),
+      stableSystemInstruction: stable,
+      getContentsImplicit: () => [
         createPartFromUri(uri, 'audio/wav'),
-        createPartFromText(AUDIO_TRANSCRIPTION_PROMPT),
+        createPartFromText(stable),
       ],
+      getContentsExplicit: () => [createPartFromUri(uri, 'audio/wav')],
+      config: {},
     });
 
     return response.text?.trim() ?? '';
@@ -541,6 +480,7 @@ export async function analyzeVideoSampled(
       frameMaxWidth: number;
       maxSampleFrames: number;
     };
+    llm?: { supabase: SupabaseClient | null; promptVersion: string };
   },
 ): Promise<VideoSampledResult> {
   const { buffer, mimeType, displayName, fileExtension, model, config } = params;
@@ -578,6 +518,7 @@ export async function analyzeVideoSampled(
           wavBuffer: wavBuf,
           displayName: `${displayName}.audio`,
           model,
+          llm: params.llm,
         });
         if (audioTranscript.trim()) {
           strategy = 'video_frames_plus_audio';
@@ -598,37 +539,45 @@ export async function analyzeVideoSampled(
       },
     }));
 
-    const metadataBlock =
-      `\n\nAsset metadata (JSON):\n` +
-      JSON.stringify(
-        {
-          original_filename: displayName,
-          mime_type: mimeType,
-          duration_seconds: probe.durationSeconds,
-          width: probe.width,
-          height: probe.height,
-          frame_count: framePaths.length,
-          frame_timestamps_seconds: timestamps,
-          has_audio: probe.hasAudio,
-        },
-        null,
-        2,
-      );
+    const metadataPayload = {
+      original_filename: displayName,
+      mime_type: mimeType,
+      duration_seconds: probe.durationSeconds,
+      width: probe.width,
+      height: probe.height,
+      frame_count: framePaths.length,
+      frame_timestamps_seconds: timestamps,
+      has_audio: probe.hasAudio,
+    };
+    const stableVideo = loadVideoSampledAnalysisStablePrompt();
+    const dynamicMeta = buildVideoSampledMetadataDynamicText(metadataPayload);
+    const transcriptSuffix = buildVideoSampledTranscriptSuffix(audioTranscript);
 
-    const promptParts: Array<ReturnType<typeof createPartFromText> | { inlineData: { mimeType: string; data: string } }> = [
-      createPartFromText(VIDEO_SAMPLED_PROMPT + metadataBlock),
-      ...frameParts,
-    ];
+    const buildPromptParts = (stablePrefix: string, dynamicOnly: boolean) => {
+      const head = dynamicOnly
+        ? dynamicMeta
+        : `${stablePrefix}\n\n${dynamicMeta}`;
+      const parts: Array<
+        ReturnType<typeof createPartFromText> | { inlineData: { mimeType: string; data: string } }
+      > = [createPartFromText(head), ...frameParts];
+      if (transcriptSuffix) {
+        parts.push(createPartFromText(transcriptSuffix));
+      }
+      return parts;
+    };
 
-    if (audioTranscript.trim()) {
-      promptParts.push(
-        createPartFromText(`\nAudio transcript (already extracted from sampled audio):\n${audioTranscript}`),
-      );
-    }
-
-    const response = await ai.models.generateContent({
+    const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
+    const response = await callGeminiWithLogging({
+      ai,
+      supabase: params.llm?.supabase ?? null,
+      operation: 'asset_analysis',
+      subOperation: 'video_sampled',
       model,
-      contents: promptParts,
+      promptVersion,
+      cacheKey: cacheKeyAssetAnalysisVideoSampled(promptVersion),
+      stableSystemInstruction: stableVideo,
+      getContentsImplicit: () => buildPromptParts(stableVideo, false),
+      getContentsExplicit: () => buildPromptParts('', true),
       config: {
         responseMimeType: 'application/json',
       },
@@ -805,6 +754,8 @@ export async function analyzePendingAssets(): Promise<void> {
   const supabase = getSupabaseClient();
   const drive = await getDriveClient();
   const ai = getGenAI();
+  const promptVersion = getFr94PromptVersion();
+  const llmCtx = { supabase, promptVersion };
 
   const pending = await countPendingAssets(supabase);
   console.log(`pending content_assets (status=new): ${pending}`);
@@ -897,6 +848,7 @@ export async function analyzePendingAssets(): Promise<void> {
             frameMaxWidth: videoFrameMaxWidth,
             maxSampleFrames: videoMaxSampleFrames,
           },
+          llm: llmCtx,
         });
         analysis = result.analysis;
         rawResponse = result.rawResponse;
@@ -926,6 +878,9 @@ export async function analyzePendingAssets(): Promise<void> {
           mimeType,
           displayName: label,
           model,
+          llm: llmCtx,
+          subOperation:
+            category === 'audio' ? 'audio_direct' : category === 'image' ? 'image_direct' : 'other_media',
         });
         analysis = result.analysis;
         rawResponse = result.rawResponse;

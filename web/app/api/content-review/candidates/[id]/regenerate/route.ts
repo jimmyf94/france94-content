@@ -133,6 +133,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       reviewerNotes,
       assetSummaries,
       validAssetIds: sourceAssetIds,
+      supabase,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

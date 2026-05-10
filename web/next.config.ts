@@ -10,6 +10,14 @@ loadEnvConfig(path.join(webDir, '..'));
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ['googleapis'],
+  // Shared `scripts/lib/ai` uses NodeNext-style `.js` import specifiers; map them to `.ts` sources.
+  webpack: (config) => {
+    config.resolve = config.resolve ?? {};
+    config.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js'],
+    };
+    return config;
+  },
 };
 
 export default nextConfig;
