@@ -86,16 +86,22 @@ export function DecisionButtons({
   disabled,
   size = 'md',
   layout = 'row',
+  variant = 'default',
 }: {
   onDecide: (s: DecisionStatus) => void;
   disabled?: boolean;
   size?: 'md' | 'lg';
   layout?: 'row' | 'column';
+  variant?: 'default' | 'iconOnly';
 }) {
   const padY = size === 'lg' ? 'py-3' : 'py-2.5';
-  const containerCls =
-    layout === 'column' ? 'flex flex-col gap-2' : 'grid grid-cols-3 gap-2';
-  const btnCls = layout === 'column' ? 'w-full' : '';
+  const iconOnly = variant === 'iconOnly';
+  const containerCls = iconOnly
+    ? 'grid grid-cols-3 gap-2'
+    : layout === 'column'
+      ? 'flex flex-col gap-2'
+      : 'grid grid-cols-3 gap-2';
+  const btnCls = !iconOnly && layout === 'column' ? 'w-full' : '';
 
   const items: {
     status: DecisionStatus;
@@ -130,6 +136,25 @@ export function DecisionButtons({
       kbdTone: 'bad',
     },
   ];
+
+  if (iconOnly) {
+    return (
+      <div className={containerCls}>
+        {items.map((item) => (
+          <button
+            key={item.status}
+            type="button"
+            disabled={disabled}
+            onClick={() => onDecide(item.status)}
+            aria-label={item.label}
+            className={`flex items-center justify-center ${item.buttonClass}`}
+          >
+            {item.icon}
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={containerCls}>

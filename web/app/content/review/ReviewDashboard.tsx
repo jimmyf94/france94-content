@@ -230,6 +230,21 @@ export function ReviewDashboard() {
     if (target && target.id !== selectedId) setSelectedId(target.id);
   }, [visible, selectedId]);
 
+  const swipeNext = useCallback(() => {
+    if (visible.length === 0) return;
+    const i = selectedId ? visible.findIndex((c) => c.id === selectedId) : -1;
+    const target = visible[(Math.max(i, 0) + 1) % visible.length];
+    if (target && target.id !== selectedId) setSelectedId(target.id);
+  }, [visible, selectedId]);
+
+  const swipePrev = useCallback(() => {
+    if (visible.length === 0) return;
+    const i = selectedId ? visible.findIndex((c) => c.id === selectedId) : -1;
+    const base = i < 0 ? 0 : i;
+    const target = visible[(base - 1 + visible.length) % visible.length];
+    if (target && target.id !== selectedId) setSelectedId(target.id);
+  }, [visible, selectedId]);
+
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -378,6 +393,8 @@ export function ReviewDashboard() {
           videoRef={videoRef}
           loading={loading}
           onRefresh={() => void fetchCandidates()}
+          onSwipeNext={swipeNext}
+          onSwipePrev={swipePrev}
         />
       </div>
 

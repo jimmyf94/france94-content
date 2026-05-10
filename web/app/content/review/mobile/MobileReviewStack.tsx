@@ -1,12 +1,17 @@
 'use client';
 
+import { useEffect, useMemo, useRef, useState } from 'react';
+
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DecisionButtons } from '../decision/DecisionButtons';
 import { RewriteChips } from '../decision/RewriteChips';
 import { FilterForm, type ReviewFilters } from '../FilterDrawer';
 import { MainMediaPreview } from '../MainMediaPreview';
 import { PostTypeBadge } from '../PostTypeBadge';
-import { CandidateTabs } from '../tabs/CandidateTabs';
+import { ScoreStrip } from '../ScoreStrip';
+import { CaptionTab } from '../tabs/CaptionTab';
+import { DebugTab } from '../tabs/DebugTab';
+import { StructureTab } from '../tabs/StructureTab';
 import type { DecisionStatus, DetailTab, PostCandidate, StatusTab } from '../types';
 import { STATUS_TAB_LABEL } from '../types';
 import { useCandidateMedia } from '../useCandidateMedia';
@@ -37,6 +42,14 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
+function MetaChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[11px] text-[var(--muted)]">
+      {children}
+    </span>
+  );
+}
+
 export function MobileReviewStack({
   candidates,
   counts,
@@ -58,6 +71,8 @@ export function MobileReviewStack({
   videoRef,
   loading,
   onRefresh,
+  onSwipeNext,
+  onSwipePrev,
 }: {
   candidates: PostCandidate[];
   counts: Record<StatusTab, number>;
@@ -79,7 +94,18 @@ export function MobileReviewStack({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   loading: boolean;
   onRefresh: () => void;
+  onSwipeNext: () => void;
+  onSwipePrev: () => void;
 }) {
+  // Caption isn't a tab on mobile (it's inline). Coerce when the sheet renders.
+  const sheetTab: 'structure' | 'debug' =
+    activeDetailTab === 'debug' ? 'debug' : 'structure';
+
+  const openDetails = () => {
+    if (activeDetailTab === 'caption') onChangeDetailTab('structure');
+    onChangeSheet('details');
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm">
@@ -117,7 +143,9 @@ export function MobileReviewStack({
           onSaveNotes={onSaveNotes}
           onDecide={onDecide}
           videoRef={videoRef}
-          onOpenDetails={() => onChangeSheet('details')}
+          onOpenDetails={openDetails}
+          onSwipeNext={onSwipeNext}
+          onSwipePrev={onSwipePrev}
         />
       )}
 
@@ -146,11 +174,28 @@ export function MobileReviewStack({
         title="Details"
       >
         {selected && (
-          <CandidateTabs
-            candidate={selected}
-            active={activeDetailTab}
-            onChange={onChangeDetailTab}
-          />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <nav className="flex shrink-0 border-b border-[var(--border)] text-xs">
+              {(['structure', 'debug'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => onChangeDetailTab(t)}
+                  className={`flex-1 border-b-2 px-3 py-2 transition-colors ${
+                    sheetTab === t
+                      ? 'border-[var(--accent)] text-[var(--text)]'
+                      : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
+                  }`}
+                >
+                  {t === 'structure' ? 'Structure' : 'Debug'}
+                </button>
+              ))}
+            </nav>
+            <div className="scrollbar-thin flex-1 overflow-auto p-4">
+              {sheetTab === 'structure' && <StructureTab candidate={selected} />}
+              {sheetTab === 'debug' && <DebugTab candidate={selected} />}
+            </div>
+          </div>
         )}
       </BottomSheet>
 
@@ -188,6 +233,8 @@ function MobileCandidateView({
   onDecide,
   videoRef,
   onOpenDetails,
+  onSwipeNext,
+  onSwipePrev,
 }: {
   candidate: PostCandidate;
   notes: string;
@@ -197,14 +244,107 @@ function MobileCandidateView({
   onDecide: (s: DecisionStatus) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onOpenDetails: () => void;
+  onSwipeNext: () => void;
+  onSwipePrev: () => void;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
   const { files, loading, error } = useCandidateMedia(candidate.id);
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
 
+  const carouselRef = useRef<HTMLDivElement | null>(null);
+  const [assetIndex, setAssetIndex] = useState(0);
+
+  // Reset carousel position when candidate changes.
+  useEffect(() => {
+    setAssetIndex(0);
+    const el = carouselRef.current;
+    if (el) el.scrollLeft = 0;
+  }, [candidate.id]);
+
+  const onCarouselScroll = () => {
+    const el = carouselRef.current;
+    if (!el || el.clientWidth === 0) return;
+    const idx = Math.round(el.scrollLeft / el.clientWidth);
+    setAssetIndex((prev) => (prev === idx ? prev : idx));
+  };
+
+  // Page-level swipe between candidates (ignored when touch starts on assets).
+  const touchStart = useRef<
+    { x: number; y: number; insideAssets: boolean } | null
+  >(null);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    if (!t) return;
+    const target = e.target as HTMLElement | null;
+    const insideAssets = !!target?.closest('[data-mobile-assets]');
+    touchStart.current = { x: t.clientX, y: t.clientY, insideAssets };
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    if (!start) return;
+    if (start.insideAssets) return;
+    const tag = document.activeElement?.tagName ?? '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) < 60) return;
+    if (Math.abs(dy) > Math.abs(dx)) return;
+    if (dx < 0) onSwipeNext();
+    else onSwipePrev();
+  };
+
+  const assetCountLabel = useMemo(() => {
+    if (loading || error) return null;
+    if (files.length === 0) return null;
+    return `${files.length} asset${files.length > 1 ? 's' : ''}`;
+  }, [files.length, loading, error]);
+
   return (
-    <div className="scrollbar-thin flex flex-1 flex-col overflow-y-auto">
-      <div className="flex w-full flex-col gap-2 bg-[var(--bg)] p-2">
+    <div
+      className="scrollbar-thin flex flex-1 flex-col overflow-y-auto"
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+    >
+      <section className="space-y-2 px-4 pb-3 pt-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <PostTypeBadge postType={candidate.post_type} />
+          <StatusPill status={candidate.status} />
+          {assetCountLabel && <MetaChip>{assetCountLabel}</MetaChip>}
+          {candidate.candidate_date && <MetaChip>{candidate.candidate_date}</MetaChip>}
+        </div>
+        <h2 className="text-lg font-semibold leading-snug text-[var(--text)]">
+          {candidate.title || '(untitled)'}
+        </h2>
+        {candidate.hook && (
+          <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
+        )}
+        <ScoreStrip candidate={candidate} compact />
+        {candidate.concept_summary && (
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--text)]">
+            {candidate.concept_summary}
+          </p>
+        )}
+        {candidate.rationale && (
+          <details className="group">
+            <summary className="flex cursor-pointer items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)] hover:text-[var(--text)]">
+              <span className="inline-block transition-transform group-open:rotate-90">
+                ›
+              </span>
+              Rationale
+            </summary>
+            <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[var(--muted)]">
+              {candidate.rationale}
+            </p>
+          </details>
+        )}
+      </section>
+
+      <section data-mobile-assets className="relative bg-[var(--bg)]">
         {loading && (
           <p className="py-12 text-center text-sm text-[var(--muted)]">Loading media…</p>
         )}
@@ -216,70 +356,45 @@ function MobileCandidateView({
             No media in review folder.
           </p>
         )}
-        {!loading &&
-          !error &&
-          files.map((f, i) => (
+        {!loading && !error && files.length > 0 && (
+          <>
             <div
-              key={f.id}
-              className="flex aspect-square w-full items-center justify-center"
+              ref={carouselRef}
+              onScroll={onCarouselScroll}
+              className="scrollbar-thin flex w-full snap-x-mandatory overflow-x-auto"
             >
-              <MainMediaPreview
-                file={f}
-                candidateId={candidate.id}
-                videoRef={i === firstVideoIdx ? videoRef : undefined}
-                compact
-              />
+              {files.map((f, i) => (
+                <div
+                  key={f.id}
+                  className="snap-start-always flex aspect-square w-full shrink-0 items-center justify-center"
+                >
+                  <MainMediaPreview
+                    file={f}
+                    candidateId={candidate.id}
+                    videoRef={i === firstVideoIdx ? videoRef : undefined}
+                    compact
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-      </div>
-
-      <div className="space-y-2 p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <PostTypeBadge postType={candidate.post_type} />
-          <StatusPill status={candidate.status} />
-          {candidate.priority_score != null && (
-            <span className="text-xs tabular-nums text-[var(--muted)]">
-              P {Number(candidate.priority_score).toFixed(1)}
-            </span>
-          )}
-        </div>
-        <h2 className="text-lg font-semibold leading-snug">
-          {candidate.title || '(untitled)'}
-        </h2>
-        {candidate.hook && (
-          <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
-        )}
-        {(candidate.concept_summary || candidate.rationale) && (
-          <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-3">
-            {candidate.concept_summary && (
-              <div>
-                <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                  Concept
-                </p>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {candidate.concept_summary}
-                </p>
+            {files.length > 1 && (
+              <div className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white">
+                {assetIndex + 1} / {files.length}
               </div>
             )}
-            {candidate.rationale && (
-              <details className="group">
-                <summary className="flex cursor-pointer items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                  <span className="inline-block transition-transform group-open:rotate-90">
-                    ›
-                  </span>
-                  Rationale
-                </summary>
-                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[var(--muted)]">
-                  {candidate.rationale}
-                </p>
-              </details>
-            )}
-          </div>
+          </>
         )}
-      </div>
+      </section>
 
-      <div className="sticky bottom-0 z-10 space-y-2 border-t border-[var(--border)] bg-[var(--surface)] p-3">
-        <DecisionButtons onDecide={onDecide} size="lg" />
+      <section className="space-y-3 px-4 py-4">
+        <CaptionTab candidate={candidate} />
+      </section>
+
+      <section className="px-3 pb-2">
+        <DecisionButtons onDecide={onDecide} size="lg" variant="iconOnly" />
+      </section>
+
+      <section className="px-3 pb-2">
         <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -309,14 +424,17 @@ function MobileCandidateView({
             </button>
           </div>
         </div>
+      </section>
+
+      <section className="px-3 pb-6">
         <button
           type="button"
           onClick={onOpenDetails}
           className="w-full rounded-md border border-[var(--border)] py-2 text-sm text-[var(--muted)]"
         >
-          See details (caption, structure, debug)
+          See details
         </button>
-      </div>
+      </section>
     </div>
   );
 }
