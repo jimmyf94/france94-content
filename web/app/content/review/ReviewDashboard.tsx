@@ -1,42 +1,91 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 import { readJsonResponse } from '@/lib/read-json-response';
 
-import { CandidateCard } from './CandidateCard';
-import type { PostCandidate } from './types';
+import { CandidateDecisionPanel } from './CandidateDecisionPanel';
+import { CandidateOverviewHeader } from './CandidateOverviewHeader';
+import { CandidateQueueSidebar } from './CandidateQueueSidebar';
+import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
+import { MediaPreviewStage } from './MediaPreviewStage';
+import { MobileReviewStack } from './mobile/MobileReviewStack';
+import { ReviewHeader } from './ReviewHeader';
+import { ShortcutsBanner } from './ShortcutsBanner';
+import { Toast, type ToastState } from './Toast';
+import type {
+  DecisionStatus,
+  DetailTab,
+  PostCandidate,
+  StatusTab,
+} from './types';
+import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
-const DEFAULT_STATUSES = 'needs_review,needs_rewrite';
+const ALL_STATUSES = 'needs_review,needs_rewrite,approved,rejected';
+
+const VALID_TABS: ReadonlySet<StatusTab> = new Set([
+  'needs_review',
+  'needs_rewrite',
+  'approved',
+  'rejected',
+]);
+
+function pickInitialTab(raw: string | null): StatusTab {
+  if (raw && VALID_TABS.has(raw as StatusTab)) return raw as StatusTab;
+  return 'needs_review';
+}
+
+function shortTitle(t: string | null): string {
+  if (!t) return '';
+  return t.length > 40 ? `"${t.slice(0, 40)}…"` : `"${t}"`;
+}
+
+function decisionToastMessage(status: DecisionStatus, title: string | null): string {
+  const t = shortTitle(title);
+  if (status === 'approved') return `Approved ${t}`.trim();
+  if (status === 'rejected') return `Rejected ${t}`.trim();
+  return `Needs rewrite ${t}`.trim();
+}
 
 export function ReviewDashboard() {
-  const router = useRouter();
-  const urlSp = useSearchParams();
+  const sp = useSearchParams();
 
-  const [statusFilter, setStatusFilter] = useState(urlSp.get('status') || DEFAULT_STATUSES);
-  const [postType, setPostType] = useState(urlSp.get('post_type') || '');
-  const [candidateDate, setCandidateDate] = useState(urlSp.get('candidate_date') || '');
-  const [priorityMin, setPriorityMin] = useState(urlSp.get('priority_min') || '');
-  const [priorityMax, setPriorityMax] = useState(urlSp.get('priority_max') || '');
-  const [search, setSearch] = useState(urlSp.get('q') || '');
+  const [filters, setFilters] = useState<ReviewFilters>(() => ({
+    postType: sp.get('post_type') ?? '',
+    date: sp.get('candidate_date') ?? '',
+    priorityMin: sp.get('priority_min') ?? '',
+    priorityMax: sp.get('priority_max') ?? '',
+    search: sp.get('q') ?? '',
+  }));
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  const [activeStatusTab, setActiveStatusTab] = useState<StatusTab>(() =>
+    pickInitialTab(sp.get('status')),
+  );
+  const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>('caption');
 
   const [candidates, setCandidates] = useState<PostCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const queryString = useMemo(() => {
     const q = new URLSearchParams();
-    q.set('status', statusFilter.trim() || DEFAULT_STATUSES);
-    if (postType.trim()) q.set('post_type', postType.trim());
-    if (candidateDate.trim()) q.set('candidate_date', candidateDate.trim());
-    if (priorityMin.trim()) q.set('priority_min', priorityMin.trim());
-    if (priorityMax.trim()) q.set('priority_max', priorityMax.trim());
-    if (search.trim()) q.set('q', search.trim());
+    q.set('status', ALL_STATUSES);
+    if (filters.postType.trim()) q.set('post_type', filters.postType.trim());
+    if (filters.date.trim()) q.set('candidate_date', filters.date.trim());
+    if (filters.priorityMin.trim()) q.set('priority_min', filters.priorityMin.trim());
+    if (filters.priorityMax.trim()) q.set('priority_max', filters.priorityMax.trim());
+    if (filters.search.trim()) q.set('q', filters.search.trim());
     return q.toString();
-  }, [statusFilter, postType, candidateDate, priorityMin, priorityMax, search]);
+  }, [filters]);
 
   const fetchCandidates = useCallback(async () => {
     setLoading(true);
@@ -51,14 +100,8 @@ export function ReviewDashboard() {
       setCandidates(list);
       setDraftNotes((prev) => {
         const next = { ...prev };
-        for (const c of list) {
-          if (next[c.id] === undefined) next[c.id] = c.reviewer_notes ?? '';
-        }
+        for (const c of list) if (next[c.id] === undefined) next[c.id] = c.reviewer_notes ?? '';
         return next;
-      });
-      setSelectedId((sid) => {
-        if (sid && list.some((c) => c.id === sid)) return sid;
-        return list[0]?.id ?? null;
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -72,166 +115,275 @@ export function ReviewDashboard() {
     void fetchCandidates();
   }, [fetchCandidates]);
 
-  function applyFiltersToUrl() {
-    router.replace(`/content/review?${queryString}`);
-  }
-
-  const statusCounts = useMemo(() => {
-    const m: Record<string, number> = {};
+  const visibleByTab = useMemo(() => {
+    const m: Record<StatusTab, PostCandidate[]> = {
+      needs_review: [],
+      needs_rewrite: [],
+      approved: [],
+      rejected: [],
+    };
     for (const c of candidates) {
-      m[c.status] = (m[c.status] ?? 0) + 1;
+      if (VALID_TABS.has(c.status as StatusTab)) {
+        m[c.status as StatusTab].push(c);
+      }
     }
     return m;
   }, [candidates]);
 
+  const counts = useMemo<Record<StatusTab, number>>(
+    () => ({
+      needs_review: visibleByTab.needs_review.length,
+      needs_rewrite: visibleByTab.needs_rewrite.length,
+      approved: visibleByTab.approved.length,
+      rejected: visibleByTab.rejected.length,
+    }),
+    [visibleByTab],
+  );
+
+  const visible = visibleByTab[activeStatusTab];
+
+  // Keep selection valid for the current tab.
+  useEffect(() => {
+    if (visible.length === 0) {
+      if (selectedId !== null) setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !visible.some((c) => c.id === selectedId)) {
+      setSelectedId(visible[0].id);
+    }
+  }, [visible, selectedId]);
+
+  const selected = useMemo(
+    () => candidates.find((c) => c.id === selectedId) ?? null,
+    [candidates, selectedId],
+  );
+
+  const decide = useCallback(
+    async (status: DecisionStatus) => {
+      if (!selected) return;
+      const decidedId = selected.id;
+      const decidedTitle = selected.title;
+      const previousStatus = selected.status;
+      const previousNotes = selected.reviewer_notes;
+      const notes = draftNotes[decidedId] ?? '';
+
+      const oldIndex = visible.findIndex((c) => c.id === decidedId);
+      const remaining = visible.filter((c) => c.id !== decidedId);
+      const next =
+        remaining[oldIndex] ?? remaining[oldIndex - 1] ?? remaining[0] ?? null;
+
+      const now = new Date().toISOString();
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.id === decidedId
+            ? { ...c, status, reviewer_notes: notes, updated_at: now }
+            : c,
+        ),
+      );
+      setSelectedId(next?.id ?? null);
+      setToast({ kind: 'good', msg: decisionToastMessage(status, decidedTitle) });
+
+      try {
+        const res = await fetch(`/api/content-review/candidates/${decidedId}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status, reviewer_notes: notes }),
+        });
+        const json = await readJsonResponse<{ error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        void fetchCandidates();
+      } catch (e) {
+        setCandidates((prev) =>
+          prev.map((c) =>
+            c.id === decidedId
+              ? { ...c, status: previousStatus, reviewer_notes: previousNotes }
+              : c,
+          ),
+        );
+        setToast({
+          kind: 'bad',
+          msg: e instanceof Error ? `Save failed: ${e.message}` : 'Save failed',
+        });
+      }
+    },
+    [selected, draftNotes, visible, fetchCandidates],
+  );
+
+  const goNext = useCallback(() => {
+    if (visible.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    const i = selectedId ? visible.findIndex((c) => c.id === selectedId) : -1;
+    const target = i < 0 ? visible[0] : visible[Math.min(i + 1, visible.length - 1)];
+    if (target && target.id !== selectedId) setSelectedId(target.id);
+  }, [visible, selectedId]);
+
+  const goPrev = useCallback(() => {
+    if (visible.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    const i = selectedId ? visible.findIndex((c) => c.id === selectedId) : -1;
+    const target = i <= 0 ? visible[0] : visible[i - 1];
+    if (target && target.id !== selectedId) setSelectedId(target.id);
+  }, [visible, selectedId]);
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      v.play().catch(() => {
+        /* ignore */
+      });
+    } else {
+      v.pause();
+    }
+  }, []);
+
+  useKeyboardShortcuts({
+    enabled: !!selected,
+    onApprove: useCallback(() => void decide('approved'), [decide]),
+    onRewrite: useCallback(() => void decide('needs_rewrite'), [decide]),
+    onReject: useCallback(() => void decide('rejected'), [decide]),
+    onNext: goNext,
+    onPrev: goPrev,
+    onTogglePlay: togglePlay,
+  });
+
+  const setNotes = useCallback(
+    (value: string) => {
+      if (!selected) return;
+      setDraftNotes((prev) => ({ ...prev, [selected.id]: value }));
+    },
+    [selected],
+  );
+
+  const saveNotes = useCallback(async () => {
+    if (!selected) return;
+    const id = selected.id;
+    const previousNotes = selected.reviewer_notes;
+    const notes = draftNotes[id] ?? '';
+
+    const now = new Date().toISOString();
+    setCandidates((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, reviewer_notes: notes, updated_at: now } : c,
+      ),
+    );
+
+    try {
+      const res = await fetch(`/api/content-review/candidates/${id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewer_notes: notes }),
+      });
+      const json = await readJsonResponse<{ error?: string }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      setToast({ kind: 'good', msg: 'Notes saved' });
+    } catch (e) {
+      setCandidates((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, reviewer_notes: previousNotes } : c,
+        ),
+      );
+      setToast({
+        kind: 'bad',
+        msg: e instanceof Error ? `Save failed: ${e.message}` : 'Save failed',
+      });
+    }
+  }, [selected, draftNotes]);
+
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-[var(--text)]">Post candidate review</h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            Fast visual review — no publishing. Shortcuts on selected card: A approve · R reject · W
-            needs rewrite (not when typing in notes).
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2 text-sm">
-          <a href="/content/review/unlock" className="text-[var(--muted)] underline">
-            Unlock / session
-          </a>
-          <button
-            type="button"
-            className="text-[var(--muted)] underline"
-            onClick={async () => {
-              await fetch('/api/content-review/logout', {
-                method: 'POST',
-                credentials: 'include',
-              });
-              window.location.href = '/content/review/unlock';
-            }}
-          >
-            Log out
-          </button>
-        </div>
-      </header>
+    <div className="flex h-[100dvh] flex-col bg-[var(--bg)] text-[var(--text)]">
+      <ReviewHeader
+        pendingCount={counts.needs_review}
+        filters={filters}
+        onChangeFilters={setFilters}
+        filtersOpen={filtersOpen}
+        onToggleFilters={() => setFiltersOpen((o) => !o)}
+        onRefresh={() => void fetchCandidates()}
+      />
 
-      <section className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Status (comma-separated)
-            <input
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              placeholder={DEFAULT_STATUSES}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Post type
-            <input
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={postType}
-              onChange={(e) => setPostType(e.target.value)}
-              placeholder="reel, carousel…"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Candidate date
-            <input
-              type="date"
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={candidateDate}
-              onChange={(e) => setCandidateDate(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Priority min
-            <input
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={priorityMin}
-              onChange={(e) => setPriorityMin(e.target.value)}
-              inputMode="decimal"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Priority max
-            <input
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={priorityMax}
-              onChange={(e) => setPriorityMax(e.target.value)}
-              inputMode="decimal"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-            Search title / hook / captions
-            <input
-              className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="keywords"
-            />
-          </label>
+      {filtersOpen && (
+        <div className="hidden lg:block">
+          <FilterDrawer filters={filters} onChange={setFilters} />
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => applyFiltersToUrl()}
-            className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white"
-          >
-            Apply filters
-          </button>
-          <button
-            type="button"
-            onClick={() => void fetchCandidates()}
-            className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)]"
-          >
-            Refresh
-          </button>
-          {!loading && candidates.length > 0 && (
-            <span className="text-xs text-[var(--muted)]">
-              Loaded {candidates.length}
-              {Object.keys(statusCounts).length > 0 &&
-                ` · ${Object.entries(statusCounts)
-                  .map(([k, v]) => `${k}: ${v}`)
-                  .join(', ')}`}
-            </span>
-          )}
-        </div>
-      </section>
-
-      {loading && (
-        <p className="text-sm text-[var(--muted)]">Loading candidates…</p>
       )}
 
       {error && (
-        <div className="mb-4 rounded border border-[var(--bad)] bg-[var(--surface)] p-3 text-sm text-[var(--bad)]">
+        <div className="shrink-0 border-b border-[var(--bad)] bg-[var(--surface)] px-4 py-2 text-sm text-[var(--bad)] lg:px-6">
           {error}
+          <button
+            type="button"
+            onClick={() => void fetchCandidates()}
+            className="ml-3 underline"
+          >
+            Retry
+          </button>
         </div>
       )}
 
-      {!loading && !error && candidates.length === 0 && (
-        <p className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-8 text-center text-[var(--muted)]">
-          No candidates need review.
-        </p>
-      )}
-
-      <div className="space-y-8">
-        {candidates.map((c) => (
-          <CandidateCard
-            key={c.id}
-            candidate={c}
-            selected={c.id === selectedId}
-            onSelect={() => setSelectedId(c.id)}
-            notes={draftNotes[c.id] ?? ''}
-            onNotesChange={(v) =>
-              setDraftNotes((prev) => ({
-                ...prev,
-                [c.id]: v,
-              }))
-            }
-            onUpdated={() => void fetchCandidates()}
+      {/* Desktop cockpit */}
+      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)_minmax(300px,380px)]">
+        <div className="flex min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)]">
+          <CandidateQueueSidebar
+            candidates={candidates}
+            counts={counts}
+            activeTab={activeStatusTab}
+            onChangeTab={setActiveStatusTab}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            loading={loading}
           />
-        ))}
+        </div>
+        <div className="flex min-h-0 flex-col">
+          <CandidateOverviewHeader candidate={selected} />
+          <MediaPreviewStage candidate={selected} videoRef={videoRef} />
+        </div>
+        <CandidateDecisionPanel
+          candidate={selected}
+          notes={selected ? (draftNotes[selected.id] ?? '') : ''}
+          savedNotes={selected?.reviewer_notes ?? ''}
+          onChangeNotes={setNotes}
+          onSaveNotes={saveNotes}
+          onDecide={decide}
+          activeTab={activeDetailTab}
+          onChangeTab={setActiveDetailTab}
+        />
       </div>
+
+      {/* Mobile stack */}
+      <div className="flex min-h-0 flex-1 flex-col lg:hidden">
+        <MobileReviewStack
+          candidates={candidates}
+          counts={counts}
+          activeStatusTab={activeStatusTab}
+          onChangeStatusTab={setActiveStatusTab}
+          selected={selected}
+          onSelect={setSelectedId}
+          notes={selected ? (draftNotes[selected.id] ?? '') : ''}
+          savedNotes={selected?.reviewer_notes ?? ''}
+          onChangeNotes={setNotes}
+          onSaveNotes={saveNotes}
+          onDecide={decide}
+          activeDetailTab={activeDetailTab}
+          onChangeDetailTab={setActiveDetailTab}
+          mobileSheet={mobileSheet}
+          onChangeSheet={setMobileSheet}
+          filters={filters}
+          onChangeFilters={setFilters}
+          videoRef={videoRef}
+          loading={loading}
+          onRefresh={() => void fetchCandidates()}
+        />
+      </div>
+
+      <ShortcutsBanner />
+
+      <Toast toast={toast} onDone={() => setToast(null)} />
     </div>
   );
 }

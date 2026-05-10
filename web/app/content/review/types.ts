@@ -40,3 +40,16 @@ export type ReviewDriveFile = {
   createdTime: string | null;
   modifiedTime: string | null;
 };
+
+export type StatusTab = 'needs_review' | 'needs_rewrite' | 'approved' | 'rejected';
+
+export type DetailTab = 'caption' | 'structure' | 'debug';
+
+export type DecisionStatus = 'approved' | 'rejected' | 'needs_rewrite';
+
+export const STATUS_TAB_LABEL: Record<StatusTab, string> = {
+  needs_review: 'Needs review',
+  needs_rewrite: 'Needs rewrite',
+  approved: 'Approved',
+  rejected: 'Rejected',
+};

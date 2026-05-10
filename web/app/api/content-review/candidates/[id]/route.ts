@@ -4,10 +4,15 @@ import { z } from 'zod';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
-const patchSchema = z.object({
-  status: z.enum(['approved', 'rejected', 'needs_rewrite']),
-  reviewer_notes: z.string().optional().nullable(),
-});
+const patchSchema = z
+  .object({
+    status: z.enum(['approved', 'rejected', 'needs_rewrite']).optional(),
+    reviewer_notes: z.string().optional().nullable(),
+  })
+  .refine(
+    (v) => v.status !== undefined || v.reviewer_notes !== undefined,
+    { message: 'Provide status or reviewer_notes' },
+  );
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = assertReviewAuthorized(req);
@@ -34,16 +39,22 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   const now = new Date().toISOString();
   const reviewedBy = process.env.REVIEWED_BY?.trim() || null;
 
+  const update: Record<string, unknown> = {
+    updated_at: now,
+  };
+  if (reviewer_notes !== undefined) {
+    update.reviewer_notes = reviewer_notes ?? null;
+  }
+  if (status !== undefined) {
+    update.status = status;
+    update.reviewed_at = now;
+    update.reviewed_by = reviewedBy;
+  }
+
   const supabase = getSupabaseServiceRole();
   const { data, error } = await supabase
     .from('post_candidates')
-    .update({
-      status,
-      reviewer_notes: reviewer_notes ?? null,
-      updated_at: now,
-      reviewed_at: now,
-      reviewed_by: reviewedBy,
-    })
+    .update(update)
     .eq('id', id)
     .select()
     .maybeSingle();

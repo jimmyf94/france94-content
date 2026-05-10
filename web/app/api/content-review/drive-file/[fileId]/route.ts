@@ -84,6 +84,17 @@ export async function GET(
 
     const status = typeof gRes.status === 'number' ? gRes.status : 200;
     const nodeStream = gRes.data as Readable;
+
+    const onAbort = () => {
+      if (!nodeStream.destroyed) nodeStream.destroy();
+    };
+    if (req.signal.aborted) {
+      onAbort();
+      return NextResponse.json({ error: 'Request aborted' }, { status: 499 });
+    }
+    req.signal.addEventListener('abort', onAbort, { once: true });
+    nodeStream.once('close', () => req.signal.removeEventListener('abort', onAbort));
+
     const webStream = Readable.toWeb(nodeStream);
 
     return new NextResponse(webStream as unknown as BodyInit, { status, headers });
