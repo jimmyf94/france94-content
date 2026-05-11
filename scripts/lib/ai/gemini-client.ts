@@ -12,6 +12,13 @@ import {
 
 export type { Fr94ModelRouteKey, ResolvedModelRoute } from './model-routes.js';
 export { FR94_MODEL_ROUTE_KEYS, getModelRoute, ThinkingLevel } from './model-routes.js';
+export {
+  getResolvedModelRoute,
+  mergeResolvedRouteForPreview,
+  thinkingLevelFromDb,
+  thinkingLevelToDb,
+} from './model-route-resolve.js';
+export type { LlmRouteSettingsRow } from './model-route-resolve.js';
 
 /** After 2 retries on 503, used when primary is Gemini 3.1 Pro (preview) and still overloaded. */
 export const GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL = 'gemini-2.5-pro';

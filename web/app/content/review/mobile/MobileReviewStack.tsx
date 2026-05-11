@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
@@ -160,16 +161,24 @@ export function MobileReviewStack({
         >
           Queue · {counts.needs_review}
         </button>
-        <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+        <span className="text-center text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
           FR94 Review
         </span>
-        <button
-          type="button"
-          onClick={() => onChangeSheet('filters')}
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[var(--muted)]"
-        >
-          Filters
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Link
+            href="/content/review/settings"
+            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
+          >
+            LLM
+          </Link>
+          <button
+            type="button"
+            onClick={() => onChangeSheet('filters')}
+            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[var(--muted)]"
+          >
+            Filters
+          </button>
+        </div>
       </div>
 
       {!selected && (

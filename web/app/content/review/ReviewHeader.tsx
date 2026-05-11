@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { useMemo } from 'react';
 
@@ -107,6 +108,12 @@ export function ReviewHeader({
       >
         Refresh
       </button>
+      <Link
+        href="/content/review/settings"
+        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+      >
+        LLM settings
+      </Link>
       <button
         type="button"
         onClick={async () => {

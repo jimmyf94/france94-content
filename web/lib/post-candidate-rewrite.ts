@@ -2,7 +2,7 @@ import { GoogleGenAI, createPartFromText } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
-import { callGeminiWithLogging, getModelRoute, responseToJson } from '@fr94/ai/gemini-client.js';
+import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from '@fr94/ai/gemini-client.js';
 import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
 import {
   buildCandidateRegenerationDynamicPayload,
@@ -288,7 +288,7 @@ export async function regenerateCandidateWithLLM(params: {
   if (!apiKey) {
     throw new Error('Missing required environment variable: GEMINI_API_KEY');
   }
-  const route = getModelRoute('candidate_regeneration');
+  const route = await getResolvedModelRoute(params.supabase ?? null, 'candidate_regeneration');
 
   const stable = loadCandidateRegenerationStablePrompt();
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';

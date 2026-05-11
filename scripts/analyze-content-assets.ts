@@ -22,7 +22,7 @@ import {
   probeVideo,
   withTempDir,
 } from './lib/video-preprocess.js';
-import { callGeminiWithLogging, getModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
 import {
   cacheKeyAssetAnalysisImage,
   cacheKeyAssetAnalysisVideoSampledAudio,
@@ -311,7 +311,7 @@ export async function analyzeWithGemini(
   llmModel: string;
 }> {
   const { buffer, mimeType, displayName } = params;
-  const route = getModelRoute('asset_analysis_image');
+  const route = await getResolvedModelRoute(params.llm?.supabase ?? null, 'asset_analysis_image');
   const stable = params.prompt ?? loadDirectMediaAnalysisStablePrompt();
   const dynamic = buildDirectMediaAnalysisDynamicText();
   const fullText = dynamic.trim() ? `${stable}\n\n${dynamic}` : stable;
@@ -405,7 +405,7 @@ async function transcribeAudioWithGemini(
   },
 ): Promise<string> {
   const { wavBuffer, displayName } = params;
-  const route = getModelRoute('asset_analysis_video_sampled');
+  const route = await getResolvedModelRoute(params.llm?.supabase ?? null, 'asset_analysis_video_sampled');
   const blob = new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' });
 
   const uploaded = await ai.files.upload({
@@ -484,7 +484,7 @@ export async function analyzeVideoSampled(
   },
 ): Promise<VideoSampledResult> {
   const { buffer, mimeType, displayName, fileExtension, config } = params;
-  const route = getModelRoute('asset_analysis_video_sampled');
+  const route = await getResolvedModelRoute(params.llm?.supabase ?? null, 'asset_analysis_video_sampled');
 
   return await withTempDir('fr94-video-', async (dir) => {
     const inputPath = path.join(dir, `input.${fileExtension}`);

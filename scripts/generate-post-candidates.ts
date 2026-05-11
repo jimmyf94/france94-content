@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
-import { callGeminiWithLogging, getModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
 import {
   buildPostPlannerPromptParts,
@@ -358,7 +358,7 @@ export async function generatePostCandidatesWithLLM(params: {
     batchDays: params.batchDays,
   });
   const promptVersion = getFr94PromptVersion();
-  const route = getModelRoute('candidate_generation');
+  const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
 
   const { response, modelUsed } = await callGeminiWithLogging({
     ai,
