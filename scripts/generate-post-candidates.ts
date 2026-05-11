@@ -12,8 +12,8 @@ import { z } from 'zod';
 import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
-import { callGeminiWithLogging, responseToJson } from './lib/ai/gemini-client.js';
-import { cacheKeyPostPlanner, getFr94PromptVersion } from './lib/ai/prompt-version.js';
+import { callGeminiWithLogging, getModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
 import {
   buildPostPlannerPromptParts,
   loadPostPlannerStablePrompt,
@@ -340,7 +340,6 @@ export async function generatePostCandidatesWithLLM(params: {
   summaries: AssetSummaryForLLM[];
   dailyTarget: number;
   batchDays: number;
-  model: string;
   supabase: SupabaseClient | null;
 }): Promise<{
   candidates: ValidatedPostCandidate[];
@@ -359,23 +358,20 @@ export async function generatePostCandidatesWithLLM(params: {
     batchDays: params.batchDays,
   });
   const promptVersion = getFr94PromptVersion();
+  const route = getModelRoute('candidate_generation');
 
-  const response = await callGeminiWithLogging({
+  const { response, modelUsed } = await callGeminiWithLogging({
     ai,
     supabase: params.supabase,
-    operation: 'post_candidate_generation',
-    model: params.model,
+    route,
     promptVersion,
-    cacheKey: cacheKeyPostPlanner(promptVersion),
+    cacheKey: cacheKeyCandidateGeneration(promptVersion),
     stableSystemInstruction,
     getContentsImplicit: () => [
       createPartFromText(stableSystemInstruction),
       createPartFromText(dynamicText),
     ],
     getContentsExplicit: () => [createPartFromText(dynamicText)],
-    config: {
-      responseMimeType: 'application/json',
-    },
   });
 
   const text = response.text?.trim();
@@ -443,7 +439,7 @@ export async function generatePostCandidatesWithLLM(params: {
   return {
     candidates: out,
     llmRaw,
-    model: params.model,
+    model: modelUsed,
     rawReturnedCount: validated.data.candidates.length,
     validationErrors: errors,
   };
@@ -597,7 +593,6 @@ export async function generatePostCandidates(): Promise<void> {
   const maxAssets = envInt('POST_CANDIDATE_MAX_ASSETS', 80);
   const dailyTarget = envInt('POST_CANDIDATE_DAILY_TARGET', 5);
   const reviewParentId = requireEnv('GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID');
-  const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
   const supabase = getSupabaseClient();
   const drive = await getDriveClient();
@@ -618,7 +613,6 @@ export async function generatePostCandidates(): Promise<void> {
       summaries,
       dailyTarget,
       batchDays,
-      model,
       supabase,
     });
   } catch (e) {

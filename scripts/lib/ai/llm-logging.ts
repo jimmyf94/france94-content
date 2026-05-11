@@ -1,12 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import type { Fr94LlmOperation } from './types.js';
+import type { Fr94ModelRouteKey } from './model-routes.js';
 import { llmLoggingDisabled } from './prompt-version.js';
 
 export type LlmCallLogRow = {
   provider?: string;
   model: string | null;
-  operation: Fr94LlmOperation;
+  operation: Fr94ModelRouteKey;
   prompt_version: string | null;
   cache_key: string | null;
   cache_resource_name: string | null;

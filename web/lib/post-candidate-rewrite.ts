@@ -2,7 +2,7 @@ import { GoogleGenAI, createPartFromText } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
-import { callGeminiWithLogging, responseToJson } from '@fr94/ai/gemini-client.js';
+import { callGeminiWithLogging, getModelRoute, responseToJson } from '@fr94/ai/gemini-client.js';
 import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
 import {
   buildCandidateRegenerationDynamicPayload,
@@ -288,7 +288,7 @@ export async function regenerateCandidateWithLLM(params: {
   if (!apiKey) {
     throw new Error('Missing required environment variable: GEMINI_API_KEY');
   }
-  const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
+  const route = getModelRoute('candidate_regeneration');
 
   const stable = loadCandidateRegenerationStablePrompt();
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';
@@ -300,11 +300,10 @@ export async function regenerateCandidateWithLLM(params: {
 
   const ai = new GoogleGenAI({ apiKey });
   const promptVersion = getFr94PromptVersion();
-  const response = await callGeminiWithLogging({
+  const { response, modelUsed } = await callGeminiWithLogging({
     ai,
     supabase: params.supabase ?? null,
-    operation: 'candidate_regeneration',
-    model,
+    route,
     promptVersion,
     cacheKey: cacheKeyCandidateRegeneration(promptVersion),
     stableSystemInstruction: stable,
@@ -313,9 +312,6 @@ export async function regenerateCandidateWithLLM(params: {
       createPartFromText(dynamicText),
     ],
     getContentsExplicit: () => [createPartFromText(dynamicText)],
-    config: {
-      responseMimeType: 'application/json',
-    },
   });
 
   const text = response.text?.trim();
@@ -341,7 +337,7 @@ export async function regenerateCandidateWithLLM(params: {
   return {
     rewritten: stripped.rewritten,
     llmRaw,
-    model,
+    model: modelUsed,
     strippedAssetRefs: stripped.strippedCount,
   };
 }

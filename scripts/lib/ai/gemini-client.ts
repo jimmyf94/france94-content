@@ -1,20 +1,118 @@
-import type { ContentListUnion, GenerateContentConfig, GenerateContentResponse } from '@google/genai';
-import type { GoogleGenAI } from '@google/genai';
+import type { ContentListUnion, GenerateContentConfig, GenerateContentResponse, GoogleGenAI } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getOrCreatePromptCache } from './gemini-cache.js';
 import { logLlmCall } from './llm-logging.js';
+import type { ResolvedModelRoute } from './model-routes.js';
 import {
   explicitCachingEnabled,
   geminiCacheDebug,
   geminiCacheTtlSeconds,
 } from './prompt-version.js';
-import type { Fr94LlmOperation } from './types.js';
 
-export type { Fr94LlmOperation } from './types.js';
+export type { Fr94ModelRouteKey, ResolvedModelRoute } from './model-routes.js';
+export { FR94_MODEL_ROUTE_KEYS, getModelRoute, ThinkingLevel } from './model-routes.js';
+
+/** After 2 retries on 503, used when primary is Gemini 3.1 Pro (preview) and still overloaded. */
+export const GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL = 'gemini-2.5-pro';
+
+/** Initial attempt plus 2 retries on high-demand 503. */
+const HIGH_DEMAND_503_MAX_ATTEMPTS = 3;
 
 function debug(msg: string): void {
   if (geminiCacheDebug()) console.warn(`[gemini_cache] ${msg}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function errorText(e: unknown): string {
+  if (e instanceof Error) return `${e.name} ${e.message}`;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
+/**
+ * Detects 503 / UNAVAILABLE from Gemini (e.g. "high demand" on gemini-3.1-pro-preview).
+ */
+export function isGeminiHighDemand503(e: unknown): boolean {
+  const t = errorText(e).toLowerCase();
+  if (t.includes('"code":503') || t.includes('"code": 503')) return true;
+  if (/\b503\b/.test(t) && (t.includes('unavailable') || t.includes('high demand'))) return true;
+  const any = e as { status?: number; code?: number; error?: { code?: number } };
+  const code = any?.status ?? any?.code ?? any?.error?.code;
+  return code === 503;
+}
+
+function isGemini31ProFamilyModel(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  if (m.includes('flash')) return false;
+  return m.includes('3.1') && m.includes('pro');
+}
+
+function stripCachedContent(c: GenerateContentConfig): GenerateContentConfig {
+  const { cachedContent: _omit, ...rest } = c;
+  return rest;
+}
+
+async function modelsGenerateWith503RetriesAndProFallback(
+  ai: GoogleGenAI,
+  params: {
+    primaryModel: string;
+    contents: ContentListUnion;
+    config: GenerateContentConfig;
+  },
+): Promise<{ response: GenerateContentResponse; modelUsed: string; usedHighDemandFallback: boolean }> {
+  const { primaryModel, contents, config } = params;
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < HIGH_DEMAND_503_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: primaryModel,
+        contents,
+        config,
+      });
+      return { response, modelUsed: primaryModel, usedHighDemandFallback: false };
+    } catch (e) {
+      lastErr = e;
+      if (!isGeminiHighDemand503(e)) throw e;
+      if (attempt < HIGH_DEMAND_503_MAX_ATTEMPTS - 1) {
+        debug(
+          `generateContent 503/high-demand retry ${attempt + 1}/${HIGH_DEMAND_503_MAX_ATTEMPTS - 1} model=${primaryModel}`,
+        );
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (
+    isGemini31ProFamilyModel(primaryModel) &&
+    lastErr != null &&
+    isGeminiHighDemand503(lastErr)
+  ) {
+    debug(
+      `generateContent using fallback model=${GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL} after 503 on ${primaryModel}`,
+    );
+    const response = await ai.models.generateContent({
+      model: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
+      contents,
+      config: stripCachedContent(config),
+    });
+    return {
+      response,
+      modelUsed: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
+      usedHighDemandFallback: true,
+    };
+  }
+
+  throw lastErr;
 }
 
 export function responseToJson(raw: unknown): Record<string, unknown> {
@@ -52,31 +150,72 @@ function usageSnapshot(usage: GenerateContentResponse['usageMetadata']) {
   };
 }
 
+function routeMetadataSnapshot(route: ResolvedModelRoute): Record<string, unknown> {
+  return {
+    temperature: route.temperature,
+    maxOutputTokens: route.maxOutputTokens,
+    useCache: route.useCache,
+    requireJson: route.requireJson,
+    thinkingLevel: route.thinkingLevel,
+  };
+}
+
+function buildGenerateConfig(
+  route: ResolvedModelRoute,
+  jsonResponse: boolean,
+): Omit<GenerateContentConfig, 'cachedContent'> {
+  const config: Omit<GenerateContentConfig, 'cachedContent'> = {
+    temperature: route.temperature,
+    maxOutputTokens: route.maxOutputTokens,
+  };
+  if (jsonResponse) {
+    config.responseMimeType = 'application/json';
+  }
+  if (route.thinkingLevel != null) {
+    config.thinkingConfig = { thinkingLevel: route.thinkingLevel };
+  }
+  return config;
+}
+
 export async function callGeminiWithLogging(params: {
   ai: GoogleGenAI;
   supabase: SupabaseClient | null;
-  operation: Fr94LlmOperation;
+  route: ResolvedModelRoute;
   subOperation?: string;
-  model: string;
   promptVersion: string;
   cacheKey: string;
   stableSystemInstruction: string;
   getContentsImplicit: () => ContentListUnion;
   getContentsExplicit: () => ContentListUnion;
-  config: Omit<GenerateContentConfig, 'cachedContent'>;
-  /** When true, never uses Gemini explicit context caches (e.g. prompt path override). */
+  /**
+   * When unset, uses route.requireJson for responseMimeType.
+   * Set false for plain-text outputs (e.g. audio transcription) while keeping the same model route.
+   */
+  jsonResponse?: boolean;
+  /** When true, never uses Gemini explicit context caches (e.g. custom prompt path). */
   disableExplicitCaching?: boolean;
-}): Promise<GenerateContentResponse> {
+}): Promise<{ response: GenerateContentResponse; modelUsed: string }> {
+  const { route } = params;
+  const model = route.model;
+  const jsonResponse = params.jsonResponse ?? route.requireJson;
+  const config = buildGenerateConfig(route, jsonResponse);
+
+  const disableExplicitCaching =
+    params.disableExplicitCaching === true || !route.useCache;
+
   const ttlSeconds = geminiCacheTtlSeconds();
   const useExplicit =
     explicitCachingEnabled() &&
     params.supabase != null &&
-    params.disableExplicitCaching !== true;
+    disableExplicitCaching !== true;
   const started = Date.now();
 
   const baseMeta: Record<string, unknown> = {
     sub_operation: params.subOperation ?? null,
     cache_key: params.cacheKey,
+    model_route_operation: route.operation,
+    model_overridden_from_env: route.modelOverriddenFromEnv,
+    route: routeMetadataSnapshot(route),
   };
 
   if (useExplicit && params.stableSystemInstruction.trim()) {
@@ -84,7 +223,7 @@ export async function callGeminiWithLogging(params: {
       ai: params.ai,
       supabase: params.supabase!,
       cacheKey: params.cacheKey,
-      model: params.model,
+      model,
       stableSystemInstruction: params.stableSystemInstruction,
       ttlSeconds,
       promptVersion: params.promptVersion,
@@ -92,19 +231,21 @@ export async function callGeminiWithLogging(params: {
 
     if (cacheResult) {
       try {
-        const response = await params.ai.models.generateContent({
-          model: params.model,
-          contents: params.getContentsExplicit(),
-          config: {
-            ...params.config,
-            cachedContent: cacheResult.resourceName,
-          },
-        });
+        const explicitConfig: GenerateContentConfig = {
+          ...config,
+          cachedContent: cacheResult.resourceName,
+        };
+        const { response, modelUsed, usedHighDemandFallback } =
+          await modelsGenerateWith503RetriesAndProFallback(params.ai, {
+            primaryModel: model,
+            contents: params.getContentsExplicit(),
+            config: explicitConfig,
+          });
         const latency = Date.now() - started;
         const u = usageSnapshot(response.usageMetadata);
         await logLlmCall(params.supabase, {
-          operation: params.operation,
-          model: params.model,
+          operation: route.operation,
+          model: modelUsed,
           prompt_version: params.promptVersion,
           cache_key: params.cacheKey,
           cache_resource_name: cacheResult.resourceName,
@@ -120,16 +261,18 @@ export async function callGeminiWithLogging(params: {
             ...baseMeta,
             cache_path: cacheResult.path,
             usageMetadata: response.usageMetadata,
+            routed_primary_model: model,
+            high_demand_503_fallback: usedHighDemandFallback,
           },
         });
-        return response;
+        return { response, modelUsed };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         debug(`explicit generateContent failed; fallback implicit (${msg})`);
         const latency = Date.now() - started;
         await logLlmCall(params.supabase, {
-          operation: params.operation,
-          model: params.model,
+          operation: route.operation,
+          model,
           prompt_version: params.promptVersion,
           cache_key: params.cacheKey,
           cache_resource_name: cacheResult.resourceName,
@@ -148,16 +291,18 @@ export async function callGeminiWithLogging(params: {
   }
 
   try {
-    const response = await params.ai.models.generateContent({
-      model: params.model,
-      contents: params.getContentsImplicit(),
-      config: params.config,
-    });
+    const implicitConfig: GenerateContentConfig = config;
+    const { response, modelUsed, usedHighDemandFallback } =
+      await modelsGenerateWith503RetriesAndProFallback(params.ai, {
+        primaryModel: model,
+        contents: params.getContentsImplicit(),
+        config: implicitConfig,
+      });
     const latency = Date.now() - started;
     const u = usageSnapshot(response.usageMetadata);
     await logLlmCall(params.supabase, {
-      operation: params.operation,
-      model: params.model,
+      operation: route.operation,
+      model: modelUsed,
       prompt_version: params.promptVersion,
       cache_key: params.cacheKey,
       cache_resource_name: null,
@@ -173,15 +318,17 @@ export async function callGeminiWithLogging(params: {
         ...baseMeta,
         cache_path: useExplicit ? 'implicit_fallback' : 'implicit',
         usageMetadata: response.usageMetadata,
+        routed_primary_model: model,
+        high_demand_503_fallback: usedHighDemandFallback,
       },
     });
-    return response;
+    return { response, modelUsed };
   } catch (e) {
     const latency = Date.now() - started;
     const msg = e instanceof Error ? e.message : String(e);
     await logLlmCall(params.supabase, {
-      operation: params.operation,
-      model: params.model,
+      operation: route.operation,
+      model,
       prompt_version: params.promptVersion,
       cache_key: params.cacheKey,
       cache_resource_name: null,

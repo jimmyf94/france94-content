@@ -22,11 +22,11 @@ import {
   probeVideo,
   withTempDir,
 } from './lib/video-preprocess.js';
-import { callGeminiWithLogging, responseToJson } from './lib/ai/gemini-client.js';
+import { callGeminiWithLogging, getModelRoute, responseToJson } from './lib/ai/gemini-client.js';
 import {
-  cacheKeyAssetAnalysis,
-  cacheKeyAssetAnalysisVideoSampled,
-  cacheKeyAudioTranscription,
+  cacheKeyAssetAnalysisImage,
+  cacheKeyAssetAnalysisVideoSampledAudio,
+  cacheKeyAssetAnalysisVideoSampledFrames,
   getFr94PromptVersion,
 } from './lib/ai/prompt-version.js';
 import {
@@ -300,13 +300,18 @@ export async function analyzeWithGemini(
     buffer: Buffer;
     mimeType: string;
     displayName: string;
-    model: string;
     prompt?: string;
     llm?: { supabase: SupabaseClient | null; promptVersion: string };
     subOperation?: string;
   },
-): Promise<{ analysis: GeminiAnalysis; rawResponse: Record<string, unknown>; uploadedFileName: string }> {
-  const { buffer, mimeType, displayName, model } = params;
+): Promise<{
+  analysis: GeminiAnalysis;
+  rawResponse: Record<string, unknown>;
+  uploadedFileName: string;
+  llmModel: string;
+}> {
+  const { buffer, mimeType, displayName } = params;
+  const route = getModelRoute('asset_analysis_image');
   const stable = params.prompt ?? loadDirectMediaAnalysisStablePrompt();
   const dynamic = buildDirectMediaAnalysisDynamicText();
   const fullText = dynamic.trim() ? `${stable}\n\n${dynamic}` : stable;
@@ -336,14 +341,13 @@ export async function analyzeWithGemini(
     }
 
     const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
-    const response = await callGeminiWithLogging({
+    const { response, modelUsed } = await callGeminiWithLogging({
       ai,
       supabase: params.llm?.supabase ?? null,
-      operation: 'asset_analysis',
+      route,
       subOperation: params.subOperation ?? 'direct_media',
-      model,
       promptVersion,
-      cacheKey: cacheKeyAssetAnalysis(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisImage(promptVersion),
       stableSystemInstruction: stable,
       disableExplicitCaching: params.prompt !== undefined,
       getContentsImplicit: () => [
@@ -354,9 +358,6 @@ export async function analyzeWithGemini(
         dynamic.trim()
           ? [createPartFromUri(uri, mimeType), createPartFromText(dynamic)]
           : [createPartFromUri(uri, mimeType)],
-      config: {
-        responseMimeType: 'application/json',
-      },
     });
 
     const text = response.text?.trim();
@@ -367,7 +368,7 @@ export async function analyzeWithGemini(
     const analysis = parseGeminiJson(text);
     const rawResponse = responseToJson(response);
 
-    return { analysis, rawResponse, uploadedFileName: uploadedName };
+    return { analysis, rawResponse, uploadedFileName: uploadedName, llmModel: modelUsed };
   } finally {
     await safeDeleteGeminiFile(ai, uploadedName);
   }
@@ -400,11 +401,11 @@ async function transcribeAudioWithGemini(
   params: {
     wavBuffer: Buffer;
     displayName: string;
-    model: string;
     llm?: { supabase: SupabaseClient | null; promptVersion: string };
   },
 ): Promise<string> {
-  const { wavBuffer, displayName, model } = params;
+  const { wavBuffer, displayName } = params;
+  const route = getModelRoute('asset_analysis_video_sampled');
   const blob = new Blob([new Uint8Array(wavBuffer)], { type: 'audio/wav' });
 
   const uploaded = await ai.files.upload({
@@ -427,21 +428,20 @@ async function transcribeAudioWithGemini(
 
     const stable = loadAudioTranscriptionStablePrompt();
     const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
-    const response = await callGeminiWithLogging({
+    const { response } = await callGeminiWithLogging({
       ai,
       supabase: params.llm?.supabase ?? null,
-      operation: 'asset_analysis',
+      route,
       subOperation: 'audio_transcription',
-      model,
       promptVersion,
-      cacheKey: cacheKeyAudioTranscription(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisVideoSampledAudio(promptVersion),
       stableSystemInstruction: stable,
+      jsonResponse: false,
       getContentsImplicit: () => [
         createPartFromUri(uri, 'audio/wav'),
         createPartFromText(stable),
       ],
       getContentsExplicit: () => [createPartFromUri(uri, 'audio/wav')],
-      config: {},
     });
 
     return response.text?.trim() ?? '';
@@ -465,6 +465,7 @@ export type VideoSampledResult = {
   captureTime: string | null;
   cameraMake: string | null;
   cameraModel: string | null;
+  llmModel: string;
 };
 
 export async function analyzeVideoSampled(
@@ -474,7 +475,6 @@ export async function analyzeVideoSampled(
     mimeType: string;
     displayName: string;
     fileExtension: string;
-    model: string;
     config: {
       mode: 'sampled' | 'frames_only';
       frameMaxWidth: number;
@@ -483,7 +483,8 @@ export async function analyzeVideoSampled(
     llm?: { supabase: SupabaseClient | null; promptVersion: string };
   },
 ): Promise<VideoSampledResult> {
-  const { buffer, mimeType, displayName, fileExtension, model, config } = params;
+  const { buffer, mimeType, displayName, fileExtension, config } = params;
+  const route = getModelRoute('asset_analysis_video_sampled');
 
   return await withTempDir('fr94-video-', async (dir) => {
     const inputPath = path.join(dir, `input.${fileExtension}`);
@@ -517,7 +518,6 @@ export async function analyzeVideoSampled(
         audioTranscript = await transcribeAudioWithGemini(ai, {
           wavBuffer: wavBuf,
           displayName: `${displayName}.audio`,
-          model,
           llm: params.llm,
         });
         if (audioTranscript.trim()) {
@@ -567,20 +567,16 @@ export async function analyzeVideoSampled(
     };
 
     const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
-    const response = await callGeminiWithLogging({
+    const { response, modelUsed } = await callGeminiWithLogging({
       ai,
       supabase: params.llm?.supabase ?? null,
-      operation: 'asset_analysis',
+      route,
       subOperation: 'video_sampled',
-      model,
       promptVersion,
-      cacheKey: cacheKeyAssetAnalysisVideoSampled(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisVideoSampledFrames(promptVersion),
       stableSystemInstruction: stableVideo,
       getContentsImplicit: () => buildPromptParts(stableVideo, false),
       getContentsExplicit: () => buildPromptParts('', true),
-      config: {
-        responseMimeType: 'application/json',
-      },
     });
 
     const text = response.text?.trim();
@@ -606,6 +602,7 @@ export async function analyzeVideoSampled(
       captureTime: probe.captureTime,
       cameraMake: probe.cameraMake,
       cameraModel: probe.cameraModel,
+      llmModel: modelUsed,
     };
   });
 }
@@ -743,7 +740,6 @@ function resolveVideoAnalysisMode(): 'sampled' | 'frames_only' {
 export async function analyzePendingAssets(): Promise<void> {
   const batchSize = envInt('CONTENT_ANALYSIS_BATCH_SIZE', 5);
   const maxBytes = maxAnalysisFileBytes();
-  const model = process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash';
 
   const videoMode = resolveVideoAnalysisMode();
   const videoFrameMaxWidth = envInt('VIDEO_FRAME_MAX_WIDTH', 768);
@@ -834,6 +830,7 @@ export async function analyzePendingAssets(): Promise<void> {
       let videoCameraMake: string | null = null;
       let videoCameraModel: string | null = null;
       let videoGeoSource: string | null = null;
+      let llmModelForDb = '';
 
       if (category === 'video') {
         console.log(`[video]\tsampled preprocess + analyze\t${asset.id}`);
@@ -842,7 +839,6 @@ export async function analyzePendingAssets(): Promise<void> {
           mimeType,
           displayName: label,
           fileExtension: fileExtensionFromAsset(asset),
-          model,
           config: {
             mode: videoMode,
             frameMaxWidth: videoFrameMaxWidth,
@@ -871,13 +867,13 @@ export async function analyzePendingAssets(): Promise<void> {
             `[geo]\tlat=${result.latitude}\tlon=${result.longitude}\tsrc=ffprobe_quicktime\t${asset.id}`,
           );
         }
+        llmModelForDb = result.llmModel;
       } else {
         console.log(`[gemini]\tupload + analyze\t${asset.id}`);
         const result = await analyzeWithGemini(ai, {
           buffer,
           mimeType,
           displayName: label,
-          model,
           llm: llmCtx,
           subOperation:
             category === 'audio' ? 'audio_direct' : category === 'image' ? 'image_direct' : 'other_media',
@@ -885,6 +881,7 @@ export async function analyzePendingAssets(): Promise<void> {
         analysis = result.analysis;
         rawResponse = result.rawResponse;
         strategy = category === 'audio' ? 'audio_only' : 'image_direct';
+        llmModelForDb = result.llmModel;
       }
 
       console.log(`[gemini]\tsuccess strategy=${strategy}\t${asset.id}`);
@@ -902,7 +899,7 @@ export async function analyzePendingAssets(): Promise<void> {
         asset_id: asset.id,
         drive_file_id: asset.drive_file_id,
         drive_web_view_link: driveWebViewLink,
-        llm_model: model,
+        llm_model: llmModelForDb,
         analysis_strategy: strategy,
         duration_seconds: durationSeconds,
         video_width: videoWidth,
@@ -915,7 +912,7 @@ export async function analyzePendingAssets(): Promise<void> {
 
       await updateAssetAnalysis(supabase, asset.id, {
         analysis,
-        llm_model: model,
+        llm_model: llmModelForDb,
         llm_raw: rawResponse,
         drive_web_view_link: driveWebViewLink,
         analysis_strategy: strategy,

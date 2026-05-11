@@ -54,8 +54,8 @@ export async function GET(req: NextRequest) {
     }
 
     q = q
-      .order('priority_score', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .order('priority_score', { ascending: false, nullsFirst: false });
 
     const { data, error } = await q;
 

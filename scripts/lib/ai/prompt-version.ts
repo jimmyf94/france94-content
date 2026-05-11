@@ -5,20 +5,20 @@ export function getFr94PromptVersion(): string {
   return v && v.length > 0 ? v : DEFAULT_PROMPT_VERSION;
 }
 
-export function cacheKeyAssetAnalysis(version = getFr94PromptVersion()): string {
-  return `fr94_asset_analysis_${version}`;
+export function cacheKeyAssetAnalysisImage(version = getFr94PromptVersion()): string {
+  return `fr94_asset_analysis_image_${version}`;
 }
 
-export function cacheKeyAssetAnalysisVideoSampled(version = getFr94PromptVersion()): string {
-  return `fr94_asset_analysis_video_sampled_${version}`;
+export function cacheKeyAssetAnalysisVideoSampledFrames(version = getFr94PromptVersion()): string {
+  return `fr94_asset_analysis_video_sampled_frames_${version}`;
 }
 
-export function cacheKeyAudioTranscription(version = getFr94PromptVersion()): string {
-  return `fr94_audio_transcription_${version}`;
+export function cacheKeyAssetAnalysisVideoSampledAudio(version = getFr94PromptVersion()): string {
+  return `fr94_asset_analysis_video_sampled_audio_${version}`;
 }
 
-export function cacheKeyPostPlanner(version = getFr94PromptVersion()): string {
-  return `fr94_post_planner_${version}`;
+export function cacheKeyCandidateGeneration(version = getFr94PromptVersion()): string {
+  return `fr94_candidate_generation_${version}`;
 }
 
 export function cacheKeyCandidateRegeneration(version = getFr94PromptVersion()): string {
