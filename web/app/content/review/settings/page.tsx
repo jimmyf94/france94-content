@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { readJsonResponse } from '@/lib/read-json-response';
 
@@ -58,9 +58,26 @@ type UsagePoint = {
   failedCount: number;
 };
 
+type ModelDailyRow = {
+  day: string;
+  model: string;
+  outputTokens: number;
+  callCount: number;
+};
+
+type OperationDailyRow = {
+  day: string;
+  operation: string;
+  callCount: number;
+  outputTokens: number;
+};
+
 type UsageResponse = {
   days: number;
   series: UsagePoint[];
+  byModelDaily: ModelDailyRow[];
+  byOperationDaily: OperationDailyRow[];
+  breakdownRpcErrors?: { model: string | null; operation: string | null };
   totals: {
     outputTokens: number;
     inputTokens: number;
@@ -78,7 +95,7 @@ const ROUTE_META: Record<Fr94RouteOperation, { title: string; hint: string }> = 
   },
   asset_analysis_video_sampled: {
     title: 'Asset analysis (video sampled + audio)',
-    hint: 'Frame-based video analysis; audio transcription in the same worker also uses this route.',
+    hint: 'Frame-based video analysis; audio transcription shares the sampled route.',
   },
   asset_analysis_video_full: {
     title: 'Asset analysis (video full)',
@@ -110,6 +127,23 @@ const ROUTE_META: Record<Fr94RouteOperation, { title: string; hint: string }> = 
   },
 };
 
+/** Friendly labels for `operation` in llm_call_logs charts */
+const OPERATION_CHART_LABELS: Record<string, string> = {
+  asset_analysis_image: 'Image analysis',
+  asset_analysis_video_sampled: 'Video / audio analysis',
+  asset_analysis_video_full: 'Video full analysis',
+  candidate_generation: 'Post generation',
+  candidate_regeneration: 'Candidate rewrite',
+  caption_rewrite_basic: 'Caption rewrite (basic)',
+  caption_rewrite_premium: 'Caption rewrite (premium)',
+  ranking: 'Ranking',
+  final_editorial_pass: 'Editorial pass',
+};
+
+function operationChartLabel(op: string): string {
+  return OPERATION_CHART_LABELS[op] ?? op.replace(/_/g, ' ');
+}
+
 const THINKING_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: 'Off' },
   { value: 'THINKING_LEVEL_UNSPECIFIED', label: 'Unspecified' },
@@ -119,93 +153,445 @@ const THINKING_OPTIONS: { value: string; label: string }[] = [
   { value: 'HIGH', label: 'High' },
 ];
 
-function padOutputSeries(days: number, series: UsagePoint[]): { day: string; outputTokens: number }[] {
+type StablePromptKey =
+  | 'direct_media_analysis'
+  | 'video_sampled_analysis'
+  | 'audio_transcription'
+  | 'post_planner'
+  | 'candidate_regeneration';
+
+type PromptRow = {
+  key: StablePromptKey;
+  effectiveBody: string;
+  source: 'db' | 'file';
+  fileDefaultBody: string;
+  dbBody: string | null;
+  updated_at: string | null;
+  fileBasename: string;
+};
+
+type PromptsResponse = {
+  prompts: PromptRow[];
+};
+
+const PROMPT_META: Record<StablePromptKey, { title: string; hint: string }> = {
+  direct_media_analysis: {
+    title: 'Direct media analysis',
+    hint: 'Image (and custom) analysis worker. Custom params.prompt overrides DB + file.',
+  },
+  video_sampled_analysis: {
+    title: 'Video sampled analysis',
+    hint: 'Frame + metadata block in analyze worker.',
+  },
+  audio_transcription: {
+    title: 'Audio transcription',
+    hint: 'WAV transcription before video frame analysis.',
+  },
+  post_planner: {
+    title: 'Post planner',
+    hint: 'generate-post-candidates batch planner.',
+  },
+  candidate_regeneration: {
+    title: 'Candidate regeneration',
+    hint: 'Review dashboard rewrite / regenerate.',
+  },
+};
+
+const STABLE_PROMPT_ORDER: StablePromptKey[] = [
+  'direct_media_analysis',
+  'video_sampled_analysis',
+  'audio_transcription',
+  'post_planner',
+  'candidate_regeneration',
+];
+
+const ROUTE_ORDER: Fr94RouteOperation[] = [
+  'asset_analysis_image',
+  'asset_analysis_video_sampled',
+  'asset_analysis_video_full',
+  'candidate_generation',
+  'candidate_regeneration',
+  'caption_rewrite_basic',
+  'caption_rewrite_premium',
+  'ranking',
+  'final_editorial_pass',
+];
+
+function estimateTokensApprox(charCount: number): number {
+  if (charCount <= 0) return 0;
+  return Math.ceil(charCount / 4);
+}
+
+function padDays<T extends { day: string }>(
+  days: number,
+  rows: T[],
+  empty: Omit<T, 'day'> & { day?: never },
+): T[] {
   const end = new Date();
-  const map = new Map(series.map((p) => [p.day, p.outputTokens]));
-  const out: { day: string; outputTokens: number }[] = [];
+  const map = new Map(rows.map((r) => [r.day, r]));
+  const out: T[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - i));
     const key = d.toISOString().slice(0, 10);
-    out.push({ day: key, outputTokens: map.get(key) ?? 0 });
+    const existing = map.get(key);
+    if (existing) out.push(existing);
+    else out.push({ ...empty, day: key } as T);
   }
   return out;
 }
 
-function TokenSparkline({
-  days,
-  series,
+function UsageSection({
+  usageDays,
+  onChangeDays,
+  usage,
+  usageErr,
 }: {
-  days: number;
-  series: UsagePoint[];
+  usageDays: number;
+  onChangeDays: (n: number) => void;
+  usage: UsageResponse | null;
+  usageErr: string | null;
 }) {
-  const padded = useMemo(() => padOutputSeries(days, series), [days, series]);
-  const w = 520;
-  const h = 140;
-  const padL = 44;
-  const padR = 12;
-  const padT = 14;
-  const padB = 28;
-  const innerW = w - padL - padR;
-  const innerH = h - padT - padB;
-  const maxY = Math.max(1, ...padded.map((p) => p.outputTokens));
-  const pts = padded.map((p, i) => {
-    const x = padL + (padded.length <= 1 ? innerW / 2 : (i / (padded.length - 1)) * innerW);
-    const y = padT + innerH - (p.outputTokens / maxY) * innerH;
-    return { x, y, day: p.day, v: p.outputTokens };
-  });
-  const pathD =
-    pts.length === 0
-      ? ''
-      : pts.length === 1
-        ? `M ${pts[0].x} ${pts[0].y}`
-        : pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const [hover, setHover] = useState<{
+    day: string;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
 
-  const firstDay = padded[0]?.day ?? '';
-  const lastDay = padded[padded.length - 1]?.day ?? '';
+  const outputByDay = useMemo(() => {
+    const m = new Map<string, Record<string, number>>();
+    for (const r of usage?.byModelDaily ?? []) {
+      if (!m.has(r.day)) m.set(r.day, {});
+      const row = m.get(r.day)!;
+      row[r.model] = (row[r.model] ?? 0) + r.outputTokens;
+    }
+    return m;
+  }, [usage?.byModelDaily]);
+
+  const opsByDay = useMemo(() => {
+    const m = new Map<string, { callsByOp: Record<string, number>; tokensByOp: Record<string, number> }>();
+    for (const r of usage?.byOperationDaily ?? []) {
+      if (!m.has(r.day)) m.set(r.day, { callsByOp: {}, tokensByOp: {} });
+      const row = m.get(r.day)!;
+      row.callsByOp[r.operation] = (row.callsByOp[r.operation] ?? 0) + r.callCount;
+      row.tokensByOp[r.operation] = (row.tokensByOp[r.operation] ?? 0) + r.outputTokens;
+    }
+    return m;
+  }, [usage?.byOperationDaily]);
+
+  const paddedOutput = useMemo(() => {
+    if (!usage) return [];
+    return padDays(usage.days, usage.series, {
+      outputTokens: 0,
+      inputTokens: 0,
+      totalTokens: 0,
+      callCount: 0,
+      failedCount: 0,
+    });
+  }, [usage]);
+
+  const chart = useMemo(() => {
+    const w = 640;
+    const h = 200;
+    const padL = 48;
+    const padR = 16;
+    const padT = 16;
+    const padB = 36;
+    const innerW = w - padL - padR;
+    const innerH = h - padT - padB;
+    const n = paddedOutput.length;
+    const maxTok = Math.max(1, ...paddedOutput.map((p) => p.outputTokens));
+    const maxCalls = Math.max(1, ...paddedOutput.map((p) => p.callCount));
+
+    const xAt = (i: number) =>
+      n <= 1 ? padL + innerW / 2 : padL + (i / (n - 1)) * innerW;
+
+    const tokPts = paddedOutput.map((p, i) => ({
+      ...p,
+      x: xAt(i),
+      y: padT + innerH - (p.outputTokens / maxTok) * innerH,
+    }));
+
+    const callPts = paddedOutput.map((p, i) => ({
+      ...p,
+      x: xAt(i),
+      y: padT + innerH - (p.callCount / maxCalls) * innerH * 0.85 + innerH * 0.08,
+    }));
+
+    const pathTok =
+      tokPts.length === 0
+        ? ''
+        : tokPts.length === 1
+          ? `M ${tokPts[0].x} ${tokPts[0].y}`
+          : tokPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+    const pathCalls =
+      callPts.length === 0
+        ? ''
+        : callPts.length === 1
+          ? `M ${callPts[0].x} ${callPts[0].y}`
+          : callPts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+
+    return {
+      w,
+      h,
+      padL,
+      padT,
+      innerW,
+      innerH,
+      tokPts,
+      callPts,
+      pathTok,
+      pathCalls,
+      maxTok,
+      maxCalls,
+      firstDay: paddedOutput[0]?.day ?? '',
+      lastDay: paddedOutput[paddedOutput.length - 1]?.day ?? '',
+    };
+  }, [paddedOutput]);
+
+  const nearestTokPoint = useMemo(() => {
+    if (!chart.tokPts.length) return null;
+    return (svgX: number) => {
+      let best = 0;
+      let bestD = Infinity;
+      chart.tokPts.forEach((p, i) => {
+        const d = Math.abs(p.x - svgX);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      });
+      return chart.tokPts[best];
+    };
+  }, [chart.tokPts]);
+
+  const handleSvgMouse = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const viewX =
+      ((e.clientX - rect.left) / rect.width) * chart.w;
+    if (!nearestTokPoint) {
+      setHover(null);
+      return;
+    }
+    const pt = nearestTokPoint(viewX);
+    setHover({
+      day: pt.day,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    });
+  };
+
+  const tooltipContent = useMemo(() => {
+    if (!hover || !usage) return null;
+    const day = hover.day;
+    const row = paddedOutput.find((p) => p.day === day);
+    const models = outputByDay.get(day) ?? {};
+    const ops = opsByDay.get(day);
+    const modelEntries = Object.entries(models).sort((a, b) => b[1] - a[1]);
+    const callEntries = ops
+      ? Object.entries(ops.callsByOp).sort((a, b) => b[1] - a[1])
+      : [];
+
+    return {
+      day,
+      totalOut: row?.outputTokens ?? 0,
+      totalCalls: row?.callCount ?? 0,
+      failed: row?.failedCount ?? 0,
+      modelEntries,
+      callEntries,
+    };
+  }, [hover, usage, paddedOutput, outputByDay, opsByDay]);
+
+  const breakdownNote =
+    usage?.breakdownRpcErrors?.model || usage?.breakdownRpcErrors?.operation
+      ? 'Apply latest Supabase migration for per-model / per-route breakdown (fr94_llm_usage_by_*_daily).'
+      : null;
 
   return (
-    <svg
-      width="100%"
-      viewBox={`0 0 ${w} ${h}`}
-      className="max-h-40 text-[var(--muted)]"
-      role="img"
-      aria-label="Output tokens per day"
-    >
-      <rect x="0" y="0" width={w} height={h} fill="transparent" />
-      <line
-        x1={padL}
-        y1={padT + innerH}
-        x2={padL + innerW}
-        y2={padT + innerH}
-        stroke="var(--border)"
-        strokeWidth="1"
-      />
-      <text x={padL} y={h - 6} fontSize="10" fill="currentColor">
-        {firstDay}
-      </text>
-      <text x={padL + innerW} y={h - 6} fontSize="10" fill="currentColor" textAnchor="end">
-        {lastDay}
-      </text>
-      <text x={4} y={padT + 10} fontSize="10" fill="currentColor">
-        {maxY}
-      </text>
-      <text x={4} y={padT + innerH} fontSize="10" fill="currentColor">
-        0
-      </text>
-      {pathD ? (
-        <path
-          d={pathD}
-          fill="none"
-          stroke="var(--accent)"
-          strokeWidth="2"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      ) : null}
-      {pts.map((p) => (
-        <circle key={p.day} cx={p.x} cy={p.y} r="3" fill="var(--accent)" opacity={0.85} />
-      ))}
-    </svg>
+    <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">Usage (UTC days)</h2>
+          <p className="mt-1 text-xs text-[var(--muted)]">
+            Output tokens and LLM calls from <code className="text-[11px]">llm_call_logs</code>. Hover a point
+            for totals, output tokens per model, and actions per route.
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+          Range
+          <select
+            value={usageDays}
+            onChange={(e) => onChangeDays(Number(e.target.value))}
+            className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-[var(--text)]"
+          >
+            <option value={7}>7 days</option>
+            <option value={14}>14 days</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+          </select>
+        </label>
+      </div>
+      {usageErr && <p className="mt-2 text-xs text-[var(--warn)]">{usageErr}</p>}
+      {breakdownNote && (
+        <p className="mt-2 text-xs text-[var(--warn)]">{breakdownNote}</p>
+      )}
+      {usage && (
+        <>
+          <div className="mt-3 flex flex-wrap gap-4 text-xs text-[var(--muted)]">
+            <span>
+              <span className="text-[var(--text)]">{usage.totals.outputTokens.toLocaleString()}</span> output
+              tokens
+            </span>
+            <span>
+              <span className="text-[var(--text)]">{usage.totals.callCount.toLocaleString()}</span> LLM calls
+            </span>
+            {usage.totals.failedCount > 0 ? (
+              <span className="text-[var(--warn)]">{usage.totals.failedCount} failed</span>
+            ) : null}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-4 text-[10px] text-[var(--muted)]">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-4 rounded-sm bg-[var(--accent)]" /> Output tokens
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2 w-4 rounded-sm bg-[var(--good)]" /> LLM calls
+            </span>
+          </div>
+          <div className="relative mt-2 overflow-x-auto">
+            <svg
+              width="100%"
+              viewBox={`0 0 ${chart.w} ${chart.h}`}
+              className="max-h-52 cursor-crosshair text-[var(--muted)]"
+              role="img"
+              aria-label="Output tokens and LLM calls per day"
+              onMouseMove={handleSvgMouse}
+              onMouseLeave={() => setHover(null)}
+            >
+              <rect width={chart.w} height={chart.h} fill="transparent" />
+              <line
+                x1={chart.padL}
+                y1={chart.padT + chart.innerH}
+                x2={chart.padL + chart.innerW}
+                y2={chart.padT + chart.innerH}
+                stroke="var(--border)"
+                strokeWidth="1"
+              />
+              <text x={chart.padL} y={chart.h - 8} fontSize="10" fill="currentColor">
+                {chart.firstDay}
+              </text>
+              <text
+                x={chart.padL + chart.innerW}
+                y={chart.h - 8}
+                fontSize="10"
+                fill="currentColor"
+                textAnchor="end"
+              >
+                {chart.lastDay}
+              </text>
+              <text x={6} y={chart.padT + 12} fontSize="10" fill="currentColor">
+                {chart.maxTok} tok
+              </text>
+              <text x={6} y={chart.padT + chart.innerH} fontSize="10" fill="var(--good)">
+                {chart.maxCalls} calls
+              </text>
+              {chart.pathCalls ? (
+                <path
+                  d={chart.pathCalls}
+                  fill="none"
+                  stroke="var(--good)"
+                  strokeWidth="1.5"
+                  opacity={0.85}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {chart.pathTok ? (
+                <path
+                  d={chart.pathTok}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth="2"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              ) : null}
+              {chart.tokPts.map((p) => (
+                <circle
+                  key={p.day}
+                  cx={p.x}
+                  cy={p.y}
+                  r={hover?.day === p.day ? 6 : 4}
+                  fill="var(--accent)"
+                  opacity={hover?.day === p.day ? 1 : 0.75}
+                />
+              ))}
+            </svg>
+            {tooltipContent && hover && (
+              <div
+                className="pointer-events-none fixed z-50 max-w-xs rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-[11px] shadow-lg"
+                style={{
+                  left: Math.min(window.innerWidth - 280, hover.clientX + 12),
+                  top: Math.min(window.innerHeight - 200, hover.clientY + 12),
+                }}
+              >
+                <div className="font-semibold text-[var(--text)]">{tooltipContent.day}</div>
+                <div className="mt-1 text-[var(--muted)]">
+                  Output tokens:{' '}
+                  <span className="tabular-nums text-[var(--text)]">
+                    {tooltipContent.totalOut.toLocaleString()}
+                  </span>
+                </div>
+                <div className="text-[var(--muted)]">
+                  LLM calls:{' '}
+                  <span className="tabular-nums text-[var(--text)]">
+                    {tooltipContent.totalCalls.toLocaleString()}
+                  </span>
+                  {tooltipContent.failed > 0 ? (
+                    <span className="text-[var(--warn)]"> ({tooltipContent.failed} failed)</span>
+                  ) : null}
+                </div>
+                {tooltipContent.modelEntries.length > 0 ? (
+                  <div className="mt-2 border-t border-[var(--border)] pt-2">
+                    <div className="font-medium text-[var(--text)]">Output tokens by model</div>
+                    <ul className="mt-1 max-h-28 overflow-y-auto">
+                      {tooltipContent.modelEntries.map(([model, tok]) => (
+                        <li key={model} className="flex justify-between gap-2">
+                          <span className="truncate text-[var(--muted)]" title={model}>
+                            {model}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-[var(--text)]">
+                            {tok.toLocaleString()}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-[var(--muted)]">No per-model breakdown for this day.</div>
+                )}
+                {tooltipContent.callEntries.length > 0 ? (
+                  <div className="mt-2 border-t border-[var(--border)] pt-2">
+                    <div className="font-medium text-[var(--text)]">Actions by route</div>
+                    <ul className="mt-1 max-h-28 overflow-y-auto">
+                      {tooltipContent.callEntries.map(([op, c]) => (
+                        <li key={op} className="flex justify-between gap-2">
+                          <span className="truncate text-[var(--muted)]" title={op}>
+                            {operationChartLabel(op)}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-[var(--text)]">{c} calls</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -239,6 +625,26 @@ export default function LlmSettingsPage() {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [usageErr, setUsageErr] = useState<string | null>(null);
   const [hints, setHints] = useState<SettingsResponse['runtimeHints'] | null>(null);
+  const [promptRows, setPromptRows] = useState<PromptRow[]>([]);
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
+  const [promptSaving, setPromptSaving] = useState<Record<string, boolean>>({});
+  const [promptErr, setPromptErr] = useState<string | null>(null);
+
+  const [tab, setTab] = useState<'prompts' | 'models'>('prompts');
+  const [selectedPromptKey, setSelectedPromptKey] = useState<StablePromptKey>('direct_media_analysis');
+  const [promptEditing, setPromptEditing] = useState(false);
+
+  const [selectedRoute, setSelectedRoute] = useState<Fr94RouteOperation>('asset_analysis_image');
+  const [modelEditing, setModelEditing] = useState(false);
+
+  const [feedback, setFeedback] = useState<{ kind: 'good' | 'bad'; msg: string } | null>(null);
+  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!feedback) return;
+    const t = window.setTimeout(() => setFeedback(null), 4500);
+    return () => window.clearTimeout(t);
+  }, [feedback]);
 
   const modelSuggestions = useMemo(() => {
     const s = new Set<string>();
@@ -248,6 +654,16 @@ export default function LlmSettingsPage() {
     }
     return [...s].sort();
   }, [routes]);
+
+  const selectedPromptRow = useMemo(
+    () => promptRows.find((p) => p.key === selectedPromptKey),
+    [promptRows, selectedPromptKey],
+  );
+
+  const selectedRoutePayload = useMemo(
+    () => routes.find((r) => r.operation === selectedRoute),
+    [routes, selectedRoute],
+  );
 
   const loadSettings = useCallback(async () => {
     setError(null);
@@ -275,12 +691,38 @@ export default function LlmSettingsPage() {
       const res = await fetch(`/api/content-review/llm-usage?days=${days}`, {
         credentials: 'include',
       });
-      const json = await readJsonResponse<UsageResponse & { error?: string }>(res);
+      const json = await readJsonResponse<
+        UsageResponse & { error?: string; byModelDaily?: ModelDailyRow[]; byOperationDaily?: OperationDailyRow[] }
+      >(res);
       if (!res.ok) throw new Error(json.error || res.statusText);
-      setUsage(json);
+      setUsage({
+        ...json,
+        byModelDaily: json.byModelDaily ?? [],
+        byOperationDaily: json.byOperationDaily ?? [],
+      });
     } catch (e) {
       setUsageErr(e instanceof Error ? e.message : String(e));
       setUsage(null);
+    }
+  }, []);
+
+  const loadPrompts = useCallback(async () => {
+    setPromptErr(null);
+    try {
+      const res = await fetch('/api/content-review/llm-prompts', { credentials: 'include' });
+      const json = await readJsonResponse<PromptsResponse & { error?: string }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      const list = json.prompts ?? [];
+      setPromptRows(list);
+      const d: Record<string, string> = {};
+      for (const p of list) {
+        d[p.key] = p.effectiveBody;
+      }
+      setPromptDrafts(d);
+    } catch (e) {
+      setPromptErr(e instanceof Error ? e.message : String(e));
+      setPromptRows([]);
+      setPromptDrafts({});
     }
   }, []);
 
@@ -288,13 +730,13 @@ export default function LlmSettingsPage() {
     let cancelled = false;
     void (async () => {
       setLoading(true);
-      await loadSettings();
+      await Promise.all([loadSettings(), loadPrompts()]);
       if (!cancelled) setLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [loadSettings]);
+  }, [loadSettings, loadPrompts]);
 
   useEffect(() => {
     void loadUsage(usageDays);
@@ -331,8 +773,12 @@ export default function LlmSettingsPage() {
         const json = await readJsonResponse<{ error?: unknown }>(res);
         if (!res.ok) throw new Error(typeof json.error === 'string' ? json.error : res.statusText);
         await loadSettings();
+        setModelEditing(false);
+        setFeedback({ kind: 'good', msg: 'Model route saved.' });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setFeedback({ kind: 'bad', msg });
       } finally {
         setSaving((s) => ({ ...s, [operation]: false }));
       }
@@ -351,14 +797,119 @@ export default function LlmSettingsPage() {
         const json = await readJsonResponse<{ error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
         await loadSettings();
+        setModelEditing(false);
+        setFeedback({ kind: 'good', msg: 'Model route reset to code defaults.' });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        setFeedback({ kind: 'bad', msg });
       } finally {
         setSaving((s) => ({ ...s, [operation]: false }));
       }
     },
     [loadSettings],
   );
+
+  const savePrompt = useCallback(
+    async (key: StablePromptKey) => {
+      const body = promptDrafts[key]?.trim();
+      if (!body) {
+        setPromptErr('Prompt body cannot be empty.');
+        return;
+      }
+      setPromptSaving((s) => ({ ...s, [key]: true }));
+      try {
+        const res = await fetch('/api/content-review/llm-prompts', {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key, body }),
+        });
+        const json = await readJsonResponse<{ error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        await loadPrompts();
+        setPromptEditing(false);
+        setFeedback({ kind: 'good', msg: 'Prompt saved to database.' });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setPromptErr(msg);
+        setFeedback({ kind: 'bad', msg });
+      } finally {
+        setPromptSaving((s) => ({ ...s, [key]: false }));
+      }
+    },
+    [promptDrafts, loadPrompts],
+  );
+
+  const resetPrompt = useCallback(
+    async (key: StablePromptKey) => {
+      setPromptSaving((s) => ({ ...s, [key]: true }));
+      try {
+        const res = await fetch(`/api/content-review/llm-prompts?key=${encodeURIComponent(key)}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+        const json = await readJsonResponse<{ error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        await loadPrompts();
+        setPromptEditing(false);
+        setFeedback({ kind: 'good', msg: 'Prompt reset to file default.' });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setPromptErr(msg);
+        setFeedback({ kind: 'bad', msg });
+      } finally {
+        setPromptSaving((s) => ({ ...s, [key]: false }));
+      }
+    },
+    [loadPrompts],
+  );
+
+  const cancelPromptEdit = useCallback(() => {
+    if (!selectedPromptRow) return;
+    setPromptDrafts((prev) => ({
+      ...prev,
+      [selectedPromptKey]: selectedPromptRow.effectiveBody,
+    }));
+    setPromptEditing(false);
+    setPromptErr(null);
+  }, [selectedPromptRow, selectedPromptKey]);
+
+  const cancelModelEdit = useCallback(() => {
+    if (!selectedRoutePayload) return;
+    setDrafts((prev) => ({
+      ...prev,
+      [selectedRoute]: effectiveToDraft(selectedRoutePayload.effective),
+    }));
+    setModelEditing(false);
+  }, [selectedRoute, selectedRoutePayload]);
+
+  const promptText = promptDrafts[selectedPromptKey] ?? selectedPromptRow?.effectiveBody ?? '';
+  const promptBusy = promptSaving[selectedPromptKey] === true;
+
+  const syncPromptTextareaHeight = useCallback(() => {
+    const el = promptTextareaRef.current;
+    if (!el || typeof window === 'undefined') return;
+    el.style.height = '0px';
+    const scrollH = el.scrollHeight;
+    const minPx = Math.round(window.innerHeight * 0.52);
+    const maxPx = Math.round(window.innerHeight * 0.88);
+    const next = Math.min(Math.max(scrollH + 16, minPx), maxPx);
+    el.style.height = `${next}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (tab !== 'prompts') return;
+    syncPromptTextareaHeight();
+  }, [promptText, selectedPromptKey, promptEditing, tab, syncPromptTextareaHeight]);
+
+  useEffect(() => {
+    if (tab !== 'prompts') return;
+    window.addEventListener('resize', syncPromptTextareaHeight);
+    return () => window.removeEventListener('resize', syncPromptTextareaHeight);
+  }, [tab, syncPromptTextareaHeight]);
+  const routeDraft = selectedRoutePayload ? drafts[selectedRoute] : undefined;
+  const routeBusy = saving[selectedRoute] === true;
 
   return (
     <div className="min-h-[100dvh] bg-[var(--bg)] text-[var(--text)]">
@@ -372,7 +923,20 @@ export default function LlmSettingsPage() {
         <h1 className="text-base font-semibold tracking-tight">LLM settings</h1>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-8 px-4 py-6 lg:px-6">
+      <main className="mx-auto max-w-4xl space-y-6 px-4 py-6 lg:px-6">
+        {feedback && (
+          <div
+            className={`rounded-md border px-3 py-2 text-sm ${
+              feedback.kind === 'good'
+                ? 'border-[var(--good)] bg-[var(--surface)] text-[var(--good)]'
+                : 'border-[var(--bad)] bg-[var(--surface)] text-[var(--bad)]'
+            }`}
+            role="status"
+          >
+            {feedback.msg}
+          </div>
+        )}
+
         {loading && <p className="text-sm text-[var(--muted)]">Loading…</p>}
         {error && (
           <div className="rounded-md border border-[var(--bad)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--bad)]">
@@ -382,7 +946,7 @@ export default function LlmSettingsPage() {
               className="ml-2 underline"
               onClick={() => {
                 setError(null);
-                void loadSettings();
+                void Promise.all([loadSettings(), loadPrompts()]);
               }}
             >
               Retry
@@ -390,92 +954,208 @@ export default function LlmSettingsPage() {
           </div>
         )}
 
-        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold">Output tokens per day</h2>
-              <p className="mt-1 text-xs text-[var(--muted)]">
-                From <code className="text-[11px]">llm_call_logs</code> (UTC days). Requires the
-                usage RPC migration applied in Supabase.
-              </p>
-            </div>
-            <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-              Range
-              <select
-                value={usageDays}
-                onChange={(e) => setUsageDays(Number(e.target.value))}
-                className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-[var(--text)]"
-              >
-                <option value={7}>7 days</option>
-                <option value={14}>14 days</option>
-                <option value={30}>30 days</option>
-                <option value={60}>60 days</option>
-                <option value={90}>90 days</option>
-              </select>
-            </label>
-          </div>
-          {usageErr && (
-            <p className="mt-2 text-xs text-[var(--warn)]">{usageErr}</p>
-          )}
-          {usage && (
-            <>
-              <div className="mt-3 text-xs text-[var(--muted)]">
-                <span className="tabular-nums text-[var(--text)]">{usage.totals.outputTokens}</span>{' '}
-                output tokens ·{' '}
-                <span className="tabular-nums text-[var(--text)]">{usage.totals.callCount}</span> calls
-                {usage.totals.failedCount > 0 ? (
-                  <>
-                    {' '}
-                    ·{' '}
-                    <span className="text-[var(--warn)]">{usage.totals.failedCount}</span> failed
-                  </>
-                ) : null}
-              </div>
-              <div className="mt-2 overflow-x-auto">
-                <TokenSparkline days={usage.days} series={usage.series} />
-              </div>
-            </>
-          )}
-        </section>
+        <UsageSection
+          usageDays={usageDays}
+          onChangeDays={setUsageDays}
+          usage={usage}
+          usageErr={usageErr}
+        />
 
         {(hints ?? usage?.runtimeHints) && (
           <section className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-xs text-[var(--muted)]">
             <span className="font-medium text-[var(--text)]">Runtime</span>
             <span className="mx-2">·</span>
-            Prompt <code className="text-[11px]">{hints?.fr94PromptVersion ?? usage?.runtimeHints.fr94PromptVersion}</code>
+            Prompt{' '}
+            <code className="text-[11px]">{hints?.fr94PromptVersion ?? usage?.runtimeHints.fr94PromptVersion}</code>
             <span className="mx-2">·</span>
             Explicit cache{' '}
             {(hints?.geminiExplicitCaching ?? usage?.runtimeHints.geminiExplicitCaching) ? 'on' : 'off'}
             <span className="mx-2">·</span>
             LLM logging{' '}
             {(hints?.llmLoggingDisabled ?? usage?.runtimeHints.llmLoggingDisabled) ? 'disabled' : 'enabled'}
+            <span className="mx-2">·</span>
+            Prompt edits change cache-key fingerprints until Gemini caches refresh.
           </section>
         )}
 
-        <datalist id="fr94-model-suggestions">
-          {modelSuggestions.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
+        <div className="flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-1">
+          <button
+            type="button"
+            onClick={() => setTab('prompts')}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              tab === 'prompts'
+                ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
+                : 'text-[var(--muted)] hover:text-[var(--text)]'
+            }`}
+          >
+            Prompts
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('models')}
+            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              tab === 'models'
+                ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
+                : 'text-[var(--muted)] hover:text-[var(--text)]'
+            }`}
+          >
+            Models
+          </button>
+        </div>
 
-        <div className="space-y-4">
-          {routes.map((r) => {
-            const meta = ROUTE_META[r.operation];
-            const d = drafts[r.operation];
-            if (!d) return null;
-            const busy = saving[r.operation] === true;
-            return (
-              <section
-                key={r.operation}
-                className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4"
+        {tab === 'prompts' && (
+          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+            <p className="text-xs text-[var(--muted)]">
+              Stable prompts live in <code className="text-[11px]">llm_stable_prompts</code> when saved; otherwise
+              repo files. Select a prompt, review full text, then Edit to change.
+            </p>
+            {promptErr && (
+              <p className="mt-2 text-xs text-[var(--bad)]">
+                {promptErr}
+                <button type="button" className="ml-2 underline" onClick={() => void loadPrompts()}>
+                  Retry
+                </button>
+              </p>
+            )}
+            <label className="mt-4 block text-xs">
+              <span className="text-[var(--muted)]">Prompt</span>
+              <select
+                value={selectedPromptKey}
+                disabled={promptBusy || promptEditing}
+                onChange={(e) => {
+                  const k = e.target.value as StablePromptKey;
+                  setSelectedPromptKey(k);
+                  setPromptEditing(false);
+                  setPromptErr(null);
+                }}
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-2 text-sm"
               >
+                {STABLE_PROMPT_ORDER.map((k) => (
+                  <option key={k} value={k}>
+                    {PROMPT_META[k].title}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {selectedPromptRow && (
+              <>
+                <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs">
+                  <p className="text-[var(--muted)]">{PROMPT_META[selectedPromptKey].hint}</p>
+                  <p className="mt-2 font-mono text-[10px] text-[var(--muted)]">
+                    {selectedPromptKey} · file: {selectedPromptRow.fileBasename} ·{' '}
+                    {selectedPromptRow.source === 'db' ? 'Database' : 'File default'}
+                    {selectedPromptRow.updated_at
+                      ? ` · updated ${new Date(selectedPromptRow.updated_at).toLocaleString()}`
+                      : ''}
+                  </p>
+                  <p className="mt-2 text-[var(--muted)]">
+                    Characters:{' '}
+                    <span className="tabular-nums text-[var(--text)]">{promptText.length.toLocaleString()}</span>
+                    {' · '}
+                    Est. tokens (~÷4):{' '}
+                    <span className="tabular-nums text-[var(--text)]">
+                      {estimateTokensApprox(promptText.length).toLocaleString()}
+                    </span>
+                  </p>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  {!promptEditing ? (
+                    <button
+                      type="button"
+                      disabled={promptBusy}
+                      onClick={() => setPromptEditing(true)}
+                      className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] disabled:opacity-50"
+                    >
+                      Edit
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={promptBusy}
+                        onClick={() => void savePrompt(selectedPromptKey)}
+                        className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        {promptBusy ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={promptBusy}
+                        onClick={cancelPromptEdit}
+                        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    disabled={promptBusy || selectedPromptRow.source !== 'db'}
+                    onClick={() => void resetPrompt(selectedPromptKey)}
+                    className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] disabled:opacity-50"
+                  >
+                    Reset to file default
+                  </button>
+                </div>
+
+                <textarea
+                  ref={promptTextareaRef}
+                  value={promptText}
+                  readOnly={!promptEditing}
+                  disabled={promptBusy}
+                  onChange={(e) =>
+                    setPromptDrafts((prev) => ({ ...prev, [selectedPromptKey]: e.target.value }))
+                  }
+                  rows={3}
+                  className={`mt-2 box-border w-full resize-y overflow-y-auto rounded-md border px-3 py-3 font-mono text-[13px] leading-relaxed text-[var(--text)] disabled:opacity-60 ${
+                    promptEditing
+                      ? 'border-[var(--accent)] bg-[var(--bg)]'
+                      : 'cursor-default border-[var(--border)] bg-[var(--surface-2)]'
+                  }`}
+                  spellCheck={false}
+                />
+              </>
+            )}
+          </section>
+        )}
+
+        {tab === 'models' && (
+          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+            <datalist id="fr94-model-suggestions">
+              {modelSuggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            <label className="block text-xs">
+              <span className="text-[var(--muted)]">Model route</span>
+              <select
+                value={selectedRoute}
+                disabled={routeBusy || modelEditing}
+                onChange={(e) => {
+                  setSelectedRoute(e.target.value as Fr94RouteOperation);
+                  setModelEditing(false);
+                }}
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-2 text-sm"
+              >
+                {ROUTE_ORDER.map((op) => (
+                  <option key={op} value={op}>
+                    {ROUTE_META[op].title}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {selectedRoutePayload && routeDraft && (
+              <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-4">
                 <div className="mb-3">
-                  <h2 className="text-sm font-semibold">{meta.title}</h2>
-                  <p className="mt-0.5 text-xs text-[var(--muted)]">{meta.hint}</p>
-                  <p className="mt-1 font-mono text-[10px] text-[var(--muted)]">{r.operation}</p>
-                  {r.dbRow?.updated_at && (
+                  <h2 className="text-sm font-semibold">{ROUTE_META[selectedRoute].title}</h2>
+                  <p className="mt-1 text-xs text-[var(--muted)]">{ROUTE_META[selectedRoute].hint}</p>
+                  <p className="mt-1 font-mono text-[10px] text-[var(--muted)]">{selectedRoute}</p>
+                  {selectedRoutePayload.dbRow?.updated_at && (
                     <p className="mt-1 text-[10px] text-[var(--muted)]">
-                      DB row updated {new Date(r.dbRow.updated_at).toLocaleString()}
+                      DB updated {new Date(selectedRoutePayload.dbRow.updated_at).toLocaleString()}
                     </p>
                   )}
                 </div>
@@ -486,34 +1166,37 @@ export default function LlmSettingsPage() {
                     <input
                       type="text"
                       list="fr94-model-suggestions"
-                      disabled={r.modelLockedByEnv || busy}
-                      value={d.model}
-                      onChange={(e) => updateDraft(r.operation, { model: e.target.value })}
-                      className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-sm disabled:opacity-60"
+                      readOnly={!modelEditing}
+                      disabled={selectedRoutePayload.modelLockedByEnv || routeBusy}
+                      value={routeDraft.model}
+                      onChange={(e) => updateDraft(selectedRoute, { model: e.target.value })}
+                      className={`mt-1 w-full rounded-md border border-[var(--border)] px-2 py-1.5 text-sm disabled:opacity-60 ${
+                        modelEditing ? 'bg-[var(--bg)]' : 'cursor-default bg-[var(--surface)]'
+                      }`}
                     />
-                    {r.modelLockedByEnv && (
+                    {selectedRoutePayload.modelLockedByEnv && (
                       <span className="mt-1 block text-[10px] text-[var(--warn)]">
-                        Locked by <code className="text-[10px]">FR94_MODEL_{r.operation.toUpperCase()}</code> in
-                        environment.
+                        Locked by{' '}
+                        <code className="text-[10px]">FR94_MODEL_{selectedRoute.toUpperCase()}</code>
                       </span>
                     )}
                   </label>
 
                   <label className="block text-xs">
                     <span className="text-[var(--muted)]">
-                      Temperature <span className="tabular-nums">({d.temperature.toFixed(2)})</span>
+                      Temperature ({routeDraft.temperature.toFixed(2)})
                     </span>
                     <input
                       type="range"
                       min={0}
                       max={2}
                       step={0.01}
-                      disabled={busy}
-                      value={d.temperature}
+                      disabled={!modelEditing || routeBusy}
+                      value={routeDraft.temperature}
                       onChange={(e) =>
-                        updateDraft(r.operation, { temperature: Number.parseFloat(e.target.value) })
+                        updateDraft(selectedRoute, { temperature: Number.parseFloat(e.target.value) })
                       }
-                      className="mt-2 w-full"
+                      className="mt-2 w-full disabled:opacity-50"
                     />
                   </label>
 
@@ -523,23 +1206,26 @@ export default function LlmSettingsPage() {
                       type="number"
                       min={1}
                       max={32768}
-                      disabled={busy}
-                      value={d.max_output_tokens}
+                      readOnly={!modelEditing}
+                      disabled={routeBusy}
+                      value={routeDraft.max_output_tokens}
                       onChange={(e) =>
-                        updateDraft(r.operation, {
+                        updateDraft(selectedRoute, {
                           max_output_tokens: Number.parseInt(e.target.value, 10) || 1,
                         })
                       }
-                      className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-sm"
+                      className={`mt-1 w-full rounded-md border border-[var(--border)] px-2 py-1.5 text-sm disabled:opacity-60 ${
+                        modelEditing ? 'bg-[var(--bg)]' : 'cursor-default bg-[var(--surface)]'
+                      }`}
                     />
                   </label>
 
                   <label className="flex items-center gap-2 text-xs sm:col-span-2">
                     <input
                       type="checkbox"
-                      disabled={busy}
-                      checked={d.use_cache}
-                      onChange={(e) => updateDraft(r.operation, { use_cache: e.target.checked })}
+                      disabled={!modelEditing || routeBusy}
+                      checked={routeDraft.use_cache}
+                      onChange={(e) => updateDraft(selectedRoute, { use_cache: e.target.checked })}
                     />
                     Use explicit Gemini context cache when enabled globally
                   </label>
@@ -547,9 +1233,9 @@ export default function LlmSettingsPage() {
                   <label className="flex items-center gap-2 text-xs sm:col-span-2">
                     <input
                       type="checkbox"
-                      disabled={busy}
-                      checked={d.require_json}
-                      onChange={(e) => updateDraft(r.operation, { require_json: e.target.checked })}
+                      disabled={!modelEditing || routeBusy}
+                      checked={routeDraft.require_json}
+                      onChange={(e) => updateDraft(selectedRoute, { require_json: e.target.checked })}
                     />
                     Require JSON response
                   </label>
@@ -557,10 +1243,12 @@ export default function LlmSettingsPage() {
                   <label className="block text-xs sm:col-span-2">
                     <span className="text-[var(--muted)]">Thinking level</span>
                     <select
-                      disabled={busy}
-                      value={d.thinking_level}
-                      onChange={(e) => updateDraft(r.operation, { thinking_level: e.target.value })}
-                      className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-sm"
+                      disabled={!modelEditing || routeBusy}
+                      value={routeDraft.thinking_level}
+                      onChange={(e) =>
+                        updateDraft(selectedRoute, { thinking_level: e.target.value })
+                      }
+                      className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm disabled:opacity-60"
                     >
                       {THINKING_OPTIONS.map((o) => (
                         <option key={o.label} value={o.value}>
@@ -572,27 +1260,48 @@ export default function LlmSettingsPage() {
                 </div>
 
                 <div className="mt-4 flex flex-wrap gap-2">
+                  {!modelEditing ? (
+                    <button
+                      type="button"
+                      disabled={routeBusy}
+                      onClick={() => setModelEditing(true)}
+                      className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] disabled:opacity-50"
+                    >
+                      Edit
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={routeBusy}
+                        onClick={() => void saveRoute(selectedRoute)}
+                        className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      >
+                        {routeBusy ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={routeBusy}
+                        onClick={cancelModelEdit}
+                        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
-                    disabled={busy}
-                    onClick={() => void saveRoute(r.operation)}
-                    className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-                  >
-                    {busy ? 'Saving…' : 'Save'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy || !r.dbRow}
-                    onClick={() => void resetRoute(r.operation)}
+                    disabled={routeBusy || !selectedRoutePayload.dbRow}
+                    onClick={() => void resetRoute(selectedRoute)}
                     className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] disabled:opacity-50"
                   >
                     Reset to code defaults
                   </button>
                 </div>
-              </section>
-            );
-          })}
-        </div>
+              </div>
+            )}
+          </section>
+        )}
       </main>
     </div>
   );

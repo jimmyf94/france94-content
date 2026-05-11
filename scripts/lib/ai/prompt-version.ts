@@ -1,3 +1,5 @@
+import { stablePromptCacheSuffix } from './prompt-fingerprint.js';
+
 const DEFAULT_PROMPT_VERSION = '2026-05-10-v1';
 
 export function getFr94PromptVersion(): string {
@@ -5,24 +7,28 @@ export function getFr94PromptVersion(): string {
   return v && v.length > 0 ? v : DEFAULT_PROMPT_VERSION;
 }
 
-export function cacheKeyAssetAnalysisImage(version = getFr94PromptVersion()): string {
-  return `fr94_asset_analysis_image_${version}`;
+function cacheKeyWithStableFingerprint(prefix: string, version: string, stableInstruction: string): string {
+  return `${prefix}_${version}_${stablePromptCacheSuffix(stableInstruction)}`;
 }
 
-export function cacheKeyAssetAnalysisVideoSampledFrames(version = getFr94PromptVersion()): string {
-  return `fr94_asset_analysis_video_sampled_frames_${version}`;
+export function cacheKeyAssetAnalysisImage(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_asset_analysis_image', version, stableInstruction);
 }
 
-export function cacheKeyAssetAnalysisVideoSampledAudio(version = getFr94PromptVersion()): string {
-  return `fr94_asset_analysis_video_sampled_audio_${version}`;
+export function cacheKeyAssetAnalysisVideoSampledFrames(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_asset_analysis_video_sampled_frames', version, stableInstruction);
 }
 
-export function cacheKeyCandidateGeneration(version = getFr94PromptVersion()): string {
-  return `fr94_candidate_generation_${version}`;
+export function cacheKeyAssetAnalysisVideoSampledAudio(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_asset_analysis_video_sampled_audio', version, stableInstruction);
 }
 
-export function cacheKeyCandidateRegeneration(version = getFr94PromptVersion()): string {
-  return `fr94_candidate_regeneration_${version}`;
+export function cacheKeyCandidateGeneration(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_candidate_generation', version, stableInstruction);
+}
+
+export function cacheKeyCandidateRegeneration(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_candidate_regeneration', version, stableInstruction);
 }
 
 export function explicitCachingEnabled(): boolean {

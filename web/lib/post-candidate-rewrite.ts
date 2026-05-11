@@ -2,12 +2,14 @@ import { GoogleGenAI, createPartFromText } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
-import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from '@fr94/ai/gemini-client.js';
-import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
 import {
-  buildCandidateRegenerationDynamicPayload,
-  loadCandidateRegenerationStablePrompt,
-} from '@fr94/ai/prompts/candidate-regeneration.js';
+  callGeminiWithLogging,
+  getResolvedModelRoute,
+  loadResolvedStablePrompt,
+  responseToJson,
+} from '@fr94/ai/gemini-client.js';
+import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
+import { buildCandidateRegenerationDynamicPayload } from '@fr94/ai/prompts/candidate-regeneration.js';
 
 const postTypeEnum = z.enum([
   'reel',
@@ -290,7 +292,7 @@ export async function regenerateCandidateWithLLM(params: {
   }
   const route = await getResolvedModelRoute(params.supabase ?? null, 'candidate_regeneration');
 
-  const stable = loadCandidateRegenerationStablePrompt();
+  const stable = (await loadResolvedStablePrompt(params.supabase ?? null, 'candidate_regeneration')).text;
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';
   const dynamicText = buildCandidateRegenerationDynamicPayload({
     reviewerNotes,
@@ -305,7 +307,7 @@ export async function regenerateCandidateWithLLM(params: {
     supabase: params.supabase ?? null,
     route,
     promptVersion,
-    cacheKey: cacheKeyCandidateRegeneration(promptVersion),
+    cacheKey: cacheKeyCandidateRegeneration(promptVersion, stable),
     stableSystemInstruction: stable,
     getContentsImplicit: () => [
       createPartFromText(stable),

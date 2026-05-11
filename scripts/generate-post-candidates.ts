@@ -13,11 +13,9 @@ import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
 import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import { loadResolvedStablePrompt } from './lib/ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
-import {
-  buildPostPlannerPromptParts,
-  loadPostPlannerStablePrompt,
-} from './lib/ai/prompts/post-planner.js';
+import { buildPostPlannerPromptParts } from './lib/ai/prompts/post-planner.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -350,7 +348,7 @@ export async function generatePostCandidatesWithLLM(params: {
 }> {
   const apiKey = requireEnv('GEMINI_API_KEY');
   const ai = new GoogleGenAI({ apiKey });
-  const stableTemplate = loadPostPlannerStablePrompt();
+  const stableTemplate = (await loadResolvedStablePrompt(params.supabase, 'post_planner')).text;
   const { stableSystemInstruction, dynamicText } = buildPostPlannerPromptParts({
     stableText: stableTemplate,
     summaries: params.summaries as unknown[],
@@ -365,7 +363,7 @@ export async function generatePostCandidatesWithLLM(params: {
     supabase: params.supabase,
     route,
     promptVersion,
-    cacheKey: cacheKeyCandidateGeneration(promptVersion),
+    cacheKey: cacheKeyCandidateGeneration(promptVersion, stableSystemInstruction),
     stableSystemInstruction,
     getContentsImplicit: () => [
       createPartFromText(stableSystemInstruction),

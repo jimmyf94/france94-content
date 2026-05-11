@@ -19,6 +19,12 @@ export {
   thinkingLevelToDb,
 } from './model-route-resolve.js';
 export type { LlmRouteSettingsRow } from './model-route-resolve.js';
+export { stablePromptCacheSuffix } from './prompt-fingerprint.js';
+export {
+  loadResolvedStablePrompt,
+  STABLE_PROMPT_KEYS,
+} from './resolve-stable-prompt.js';
+export type { StablePromptKey } from './resolve-stable-prompt.js';
 
 /** After 2 retries on 503, used when primary is Gemini 3.1 Pro (preview) and still overloaded. */
 export const GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL = 'gemini-2.5-pro';

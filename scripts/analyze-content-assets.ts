@@ -29,13 +29,11 @@ import {
   cacheKeyAssetAnalysisVideoSampledFrames,
   getFr94PromptVersion,
 } from './lib/ai/prompt-version.js';
+import { loadResolvedStablePrompt } from './lib/ai/resolve-stable-prompt.js';
 import {
   buildDirectMediaAnalysisDynamicText,
   buildVideoSampledMetadataDynamicText,
   buildVideoSampledTranscriptSuffix,
-  loadAudioTranscriptionStablePrompt,
-  loadDirectMediaAnalysisStablePrompt,
-  loadVideoSampledAnalysisStablePrompt,
 } from './lib/ai/prompts/asset-analysis.js';
 
 const activityEnum = z.enum([
@@ -312,7 +310,10 @@ export async function analyzeWithGemini(
 }> {
   const { buffer, mimeType, displayName } = params;
   const route = await getResolvedModelRoute(params.llm?.supabase ?? null, 'asset_analysis_image');
-  const stable = params.prompt ?? loadDirectMediaAnalysisStablePrompt();
+  const stable =
+    params.prompt !== undefined
+      ? params.prompt
+      : (await loadResolvedStablePrompt(params.llm?.supabase ?? null, 'direct_media_analysis')).text;
   const dynamic = buildDirectMediaAnalysisDynamicText();
   const fullText = dynamic.trim() ? `${stable}\n\n${dynamic}` : stable;
 
@@ -347,7 +348,7 @@ export async function analyzeWithGemini(
       route,
       subOperation: params.subOperation ?? 'direct_media',
       promptVersion,
-      cacheKey: cacheKeyAssetAnalysisImage(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisImage(promptVersion, stable),
       stableSystemInstruction: stable,
       disableExplicitCaching: params.prompt !== undefined,
       getContentsImplicit: () => [
@@ -426,7 +427,8 @@ async function transcribeAudioWithGemini(
       throw new Error('Audio file has no uri after ACTIVE');
     }
 
-    const stable = loadAudioTranscriptionStablePrompt();
+    const stable = (await loadResolvedStablePrompt(params.llm?.supabase ?? null, 'audio_transcription'))
+      .text;
     const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
     const { response } = await callGeminiWithLogging({
       ai,
@@ -434,7 +436,7 @@ async function transcribeAudioWithGemini(
       route,
       subOperation: 'audio_transcription',
       promptVersion,
-      cacheKey: cacheKeyAssetAnalysisVideoSampledAudio(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisVideoSampledAudio(promptVersion, stable),
       stableSystemInstruction: stable,
       jsonResponse: false,
       getContentsImplicit: () => [
@@ -549,7 +551,9 @@ export async function analyzeVideoSampled(
       frame_timestamps_seconds: timestamps,
       has_audio: probe.hasAudio,
     };
-    const stableVideo = loadVideoSampledAnalysisStablePrompt();
+    const stableVideo = (
+      await loadResolvedStablePrompt(params.llm?.supabase ?? null, 'video_sampled_analysis')
+    ).text;
     const dynamicMeta = buildVideoSampledMetadataDynamicText(metadataPayload);
     const transcriptSuffix = buildVideoSampledTranscriptSuffix(audioTranscript);
 
@@ -573,7 +577,7 @@ export async function analyzeVideoSampled(
       route,
       subOperation: 'video_sampled',
       promptVersion,
-      cacheKey: cacheKeyAssetAnalysisVideoSampledFrames(promptVersion),
+      cacheKey: cacheKeyAssetAnalysisVideoSampledFrames(promptVersion, stableVideo),
       stableSystemInstruction: stableVideo,
       getContentsImplicit: () => buildPromptParts(stableVideo, false),
       getContentsExplicit: () => buildPromptParts('', true),
