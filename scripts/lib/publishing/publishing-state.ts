@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import { onPublishingJobStatusTransition } from '../asset-usage.js';
 import { getInstagramContainerStatus, isFinished } from './instagram-graph.js';
 import type { PreparedMediaItem, PublishingJobStatus } from './types.js';
 
@@ -49,11 +50,31 @@ export async function updatePublishingJob(
   jobId: string,
   patch: Record<string, unknown>,
 ): Promise<void> {
+  let prevStatus = '';
+  if (patch.status !== undefined) {
+    const { data: row, error: readErr } = await supabase
+      .from('publishing_jobs')
+      .select('status')
+      .eq('id', jobId)
+      .maybeSingle();
+    if (readErr) throw new Error(readErr.message);
+    prevStatus = String((row as { status?: string } | null)?.status ?? '');
+  }
+
   const { error } = await supabase
     .from('publishing_jobs')
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq('id', jobId);
   if (error) throw new Error(error.message);
+
+  if (patch.status !== undefined) {
+    const nextStatus = String(patch.status);
+    try {
+      await onPublishingJobStatusTransition(supabase, jobId, prevStatus, nextStatus);
+    } catch (e) {
+      console.error('[asset-usage] onPublishingJobStatusTransition', e);
+    }
+  }
 }
 
 export async function syncCandidateReadyToPublish(

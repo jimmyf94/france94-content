@@ -80,7 +80,15 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ candidates: data ?? [] });
+    return NextResponse.json(
+      { candidates: data ?? [] },
+      {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+          Pragma: 'no-cache',
+        },
+      },
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[candidates] unhandled', e);

@@ -88,11 +88,16 @@ export const QueueRow = memo(function QueueRow({
       ? Number(candidate.priority_score).toFixed(1)
       : null;
 
+  const conflict = candidate.has_asset_conflict === true;
+  const stale = Boolean(candidate.freshness_warning);
+
   return (
     <button
       type="button"
       onClick={handleClick}
       className={`grid w-full grid-cols-[7rem_minmax(0,1fr)] items-stretch gap-3 rounded-xl border p-4 text-left transition-colors ${
+        conflict || stale ? 'opacity-50' : ''
+      } ${
         selected
           ? 'border-[color:rgb(91_140_255_/0.55)] bg-[var(--surface-2)] ring-1 ring-[var(--ring)]'
           : 'border-[color:rgb(42_49_66_/0.55)] hover:border-[color:rgb(58_66_88_/0.9)] hover:bg-[var(--surface-2)]/60'
@@ -118,8 +123,21 @@ export const QueueRow = memo(function QueueRow({
                 ? `${assetCount} ${assetCount === 1 ? 'asset' : 'assets'}`
                 : '—'}
             </span>
-            {age && (
-              <span className="text-[11px] tabular-nums text-[var(--muted)]">{age}</span>
+            {stale && (
+              <span
+                className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200"
+                title={candidate.freshness_warning ?? ''}
+              >
+                Stale
+              </span>
+            )}
+            {conflict && (
+              <span
+                className="rounded-md border border-[var(--bad)]/35 bg-[var(--bad)]/10 px-2 py-0.5 text-[11px] text-[var(--bad)]"
+                title={candidate.asset_conflict_summary ?? 'Asset conflict'}
+              >
+                Conflict
+              </span>
             )}
           </div>
           {priority != null && (

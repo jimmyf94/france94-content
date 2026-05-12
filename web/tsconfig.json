@@ -17,7 +17,8 @@
     "paths": {
       "@/*": ["./*"],
       "@fr94/ai/*": ["../scripts/lib/ai/*"],
-      "@fr94/publishing/*": ["../scripts/lib/publishing/*"]
+      "@fr94/publishing/*": ["../scripts/lib/publishing/*"],
+      "@fr94/asset-usage": ["../scripts/lib/asset-usage"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

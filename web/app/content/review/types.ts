@@ -36,6 +36,12 @@ export type PostCandidate = {
   reviewed_at?: string | null;
   reviewed_by?: string | null;
   previous_versions?: unknown;
+  invalidated_at?: string | null;
+  invalidation_reason?: string | null;
+  has_asset_conflict?: boolean | null;
+  asset_conflict_summary?: string | null;
+  freshness_warning?: string | null;
+  is_fresh_story?: boolean | null;
 };
 
 /** Row shape from `GET /api/content-review/candidates` (no heavy JSONB). */

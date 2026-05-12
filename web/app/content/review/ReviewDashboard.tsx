@@ -121,6 +121,7 @@ export function ReviewDashboard() {
       try {
         const res = await fetch(`/api/content-review/candidates?${queryString}`, {
           credentials: 'include',
+          cache: 'no-store',
         });
         const json = await readJsonResponse<{ candidates?: CandidateListItem[]; error?: string }>(
           res,
@@ -160,6 +161,31 @@ export function ReviewDashboard() {
     () => fetchCandidatesInternal('silent'),
     [fetchCandidatesInternal],
   );
+
+  const healStaleAssetLedger = useCallback(async () => {
+    try {
+      const res = await fetch('/api/content-review/reconcile-asset-reservations', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const json = await readJsonResponse<{
+        repairedCount?: number;
+        error?: string;
+      }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      const n = json.repairedCount ?? 0;
+      setToast({
+        kind: 'good',
+        msg: n === 0 ? 'Asset ledger was already clean' : `Released stale reservations for ${n} candidate(s)`,
+      });
+      await silentReloadCandidates();
+    } catch (e) {
+      setToast({
+        kind: 'bad',
+        msg: e instanceof Error ? e.message : 'Heal ledger failed',
+      });
+    }
+  }, [silentReloadCandidates]);
 
   useEffect(() => {
     void fetchCandidates();
@@ -249,6 +275,7 @@ export function ReviewDashboard() {
       try {
         const res = await fetch(`/api/content-review/candidates/${selectedId}`, {
           credentials: 'include',
+          cache: 'no-store',
         });
         const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
@@ -313,6 +340,8 @@ export function ReviewDashboard() {
   const decide = useCallback(
     async (status: DecisionStatus) => {
       if (!selected) return;
+      if (selected.invalidated_at) return;
+      if (status === 'approved' && selected.has_asset_conflict === true) return;
       const decidedId = selected.id;
       const decidedTitle = selected.title;
       const previousStatus = selected.status;
@@ -347,9 +376,16 @@ export function ReviewDashboard() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status, reviewer_notes: notes }),
         });
-        const json = await readJsonResponse<{ error?: string }>(res);
+        const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
-        void silentReloadCandidates();
+        if (json.candidate) {
+          const row = toCandidateListItem(json.candidate);
+          setCandidates((prev) => prev.map((c) => (c.id === row.id ? row : c)));
+          setSelectedDetail((prev) =>
+            prev?.id === row.id ? { ...prev, ...json.candidate! } : prev,
+          );
+        }
+        await silentReloadCandidates();
       } catch (e) {
         setCandidates((prev) =>
           prev.map((c) =>
@@ -420,7 +456,8 @@ export function ReviewDashboard() {
   }, []);
 
   useKeyboardShortcuts({
-    enabled: !!selected && selected.status !== 'ready_to_publish',
+    enabled: !!selected && selected.status !== 'ready_to_publish' && !selected.invalidated_at,
+    canApprove: selected ? selected.has_asset_conflict !== true : true,
     onApprove: useCallback(() => void decide('approved'), [decide]),
     onRewrite: useCallback(() => void decide('needs_rewrite'), [decide]),
     onReject: useCallback(() => void decide('rejected'), [decide]),
@@ -547,7 +584,8 @@ export function ReviewDashboard() {
         onChangeFilters={setFilters}
         filtersOpen={filtersOpen}
         onToggleFilters={() => setFiltersOpen((o) => !o)}
-        onRefresh={() => void fetchCandidates()}
+        onRefresh={() => void silentReloadCandidates()}
+        onHealAssetLedger={() => void healStaleAssetLedger()}
       />
 
       {filtersOpen && (
@@ -589,7 +627,7 @@ export function ReviewDashboard() {
             <PublishingPrepCard
               candidate={selected}
               reviewDriveFolderUrl={selected.review_drive_folder_url}
-              onRefreshQueue={() => void fetchCandidates()}
+              onRefreshQueue={() => void silentReloadCandidates()}
             />
           )}
           <MediaPreviewStage
@@ -636,8 +674,8 @@ export function ReviewDashboard() {
           onChangeFilters={setFilters}
           videoRef={videoRef}
           loading={loading}
-          onRefresh={() => void fetchCandidates()}
-          onRefreshQueue={() => void fetchCandidates()}
+          onRefresh={() => void silentReloadCandidates()}
+          onRefreshQueue={() => void silentReloadCandidates()}
           onSwipeNext={swipeNext}
           onSwipePrev={swipePrev}
           mediaReloadNonce={mediaReloadNonce}

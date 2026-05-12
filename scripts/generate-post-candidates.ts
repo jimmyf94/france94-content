@@ -16,6 +16,7 @@ import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './
 import { loadResolvedStablePrompt } from './lib/ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
 import { buildPostPlannerPromptParts } from './lib/ai/prompts/post-planner.js';
+import { isFreshForStory, refreshCandidateAssetConflicts } from './lib/asset-usage.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -79,6 +80,12 @@ export type CandidateSourceAsset = {
   duration_seconds: number | string | null;
   drive_web_view_link: string | null;
   analysis_status: string | null;
+  capture_time?: string | null;
+  drive_created_time?: string | null;
+  imported_at?: string | null;
+  usage_status?: string | null;
+  hard_locked?: boolean | null;
+  reuse_allowed_after?: string | null;
 };
 
 export type AssetSummaryForLLM = {
@@ -103,6 +110,9 @@ export type AssetSummaryForLLM = {
   postal_code: string | null;
   duration_seconds: number | string | null;
   drive_review_link: string | null;
+  /** True when asset effective date is within STORY_FRESHNESS_HOURS (for planner hints). */
+  is_fresh_for_story: boolean;
+  usage_status: string;
 };
 
 export type ValidatedPostCandidate = z.infer<typeof llmCandidateSchema> & {
@@ -227,7 +237,21 @@ export function buildAssetSummaryForLLM(asset: CandidateSourceAsset, excerptLen 
     postal_code: asset.postal_code,
     duration_seconds: asset.duration_seconds,
     drive_review_link: asset.drive_web_view_link?.trim() || null,
+    is_fresh_for_story: isFreshForStory(asset),
+    usage_status: (asset.usage_status ?? 'unused').trim() || 'unused',
   };
+}
+
+function isAssetSelectableForGeneration(
+  a: Record<string, unknown>,
+  nowMs: number,
+): boolean {
+  if (a.hard_locked === true) return false;
+  const ra = a.reuse_allowed_after;
+  if (typeof ra === 'string' && ra && Date.parse(ra) > nowMs) return false;
+  const st = String(a.usage_status ?? 'unused').trim();
+  if (st === 'published' || st === 'hard_locked') return false;
+  return true;
 }
 
 export async function getCandidateSourceAssets(
@@ -236,6 +260,8 @@ export async function getCandidateSourceAssets(
 ): Promise<CandidateSourceAsset[]> {
   const cutoff = new Date(Date.now() - params.batchDays * 24 * 60 * 60 * 1000);
   const cutoffIso = cutoff.toISOString();
+  const fetchLimit = Math.min(Math.max(params.maxAssets * 4, params.maxAssets), 500);
+  const nowMs = Date.now();
 
   const { data, error } = await supabase
     .from('content_assets')
@@ -259,12 +285,18 @@ export async function getCandidateSourceAssets(
         'human_score',
         'sponsor_safety_score',
         'processed_at',
+        'capture_time',
+        'drive_created_time',
+        'imported_at',
         'geo_label',
         'geo_locality',
         'postal_code',
         'duration_seconds',
         'drive_web_view_link',
         'analysis_status',
+        'usage_status',
+        'hard_locked',
+        'reuse_allowed_after',
       ].join(', '),
     )
     .eq('status', 'processed')
@@ -273,10 +305,13 @@ export async function getCandidateSourceAssets(
     .gte('processed_at', cutoffIso)
     .or('content_lane.is.null,content_lane.neq.archive')
     .order('processed_at', { ascending: false })
-    .limit(params.maxAssets);
+    .limit(fetchLimit);
 
   if (error) throw error;
-  return (data ?? []) as unknown as CandidateSourceAsset[];
+  const rows = (data ?? []).filter((r) =>
+    isAssetSelectableForGeneration(r as unknown as Record<string, unknown>, nowMs),
+  );
+  return rows.slice(0, params.maxAssets) as unknown as CandidateSourceAsset[];
 }
 
 async function fetchExistingTitlesForDate(
@@ -411,6 +446,12 @@ export async function generatePostCandidatesWithLLM(params: {
         duration_seconds: s.duration_seconds,
         drive_web_view_link: s.drive_review_link,
         analysis_status: 'complete',
+        usage_status: s.usage_status,
+        capture_time: null,
+        drive_created_time: null,
+        imported_at: null,
+        hard_locked: false,
+        reuse_allowed_after: null,
       } as CandidateSourceAsset,
     ]),
   );
@@ -603,7 +644,12 @@ export async function generatePostCandidates(): Promise<void> {
     return;
   }
 
-  const summaries = assets.map((a) => buildAssetSummaryForLLM(a));
+  const summaries = assets
+    .map((a) => buildAssetSummaryForLLM(a))
+    .sort((a, b) => {
+      if (a.is_fresh_for_story === b.is_fresh_for_story) return 0;
+      return a.is_fresh_for_story ? -1 : 1;
+    });
 
   let llmResult: Awaited<ReturnType<typeof generatePostCandidatesWithLLM>>;
   try {
@@ -665,6 +711,12 @@ export async function generatePostCandidates(): Promise<void> {
 
     existingTitles.add(dedupeKey);
     inserted += 1;
+
+    try {
+      await refreshCandidateAssetConflicts(supabase, id);
+    } catch (e) {
+      console.warn(`[candidate asset conflicts]\t${id}`, e);
+    }
 
     try {
       const folder = await createReviewDriveFolder(drive, {

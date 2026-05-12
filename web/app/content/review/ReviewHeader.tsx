@@ -16,6 +16,7 @@ export function ReviewHeader({
   filtersOpen,
   onToggleFilters,
   onRefresh,
+  onHealAssetLedger,
 }: {
   pendingCount: number;
   filters: ReviewFilters;
@@ -23,6 +24,8 @@ export function ReviewHeader({
   filtersOpen: boolean;
   onToggleFilters: () => void;
   onRefresh: () => void;
+  /** Clears stale `approved` usage rows (e.g. after bulk reject outside normal release). */
+  onHealAssetLedger?: () => void;
 }) {
   const chips = useMemo<Chip[]>(() => {
     const out: Chip[] = [];
@@ -108,6 +111,16 @@ export function ReviewHeader({
       >
         Refresh
       </button>
+      {onHealAssetLedger ? (
+        <button
+          type="button"
+          title="Remove approved asset reservations left on rejected or draft candidates, then refresh the queue"
+          onClick={onHealAssetLedger}
+          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--warn)] hover:text-[var(--warn)]"
+        >
+          Heal ledger
+        </button>
+      ) : null}
       <Link
         href="/content/review/settings"
         className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"

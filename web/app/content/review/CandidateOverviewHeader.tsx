@@ -62,6 +62,10 @@ function Inner({
               <PostTypeBadge postType={candidate.post_type} />
               {assets && <MetaChip>{assets}</MetaChip>}
               {candidate.candidate_date && <MetaChip>{candidate.candidate_date}</MetaChip>}
+              {candidate.has_asset_conflict === true && (
+                <MetaChip>Conflict</MetaChip>
+              )}
+              {candidate.freshness_warning && <MetaChip>Stale story</MetaChip>}
             </div>
             <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
               <h2 className="text-lg font-semibold leading-snug text-[var(--text)]">

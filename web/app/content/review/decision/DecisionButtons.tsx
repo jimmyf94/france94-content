@@ -84,12 +84,18 @@ function ShortcutKbd({
 export function DecisionButtons({
   onDecide,
   disabled,
+  approveDisabled,
+  allDecisionsDisabled,
   size = 'md',
   layout = 'row',
   variant = 'default',
 }: {
   onDecide: (s: DecisionStatus) => void;
   disabled?: boolean;
+  /** When true, Approve is disabled but rewrite/reject may still work. */
+  approveDisabled?: boolean;
+  /** When true, all three decision buttons are disabled (e.g. invalidated candidate). */
+  allDecisionsDisabled?: boolean;
   size?: 'md' | 'lg';
   layout?: 'row' | 'column';
   variant?: 'default' | 'iconOnly';
@@ -102,6 +108,8 @@ export function DecisionButtons({
       ? 'flex flex-col gap-2'
       : 'grid grid-cols-3 gap-2';
   const btnCls = !iconOnly && layout === 'column' ? 'w-full' : '';
+
+  const allOff = Boolean(disabled || allDecisionsDisabled);
 
   const items: {
     status: DecisionStatus;
@@ -144,7 +152,7 @@ export function DecisionButtons({
           <button
             key={item.status}
             type="button"
-            disabled={disabled}
+            disabled={allOff || (item.status === 'approved' && approveDisabled)}
             onClick={() => onDecide(item.status)}
             aria-label={item.label}
             className={`flex items-center justify-center ${item.buttonClass}`}
@@ -162,7 +170,7 @@ export function DecisionButtons({
         <button
           key={item.status}
           type="button"
-          disabled={disabled}
+          disabled={allOff || (item.status === 'approved' && approveDisabled)}
           onClick={() => onDecide(item.status)}
           className={`flex items-center justify-between gap-3 px-3 text-left ${item.buttonClass}`}
         >

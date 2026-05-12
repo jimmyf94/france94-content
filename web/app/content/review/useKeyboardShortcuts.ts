@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 
 type Handlers = {
   enabled: boolean;
+  /** When false, A / approve shortcut is ignored (e.g. asset conflict). */
+  canApprove?: boolean;
   onApprove: () => void;
   onRewrite: () => void;
   onReject: () => void;
@@ -22,6 +24,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 export function useKeyboardShortcuts({
   enabled,
+  canApprove = true,
   onApprove,
   onRewrite,
   onReject,
@@ -38,6 +41,7 @@ export function useKeyboardShortcuts({
       switch (e.key) {
         case 'a':
         case 'A':
+          if (!canApprove) return;
           e.preventDefault();
           onApprove();
           break;
@@ -71,5 +75,5 @@ export function useKeyboardShortcuts({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [enabled, onApprove, onRewrite, onReject, onNext, onPrev, onTogglePlay]);
+  }, [enabled, canApprove, onApprove, onRewrite, onReject, onNext, onPrev, onTogglePlay]);
 }

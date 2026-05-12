@@ -495,12 +495,32 @@ function MobileCandidateView({
         <CaptionTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
       </section>
 
-      <section className="px-3 pb-2">
+      <section className="space-y-2 px-3 pb-2">
+        {candidate.invalidated_at && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-[11px] text-[var(--muted)]">
+            <span className="font-semibold text-[var(--text)]">Invalidated</span>
+            {candidate.invalidation_reason ? `: ${candidate.invalidation_reason}` : ''}
+          </div>
+        )}
+        {candidate.has_asset_conflict === true && candidate.asset_conflict_summary && (
+          <div className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2 py-1.5 text-[11px] text-[var(--bad)]">
+            {candidate.asset_conflict_summary}
+          </div>
+        )}
+        {candidate.freshness_warning && (
+          <div className="rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2 py-1.5 text-[11px] text-[var(--warn)]">
+            {candidate.freshness_warning}
+          </div>
+        )}
         <DecisionButtons
           onDecide={onDecide}
           size="lg"
           variant="iconOnly"
           disabled={candidate.status === 'ready_to_publish'}
+          approveDisabled={
+            candidate.has_asset_conflict === true || Boolean(candidate.freshness_warning)
+          }
+          allDecisionsDisabled={Boolean(candidate.invalidated_at)}
         />
       </section>
 

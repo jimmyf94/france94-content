@@ -67,11 +67,45 @@ export function CandidateDecisionPanel({
   return (
     <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
       <div className="shrink-0 space-y-3 border-b border-[var(--border)] bg-[var(--surface)] p-4">
+        {candidate.invalidated_at && (
+          <div
+            className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--muted)]"
+            role="status"
+          >
+            <span className="font-semibold text-[var(--text)]">Invalidated</span>
+            {candidate.invalidation_reason ? `: ${candidate.invalidation_reason}` : ''}
+          </div>
+        )}
+        {candidate.has_asset_conflict === true && candidate.asset_conflict_summary && (
+          <div
+            className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-3 py-2 text-xs text-[var(--bad)]"
+            role="status"
+          >
+            <span className="font-semibold">Asset conflict</span>: {candidate.asset_conflict_summary}
+          </div>
+        )}
+        {candidate.freshness_warning && (
+          <div
+            className="rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-3 py-2 text-xs text-[var(--warn)]"
+            role="status"
+          >
+            {candidate.freshness_warning}
+            {candidate.is_fresh_story === false && (
+              <span className="mt-1 block text-[10px] text-[var(--muted)]">
+                is_fresh_story: false
+              </span>
+            )}
+          </div>
+        )}
         <DecisionButtons
           onDecide={onDecide}
           layout="column"
           size="lg"
           disabled={candidate.status === 'ready_to_publish'}
+          approveDisabled={
+            candidate.has_asset_conflict === true || Boolean(candidate.freshness_warning)
+          }
+          allDecisionsDisabled={Boolean(candidate.invalidated_at)}
         />
         <section className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3">
           <div className="flex items-center justify-between">

@@ -31,6 +31,12 @@ export const POST_CANDIDATE_LIST_COLUMNS = [
   'regeneration_count',
   'reviewed_at',
   'reviewed_by',
+  'invalidated_at',
+  'invalidation_reason',
+  'has_asset_conflict',
+  'asset_conflict_summary',
+  'freshness_warning',
+  'is_fresh_story',
 ].join(',');
 
 /** Extra columns loaded for a single candidate (detail view, PATCH body, etc.). */
