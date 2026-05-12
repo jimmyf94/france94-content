@@ -1,9 +1,10 @@
 'use client';
 
+import { memo, useCallback } from 'react';
+
 import { PostTypeBadge } from './PostTypeBadge';
-import type { PostCandidate } from './types';
+import type { CandidateListItem } from './types';
 import { postTypeKey } from './postTypeTheme';
-import { useCandidateMedia } from './useCandidateMedia';
 
 const POST_TYPE_INITIAL: Record<string, string> = {
   reel: 'R',
@@ -36,7 +37,7 @@ function PostTypeAvatar({
   thumbnailUrl,
   className = 'h-24 w-24 shrink-0',
 }: {
-  candidate: PostCandidate;
+  candidate: CandidateListItem;
   thumbnailUrl: string | null;
   /** Tall queue thumbs use e.g. `h-[98%] min-h-[4rem] w-full shrink-0`. */
   className?: string;
@@ -62,23 +63,25 @@ function PostTypeAvatar({
   );
 }
 
-export function QueueRow({
+export const QueueRow = memo(function QueueRow({
   candidate,
   selected,
-  onClick,
-  mediaReloadNonce = 0,
+  onSelect,
+  firstThumbnailUrl,
 }: {
-  candidate: PostCandidate;
+  candidate: CandidateListItem;
   selected: boolean;
-  onClick: () => void;
-  mediaReloadNonce?: number;
+  onSelect: (id: string) => void;
+  /** From bulk Drive listing; null until loaded or if no thumbnail. */
+  firstThumbnailUrl: string | null;
 }) {
-  const { files } = useCandidateMedia(candidate.id, mediaReloadNonce);
-  const firstThumb = files.find((f) => f.thumbnailLink)?.thumbnailLink ?? null;
+  const handleClick = useCallback(() => {
+    onSelect(candidate.id);
+  }, [onSelect, candidate.id]);
+
   const dbAssetLen =
     candidate.source_asset_ids?.length ?? candidate.source_drive_file_ids?.length ?? null;
-  const assetCount =
-    typeof dbAssetLen === 'number' && dbAssetLen > 0 ? dbAssetLen : files.length;
+  const assetCount = typeof dbAssetLen === 'number' && dbAssetLen > 0 ? dbAssetLen : null;
   const age = formatCreatedAge(candidate.created_at);
   const priority =
     candidate.priority_score != null
@@ -88,7 +91,7 @@ export function QueueRow({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={handleClick}
       className={`grid w-full grid-cols-[7rem_minmax(0,1fr)] items-stretch gap-3 rounded-xl border p-4 text-left transition-colors ${
         selected
           ? 'border-[color:rgb(91_140_255_/0.55)] bg-[var(--surface-2)] ring-1 ring-[var(--ring)]'
@@ -99,7 +102,7 @@ export function QueueRow({
       <div className="flex h-full min-h-[5rem] w-[7rem] flex-col justify-center justify-self-start">
         <PostTypeAvatar
           candidate={candidate}
-          thumbnailUrl={firstThumb}
+          thumbnailUrl={firstThumbnailUrl}
           className="h-[98%] min-h-[4.5rem] w-full shrink-0"
         />
       </div>
@@ -111,7 +114,9 @@ export function QueueRow({
               className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--muted)]"
               title="Source assets on this candidate"
             >
-              {assetCount} {assetCount === 1 ? 'asset' : 'assets'}
+              {assetCount != null
+                ? `${assetCount} ${assetCount === 1 ? 'asset' : 'assets'}`
+                : '—'}
             </span>
             {age && (
               <span className="text-[11px] tabular-nums text-[var(--muted)]">{age}</span>
@@ -134,4 +139,4 @@ export function QueueRow({
       </div>
     </button>
   );
-}
+});

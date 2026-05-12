@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
+import type { PublishingJobDto } from '@/lib/publishing-types';
 import { readJsonResponse } from '@/lib/read-json-response';
 
-import type { PublishingJobDto } from '../../review/PublishingPrepCard';
+import { PublishingJobView } from '../PublishingJobView';
 
 type CandidateBrief = {
   id: string;
@@ -69,11 +70,6 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
     }
   };
 
-  const media =
-    job?.prepared_media?.length ?
-      [...job.prepared_media].sort((a, b) => a.order - b.order)
-    : [];
-
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 text-[var(--text)]">
       <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -108,95 +104,13 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs font-medium">
-              {job.status}
-            </span>
-            <span className="text-xs text-[var(--muted)]">{job.publish_type}</span>
-            <button
-              type="button"
-              disabled={refreshing}
-              onClick={() => void refreshGraph()}
-              className="rounded-md border border-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50"
-            >
-              {refreshing ? 'Refreshing…' : 'Refresh Graph API status'}
-            </button>
-          </div>
-
-          {job.error_message && (
-            <div className="rounded-md border border-[var(--bad)] bg-[var(--bad)]/10 p-3 text-sm text-[var(--bad)] whitespace-pre-wrap">
-              {job.error_message}
-            </div>
-          )}
-
-          {job.caption && (
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Caption
-              </p>
-              <p className="mt-2 whitespace-pre-wrap text-sm">{job.caption}</p>
-            </div>
-          )}
-
-          {media.length > 0 && (
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Prepared media
-              </p>
-              <div className="mt-3 flex flex-wrap gap-3">
-                {media.map((m, i) =>
-                  m.media_type === 'video' ?
-                    <video
-                      key={`${m.public_url}-${i}`}
-                      src={m.public_url}
-                      controls
-                      className="max-h-64 max-w-full rounded-lg border border-[var(--border)] bg-black"
-                    />
-                  : <a key={`${m.public_url}-${i}`} href={m.public_url} target="_blank" rel="noreferrer">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={m.public_url}
-                        alt=""
-                        className="max-h-64 max-w-full rounded-lg border border-[var(--border)] object-contain"
-                      />
-                    </a>,
-                )}
-              </div>
-              <ul className="mt-3 list-inside list-disc text-sm text-[var(--accent)]">
-                {job.public_media_urls?.map((u) => (
-                  <li key={u}>
-                    <a href={u} target="_blank" rel="noreferrer" className="underline hover:opacity-80">
-                      {u}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {candidate?.review_drive_folder_url && (
-            <a
-              href={candidate.review_drive_folder_url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-block text-sm text-[var(--accent)] underline hover:opacity-80"
-            >
-              Open source review folder
-            </a>
-          )}
-
-          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 font-mono text-xs text-[var(--muted)]">
-            <p className="break-all text-[var(--text)]">
-              children: {job.instagram_child_container_ids?.join(', ') || '—'}
-            </p>
-            <p className="mt-2 break-all">
-              parent: {job.instagram_parent_container_id ?? '—'}
-            </p>
-            <p className="mt-2 break-all">
-              creation: {job.instagram_creation_id ?? '—'}
-            </p>
-            <p className="mt-2 whitespace-pre-wrap">{job.instagram_container_status ?? ''}</p>
-          </div>
+          <PublishingJobView
+            variant="detailPage"
+            job={job}
+            refreshing={refreshing}
+            onRefreshGraph={refreshGraph}
+            reviewDriveFolderUrl={candidate?.review_drive_folder_url}
+          />
         </div>
       )}
     </div>

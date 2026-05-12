@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 
 import { QueueRow } from './QueueRow';
-import type { PostCandidate, StatusTab } from './types';
+import type { CandidateListItem, StatusTab } from './types';
 import { STATUS_TAB_LABEL } from './types';
 
 const TAB_ORDER: StatusTab[] = [
@@ -22,16 +22,17 @@ export function CandidateQueueSidebar({
   selectedId,
   onSelect,
   loading,
-  mediaReloadNonce = 0,
+  firstThumbnailById = {},
 }: {
-  candidates: PostCandidate[];
+  candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
   activeTab: StatusTab;
   onChangeTab: (t: StatusTab) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   loading: boolean;
-  mediaReloadNonce?: number;
+  /** Populated by parent via one bulk `/files-bulk` call (not per-row Drive lists). */
+  firstThumbnailById?: Readonly<Record<string, string | null>>;
 }) {
   const visible = useMemo(
     () => candidates.filter((c) => c.status === activeTab),
@@ -70,25 +71,30 @@ export function CandidateQueueSidebar({
           })}
         </div>
       </div>
-      <div className="scrollbar-thin flex-1 overflow-auto">
+      <div className="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-hidden">
         {loading && visible.length === 0 && (
           <p className="p-4 text-sm text-[var(--muted)]">Loading…</p>
         )}
         {!loading && visible.length === 0 && (
           <p className="p-4 text-sm text-[var(--muted)]">Queue empty.</p>
         )}
-        <ul className="flex flex-col gap-1 p-2">
-          {visible.map((c) => (
-            <li key={c.id}>
-              <QueueRow
-                candidate={c}
-                selected={c.id === selectedId}
-                onClick={() => onSelect(c.id)}
-                mediaReloadNonce={mediaReloadNonce}
-              />
-            </li>
-          ))}
-        </ul>
+        {visible.length > 0 && (
+          <ul
+            className="scrollbar-thin flex min-h-0 flex-1 list-none flex-col gap-2.5 overflow-auto p-2.5"
+            role="list"
+          >
+            {visible.map((c) => (
+              <li key={c.id} className="[content-visibility:auto]">
+                <QueueRow
+                  candidate={c}
+                  selected={c.id === selectedId}
+                  onSelect={onSelect}
+                  firstThumbnailUrl={firstThumbnailById[c.id] ?? null}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

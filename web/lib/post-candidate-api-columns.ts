@@ -1,0 +1,46 @@
+/** Supabase `select()` fragment for list endpoint — omits large JSONB blobs. */
+export const POST_CANDIDATE_LIST_COLUMNS = [
+  'id',
+  'candidate_date',
+  'platform',
+  'post_type',
+  'title',
+  'hook',
+  'concept_summary',
+  'rationale',
+  'caption_fr',
+  'caption_en',
+  'hashtags',
+  'priority_score',
+  'mission_score',
+  'human_score',
+  'sponsor_safety_score',
+  'effort_score',
+  'status',
+  'reviewer_notes',
+  'review_drive_folder_id',
+  'review_drive_folder_url',
+  'source_asset_ids',
+  'source_drive_file_ids',
+  'publishing_job_id',
+  'ready_to_publish_at',
+  'created_at',
+  'updated_at',
+  'llm_model',
+  'last_regenerated_at',
+  'regeneration_count',
+  'reviewed_at',
+  'reviewed_by',
+].join(',');
+
+/** Extra columns loaded for a single candidate (detail view, PATCH body, etc.). */
+export const POST_CANDIDATE_DETAIL_EXTRA_COLUMNS = [
+  'story_frames',
+  'reel_instructions',
+  'carousel_slides',
+  'static_post_instructions',
+  'llm_raw',
+  'previous_versions',
+].join(',');
+
+export const POST_CANDIDATE_DETAIL_COLUMNS = `${POST_CANDIDATE_LIST_COLUMNS},${POST_CANDIDATE_DETAIL_EXTRA_COLUMNS}`;

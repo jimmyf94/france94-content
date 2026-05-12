@@ -17,12 +17,14 @@ import { ReviewHeader } from './ReviewHeader';
 import { ShortcutsBanner } from './ShortcutsBanner';
 import { Toast, type ToastState } from './Toast';
 import type {
+  CandidateListItem,
   DecisionStatus,
   DetailTab,
   PostCandidate,
   ReviewDriveFile,
   StatusTab,
 } from './types';
+import { toCandidateListItem } from './types';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
 const ALL_STATUSES = 'needs_review,needs_rewrite,approved,ready_to_publish,rejected';
@@ -52,6 +54,17 @@ function decisionToastMessage(status: DecisionStatus, title: string | null): str
   return `Needs rewrite ${t}`.trim();
 }
 
+function listRowToFallbackPostCandidate(row: CandidateListItem): PostCandidate {
+  return {
+    ...row,
+    story_frames: null,
+    reel_instructions: null,
+    carousel_slides: null,
+    static_post_instructions: null,
+    llm_raw: undefined,
+  };
+}
+
 export function ReviewDashboard() {
   const sp = useSearchParams();
 
@@ -69,7 +82,6 @@ export function ReviewDashboard() {
   );
   const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>('caption');
 
-  const [candidates, setCandidates] = useState<PostCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,12 +91,15 @@ export function ReviewDashboard() {
   const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
   const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
+  const [queueThumbnails, setQueueThumbnails] = useState<Record<string, string | null>>({});
+  const thumbFetchGen = useRef(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const queryString = useMemo(() => {
     const q = new URLSearchParams();
     q.set('status', ALL_STATUSES);
+    q.set('limit', '500');
     if (filters.postType.trim()) q.set('post_type', filters.postType.trim());
     if (filters.date.trim()) q.set('candidate_date', filters.date.trim());
     if (filters.priorityMin.trim()) q.set('priority_min', filters.priorityMin.trim());
@@ -93,36 +108,99 @@ export function ReviewDashboard() {
     return q.toString();
   }, [filters]);
 
-  const fetchCandidates = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/content-review/candidates?${queryString}`, {
-        credentials: 'include',
-      });
-      const json = await readJsonResponse<{ candidates?: PostCandidate[]; error?: string }>(res);
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      const list = json.candidates ?? [];
-      setCandidates(list);
-      setDraftNotes((prev) => {
-        const next = { ...prev };
-        for (const c of list) if (next[c.id] === undefined) next[c.id] = c.reviewer_notes ?? '';
-        return next;
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setCandidates([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [queryString]);
+  const [candidates, setCandidates] = useState<CandidateListItem[]>([]);
+  const [selectedDetail, setSelectedDetail] = useState<PostCandidate | null>(null);
+
+  const fetchCandidatesInternal = useCallback(
+    async (mode: 'initial' | 'silent') => {
+      const showLoading = mode === 'initial';
+      if (showLoading) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const res = await fetch(`/api/content-review/candidates?${queryString}`, {
+          credentials: 'include',
+        });
+        const json = await readJsonResponse<{ candidates?: CandidateListItem[]; error?: string }>(
+          res,
+        );
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        const list = json.candidates ?? [];
+        setCandidates(list);
+        setDraftNotes((prev) => {
+          const next = { ...prev };
+          for (const c of list) if (next[c.id] === undefined) next[c.id] = c.reviewer_notes ?? '';
+          return next;
+        });
+        setSelectedDetail((prev) => {
+          if (!prev) return prev;
+          const row = list.find((r) => r.id === prev.id);
+          if (!row) return null;
+          return { ...prev, ...row } as PostCandidate;
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        if (showLoading) {
+          setCandidates([]);
+          setSelectedDetail(null);
+        }
+      } finally {
+        if (showLoading) {
+          setLoading(false);
+        }
+      }
+    },
+    [queryString],
+  );
+
+  const fetchCandidates = useCallback(() => fetchCandidatesInternal('initial'), [fetchCandidatesInternal]);
+
+  const silentReloadCandidates = useCallback(
+    () => fetchCandidatesInternal('silent'),
+    [fetchCandidatesInternal],
+  );
 
   useEffect(() => {
     void fetchCandidates();
   }, [fetchCandidates]);
 
+  useEffect(() => {
+    if (candidates.length === 0) {
+      setQueueThumbnails({});
+      return;
+    }
+    const gen = ++thumbFetchGen.current;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const res = await fetch('/api/content-review/candidates/files-bulk', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: candidates.map((c) => c.id) }),
+        });
+        const json = await readJsonResponse<{
+          thumbnails?: Record<string, string | null>;
+          error?: string;
+        }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        if (cancelled || gen !== thumbFetchGen.current) return;
+        setQueueThumbnails(json.thumbnails ?? {});
+      } catch {
+        if (cancelled || gen !== thumbFetchGen.current) return;
+        /* keep existing thumbnails on failure */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [candidates, mediaReloadNonce]);
+
   const visibleByTab = useMemo(() => {
-    const m: Record<StatusTab, PostCandidate[]> = {
+    const m: Record<StatusTab, CandidateListItem[]> = {
       needs_review: [],
       needs_rewrite: [],
       approved: [],
@@ -161,13 +239,44 @@ export function ReviewDashboard() {
     }
   }, [visible, selectedId]);
 
-  const selected = useMemo(
-    () => candidates.find((c) => c.id === selectedId) ?? null,
-    [candidates, selectedId],
-  );
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedDetail(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/content-review/candidates/${selectedId}`, {
+          credentials: 'include',
+        });
+        const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        if (!cancelled && json.candidate?.id === selectedId) {
+          setSelectedDetail(json.candidate);
+        }
+      } catch {
+        if (!cancelled) setSelectedDetail(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  const selected = useMemo((): PostCandidate | null => {
+    if (!selectedId) return null;
+    const row = candidates.find((c) => c.id === selectedId);
+    if (!row) return null;
+    if (selectedDetail?.id === selectedId) {
+      return { ...selectedDetail, ...row };
+    }
+    return listRowToFallbackPostCandidate(row);
+  }, [candidates, selectedId, selectedDetail]);
 
   const handleCandidateUpdated = useCallback((c: PostCandidate) => {
-    setCandidates((prev) => prev.map((x) => (x.id === c.id ? { ...x, ...c } : x)));
+    setCandidates((prev) => prev.map((x) => (x.id === c.id ? toCandidateListItem(c) : x)));
+    setSelectedDetail((prev) => (prev?.id === c.id ? c : prev));
   }, []);
 
   const handleRemoveReviewAsset = useCallback(
@@ -223,6 +332,11 @@ export function ReviewDashboard() {
             : c,
         ),
       );
+      setSelectedDetail((prev) =>
+        prev?.id === decidedId
+          ? { ...prev, status, reviewer_notes: notes, updated_at: now }
+          : prev,
+      );
       setSelectedId(next?.id ?? null);
       setToast({ kind: 'good', msg: decisionToastMessage(status, decidedTitle) });
 
@@ -235,7 +349,7 @@ export function ReviewDashboard() {
         });
         const json = await readJsonResponse<{ error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
-        void fetchCandidates();
+        void silentReloadCandidates();
       } catch (e) {
         setCandidates((prev) =>
           prev.map((c) =>
@@ -244,13 +358,18 @@ export function ReviewDashboard() {
               : c,
           ),
         );
+        setSelectedDetail((prev) =>
+          prev?.id === decidedId
+            ? { ...prev, status: previousStatus, reviewer_notes: previousNotes }
+            : prev,
+        );
         setToast({
           kind: 'bad',
           msg: e instanceof Error ? `Save failed: ${e.message}` : 'Save failed',
         });
       }
     },
-    [selected, draftNotes, visible, fetchCandidates],
+    [selected, draftNotes, visible, silentReloadCandidates],
   );
 
   const goNext = useCallback(() => {
@@ -330,6 +449,9 @@ export function ReviewDashboard() {
         c.id === id ? { ...c, reviewer_notes: notes, updated_at: now } : c,
       ),
     );
+    setSelectedDetail((prev) =>
+      prev?.id === id ? { ...prev, reviewer_notes: notes, updated_at: now } : prev,
+    );
 
     try {
       const res = await fetch(`/api/content-review/candidates/${id}`, {
@@ -346,6 +468,9 @@ export function ReviewDashboard() {
         prev.map((c) =>
           c.id === id ? { ...c, reviewer_notes: previousNotes } : c,
         ),
+      );
+      setSelectedDetail((prev) =>
+        prev?.id === id ? { ...prev, reviewer_notes: previousNotes } : prev,
       );
       setToast({
         kind: 'bad',
@@ -375,6 +500,9 @@ export function ReviewDashboard() {
           prev.map((c) =>
             c.id === id ? { ...c, reviewer_notes: draft } : c,
           ),
+        );
+        setSelectedDetail((prev) =>
+          prev?.id === id ? { ...prev, reviewer_notes: draft } : prev,
         );
       } catch (e) {
         setToast({
@@ -452,7 +580,7 @@ export function ReviewDashboard() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             loading={loading}
-            mediaReloadNonce={mediaReloadNonce}
+            firstThumbnailById={queueThumbnails}
           />
         </div>
         <div className="flex min-h-0 flex-col">
@@ -513,6 +641,7 @@ export function ReviewDashboard() {
           onSwipeNext={swipeNext}
           onSwipePrev={swipePrev}
           mediaReloadNonce={mediaReloadNonce}
+          firstThumbnailById={queueThumbnails}
           onCandidateUpdated={handleCandidateUpdated}
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onRegenerate={regenerate}

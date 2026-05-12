@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { POST_CANDIDATE_LIST_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { escapeIlikePattern } from '@/lib/query-escape';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 const DEFAULT_STATUSES = ['needs_review', 'needs_rewrite'];
+const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 500;
 
 export async function GET(req: NextRequest) {
   try {
@@ -21,7 +24,20 @@ export async function GET(req: NextRequest) {
       if (statuses.length === 0) statuses = DEFAULT_STATUSES;
     }
 
-    let q = supabase.from('post_candidates').select('*').in('status', statuses);
+    const limitRaw = sp.get('limit')?.trim();
+    let limit = DEFAULT_LIMIT;
+    if (limitRaw) {
+      const n = Number.parseInt(limitRaw, 10);
+      if (Number.isFinite(n)) {
+        limit = Math.min(MAX_LIMIT, Math.max(1, n));
+      }
+    }
+
+    let q = supabase
+      .from('post_candidates')
+      .select(POST_CANDIDATE_LIST_COLUMNS)
+      .in('status', statuses)
+      .limit(limit);
 
     const postType = sp.get('post_type')?.trim();
     if (postType) {

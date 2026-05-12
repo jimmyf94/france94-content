@@ -33,7 +33,34 @@ export type PostCandidate = {
   llm_raw?: unknown;
   last_regenerated_at?: string | null;
   regeneration_count?: number | null;
+  reviewed_at?: string | null;
+  reviewed_by?: string | null;
+  previous_versions?: unknown;
 };
+
+/** Row shape from `GET /api/content-review/candidates` (no heavy JSONB). */
+export type CandidateListItem = Omit<
+  PostCandidate,
+  | 'story_frames'
+  | 'reel_instructions'
+  | 'carousel_slides'
+  | 'static_post_instructions'
+  | 'llm_raw'
+  | 'previous_versions'
+>;
+
+export function toCandidateListItem(c: PostCandidate): CandidateListItem {
+  const {
+    story_frames: _sf,
+    reel_instructions: _ri,
+    carousel_slides: _cs,
+    static_post_instructions: _si,
+    llm_raw: _lr,
+    previous_versions: _pv,
+    ...rest
+  } = c;
+  return rest;
+}
 
 export type ReviewDriveFile = {
   id: string;

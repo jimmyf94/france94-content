@@ -1,3 +1,10 @@
+/**
+ * Values persisted on `publishing_jobs.publish_type`.
+ * Canonical list: Postgres constraint `publishing_jobs_publish_type_check`
+ * (see `supabase/migrations/20260511130000_publishing_jobs.sql` and
+ * `supabase/migrations/20260518120000_publishing_jobs_publish_type_story_sequence.sql`).
+ * Update the migration when adding a new variant, then extend this union.
+ */
 export type PublishType = 'image' | 'video' | 'carousel' | 'reel' | 'story' | 'story_sequence';
 
 export type PublishingJobStatus =

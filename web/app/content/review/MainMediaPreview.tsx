@@ -21,6 +21,7 @@ function FallbackTile({ file, compact }: { file: ReviewDriveFile; compact: boole
         <img
           src={file.thumbnailLink}
           alt=""
+          loading="lazy"
           className={`rounded ${compact ? 'max-h-32' : 'max-h-64'}`}
         />
       )}
@@ -64,6 +65,7 @@ export function MainMediaPreview({
             key={file.id}
             src={proxy}
             alt={file.name}
+            loading="lazy"
             className="max-h-full max-w-full rounded-lg object-contain"
             onError={() => setImgFailed(true)}
           />

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -34,6 +35,34 @@ const patchSchema = z
       v.reel_instructions !== undefined,
     { message: 'Provide at least one field to update' },
   );
+
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const denied = assertReviewAuthorized(req);
+  if (denied) return denied;
+
+  const { id } = await ctx.params;
+  if (!id?.trim()) {
+    return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+  }
+
+  const supabase = getSupabaseServiceRole();
+  const { data, error } = await supabase
+    .from('post_candidates')
+    .select(POST_CANDIDATE_DETAIL_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[candidate get]', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (!data) {
+    return NextResponse.json({ error: 'Candidate not found' }, { status: 404 });
+  }
+
+  return NextResponse.json({ candidate: data });
+}
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = assertReviewAuthorized(req);
@@ -119,7 +148,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     .from('post_candidates')
     .update(update)
     .eq('id', id)
-    .select()
+    .select(POST_CANDIDATE_DETAIL_COLUMNS)
     .maybeSingle();
 
   if (error) {

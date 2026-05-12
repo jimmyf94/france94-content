@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DecisionButtons } from '../decision/DecisionButtons';
@@ -17,6 +17,7 @@ import { DebugTab } from '../tabs/DebugTab';
 import { StructureTab } from '../tabs/StructureTab';
 import { TranscriptTab } from '../tabs/TranscriptTab';
 import type {
+  CandidateListItem,
   DecisionStatus,
   DetailTab,
   PostCandidate,
@@ -108,12 +109,13 @@ export function MobileReviewStack({
   onSwipeNext,
   onSwipePrev,
   mediaReloadNonce,
+  firstThumbnailById = {},
   onCandidateUpdated,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
 }: {
-  candidates: PostCandidate[];
+  candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
   activeStatusTab: StatusTab;
   onChangeStatusTab: (t: StatusTab) => void;
@@ -137,6 +139,7 @@ export function MobileReviewStack({
   onSwipeNext: () => void;
   onSwipePrev: () => void;
   mediaReloadNonce: number;
+  firstThumbnailById?: Readonly<Record<string, string | null>>;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
@@ -154,6 +157,14 @@ export function MobileReviewStack({
     if (activeDetailTab === 'caption') onChangeDetailTab('structure');
     onChangeSheet('details');
   };
+
+  const handleQueueSelect = useCallback(
+    (id: string) => {
+      onSelect(id);
+      onChangeSheet(null);
+    },
+    [onSelect, onChangeSheet],
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -223,12 +234,9 @@ export function MobileReviewStack({
           activeTab={activeStatusTab}
           onChangeTab={onChangeStatusTab}
           selectedId={selected?.id ?? null}
-          onSelect={(id) => {
-            onSelect(id);
-            onChangeSheet(null);
-          }}
+          onSelect={handleQueueSelect}
           loading={loading}
-          mediaReloadNonce={mediaReloadNonce}
+          firstThumbnailById={firstThumbnailById}
         />
       </BottomSheet>
 
