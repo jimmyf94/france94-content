@@ -6,7 +6,13 @@ import { QueueRow } from './QueueRow';
 import type { PostCandidate, StatusTab } from './types';
 import { STATUS_TAB_LABEL } from './types';
 
-const TAB_ORDER: StatusTab[] = ['needs_review', 'needs_rewrite', 'approved', 'rejected'];
+const TAB_ORDER: StatusTab[] = [
+  'needs_review',
+  'needs_rewrite',
+  'approved',
+  'ready_to_publish',
+  'rejected',
+];
 
 export function CandidateQueueSidebar({
   candidates,
@@ -43,7 +49,7 @@ export function CandidateQueueSidebar({
         </span>
       </div>
       <div className="shrink-0 border-b border-[var(--border)] p-2">
-        <div className="grid grid-cols-2 gap-1">
+        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
           {TAB_ORDER.map((t) => {
             const isActive = activeTab === t;
             return (

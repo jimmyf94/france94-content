@@ -67,7 +67,12 @@ export function CandidateDecisionPanel({
   return (
     <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
       <div className="shrink-0 space-y-3 border-b border-[var(--border)] bg-[var(--surface)] p-4">
-        <DecisionButtons onDecide={onDecide} layout="column" size="lg" />
+        <DecisionButtons
+          onDecide={onDecide}
+          layout="column"
+          size="lg"
+          disabled={candidate.status === 'ready_to_publish'}
+        />
         <section className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">

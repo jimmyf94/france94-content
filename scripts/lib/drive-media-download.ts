@@ -27,6 +27,12 @@ export function maxAnalysisFileBytes(): number {
   return mb * 1024 * 1024;
 }
 
+/** Byte cap for publishing prep (MP4 / large sources); separate from analysis. */
+export function maxPublishingFileBytes(): number {
+  const mb = envInt('MAX_PUBLISHING_FILE_SIZE_MB', 300);
+  return mb * 1024 * 1024;
+}
+
 async function streamToBufferWithLimit(stream: NodeJS.ReadableStream, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;

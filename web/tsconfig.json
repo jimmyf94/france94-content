@@ -16,7 +16,8 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"],
-      "@fr94/ai/*": ["../scripts/lib/ai/*"]
+      "@fr94/ai/*": ["../scripts/lib/ai/*"],
+      "@fr94/publishing/*": ["../scripts/lib/publishing/*"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

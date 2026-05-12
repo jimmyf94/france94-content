@@ -12,6 +12,7 @@ import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
 import { MediaPreviewStage } from './MediaPreviewStage';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
 import { invalidateCandidateMediaCache } from './useCandidateMedia';
+import { PublishingPrepCard } from './PublishingPrepCard';
 import { ReviewHeader } from './ReviewHeader';
 import { ShortcutsBanner } from './ShortcutsBanner';
 import { Toast, type ToastState } from './Toast';
@@ -24,12 +25,13 @@ import type {
 } from './types';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
-const ALL_STATUSES = 'needs_review,needs_rewrite,approved,rejected';
+const ALL_STATUSES = 'needs_review,needs_rewrite,approved,ready_to_publish,rejected';
 
 const VALID_TABS: ReadonlySet<StatusTab> = new Set([
   'needs_review',
   'needs_rewrite',
   'approved',
+  'ready_to_publish',
   'rejected',
 ]);
 
@@ -124,6 +126,7 @@ export function ReviewDashboard() {
       needs_review: [],
       needs_rewrite: [],
       approved: [],
+      ready_to_publish: [],
       rejected: [],
     };
     for (const c of candidates) {
@@ -139,6 +142,7 @@ export function ReviewDashboard() {
       needs_review: visibleByTab.needs_review.length,
       needs_rewrite: visibleByTab.needs_rewrite.length,
       approved: visibleByTab.approved.length,
+      ready_to_publish: visibleByTab.ready_to_publish.length,
       rejected: visibleByTab.rejected.length,
     }),
     [visibleByTab],
@@ -297,7 +301,7 @@ export function ReviewDashboard() {
   }, []);
 
   useKeyboardShortcuts({
-    enabled: !!selected,
+    enabled: !!selected && selected.status !== 'ready_to_publish',
     onApprove: useCallback(() => void decide('approved'), [decide]),
     onRewrite: useCallback(() => void decide('needs_rewrite'), [decide]),
     onReject: useCallback(() => void decide('rejected'), [decide]),
@@ -453,6 +457,13 @@ export function ReviewDashboard() {
         </div>
         <div className="flex min-h-0 flex-col">
           <CandidateOverviewHeader candidate={selected} mediaReloadNonce={mediaReloadNonce} />
+          {selected && (
+            <PublishingPrepCard
+              candidate={selected}
+              reviewDriveFolderUrl={selected.review_drive_folder_url}
+              onRefreshQueue={() => void fetchCandidates()}
+            />
+          )}
           <MediaPreviewStage
             candidate={selected}
             videoRef={videoRef}
@@ -498,6 +509,7 @@ export function ReviewDashboard() {
           videoRef={videoRef}
           loading={loading}
           onRefresh={() => void fetchCandidates()}
+          onRefreshQueue={() => void fetchCandidates()}
           onSwipeNext={swipeNext}
           onSwipePrev={swipePrev}
           mediaReloadNonce={mediaReloadNonce}

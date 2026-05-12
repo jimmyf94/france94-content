@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DecisionButtons } from '../decision/DecisionButtons';
+import { PublishingPrepCard } from '../PublishingPrepCard';
 import { RewriteChips } from '../decision/RewriteChips';
 import { FilterForm, type ReviewFilters } from '../FilterDrawer';
 import { MainMediaPreview } from '../MainMediaPreview';
@@ -60,6 +61,7 @@ function StatusPill({ status }: { status: string }) {
     needs_review: 'border-[var(--accent)] text-[var(--accent)]',
     needs_rewrite: 'border-[var(--warn)] text-[var(--warn)]',
     approved: 'border-[var(--good)] text-[var(--good)]',
+    ready_to_publish: 'border-[var(--good)] text-[var(--good)]',
     rejected: 'border-[var(--bad)] text-[var(--bad)]',
   };
   const tone = map[status] ?? 'border-[var(--border)] text-[var(--muted)]';
@@ -102,6 +104,7 @@ export function MobileReviewStack({
   videoRef,
   loading,
   onRefresh,
+  onRefreshQueue,
   onSwipeNext,
   onSwipePrev,
   mediaReloadNonce,
@@ -130,6 +133,7 @@ export function MobileReviewStack({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   loading: boolean;
   onRefresh: () => void;
+  onRefreshQueue?: () => void;
   onSwipeNext: () => void;
   onSwipePrev: () => void;
   mediaReloadNonce: number;
@@ -204,6 +208,7 @@ export function MobileReviewStack({
           onRemoveReviewAsset={onRemoveReviewAsset}
           onRegenerate={onRegenerate}
           regenerating={regenerating}
+          onRefreshQueue={onRefreshQueue}
         />
       )}
 
@@ -302,6 +307,7 @@ function MobileCandidateView({
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
+  onRefreshQueue,
 }: {
   candidate: PostCandidate;
   notes: string;
@@ -318,6 +324,7 @@ function MobileCandidateView({
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
+  onRefreshQueue?: () => void;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
   const notesNonEmpty = (notes ?? '').trim().length > 0 || (savedNotes ?? '').trim().length > 0;
@@ -399,6 +406,11 @@ function MobileCandidateView({
         <h2 className="text-lg font-semibold leading-snug text-[var(--text)]">
           {candidate.title || '(untitled)'}
         </h2>
+        <PublishingPrepCard
+          candidate={candidate}
+          reviewDriveFolderUrl={candidate.review_drive_folder_url}
+          onRefreshQueue={onRefreshQueue}
+        />
         {candidate.hook && (
           <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
         )}
@@ -476,7 +488,12 @@ function MobileCandidateView({
       </section>
 
       <section className="px-3 pb-2">
-        <DecisionButtons onDecide={onDecide} size="lg" variant="iconOnly" />
+        <DecisionButtons
+          onDecide={onDecide}
+          size="lg"
+          variant="iconOnly"
+          disabled={candidate.status === 'ready_to_publish'}
+        />
       </section>
 
       <section className="px-3 pb-2">

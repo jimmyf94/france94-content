@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+
 import { PostTypeBadge } from './PostTypeBadge';
 import { ScoreStrip } from './ScoreStrip';
 import type { PostCandidate, ReviewDriveFile } from './types';
@@ -74,6 +76,14 @@ function Inner({
                 >
                   Review folder
                 </a>
+              )}
+              {candidate.publishing_job_id && (
+                <Link
+                  href={`/content/publishing/${candidate.publishing_job_id}`}
+                  className="text-xs text-[var(--accent)] underline hover:opacity-80"
+                >
+                  Publishing prep
+                </Link>
               )}
             </div>
             {candidate.hook && (

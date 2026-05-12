@@ -10,9 +10,14 @@
     "analyze:content": "tsx scripts/analyze-content-assets.ts",
     "process:assets": "tsx scripts/process-analyzed-assets.ts",
     "generate:posts": "tsx scripts/generate-post-candidates.ts",
+    "prepare:publishing": "tsx scripts/prepare-publishing-jobs.ts",
     "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts",
     "check:drive-token": "tsx scripts/check-google-drive-token.ts",
+    "check:instagram-token": "tsx scripts/check-instagram-graph-token.ts",
+    "meta:system-user:install": "tsx scripts/meta-system-user-token.ts install",
+    "meta:system-user:generate": "tsx scripts/meta-system-user-token.ts generate",
+    "meta:system-user:refresh": "tsx scripts/meta-system-user-token.ts refresh",
     "review:dev": "npm run dev -w france94-review-web",
     "review:build": "npm run build -w france94-review-web"
   },
@@ -24,6 +29,7 @@
     "ffprobe-static": "^3.1.0",
     "googleapis": "^148.0.0",
     "heic-convert": "^2.1.0",
+    "sharp": "^0.34.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {

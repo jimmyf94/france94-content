@@ -25,6 +25,8 @@ export type PostCandidate = {
   review_drive_folder_url: string | null;
   source_asset_ids?: string[] | null;
   source_drive_file_ids?: string[] | null;
+  publishing_job_id?: string | null;
+  ready_to_publish_at?: string | null;
   created_at: string;
   updated_at: string | null;
   llm_model?: string | null;
@@ -45,7 +47,12 @@ export type ReviewDriveFile = {
   modifiedTime: string | null;
 };
 
-export type StatusTab = 'needs_review' | 'needs_rewrite' | 'approved' | 'rejected';
+export type StatusTab =
+  | 'needs_review'
+  | 'needs_rewrite'
+  | 'approved'
+  | 'ready_to_publish'
+  | 'rejected';
 
 export type DetailTab = 'caption' | 'structure' | 'transcript' | 'debug';
 
@@ -55,5 +62,6 @@ export const STATUS_TAB_LABEL: Record<StatusTab, string> = {
   needs_review: 'Needs review',
   needs_rewrite: 'Needs rewrite',
   approved: 'Approved',
+  ready_to_publish: 'Ready to publish',
   rejected: 'Rejected',
 };
