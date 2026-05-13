@@ -1,11 +1,16 @@
 'use client';
 
+import { useState } from 'react';
+
 import type { PublishingJobDto } from '@/lib/publishing-types';
 
 function statusTone(status: string): string {
-  if (status === 'ready_to_publish') return 'text-[var(--good)]';
+  if (status === 'ready_to_publish' || status === 'scheduled') return 'text-[var(--good)]';
+  if (status === 'published') return 'text-[var(--good)]';
   if (status === 'failed') return 'text-[var(--bad)]';
-  if (status === 'processing' || status === 'containers_created') return 'text-[var(--warn)]';
+  if (status === 'processing' || status === 'containers_created' || status === 'publishing') {
+    return 'text-[var(--warn)]';
+  }
   return 'text-[var(--muted)]';
 }
 
@@ -14,7 +19,158 @@ function sortedPreparedMedia(job: PublishingJobDto) {
   return [...job.prepared_media].sort((a, b) => a.order - b.order);
 }
 
+function formatWhen(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return iso;
+  return new Date(t).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+}
+
 export type PublishingJobViewVariant = 'prepCard' | 'detailPage';
+
+function PublishScheduleBlock(props: {
+  variant: PublishingJobViewVariant;
+  job: PublishingJobDto;
+  acting: boolean;
+  onSchedule: (iso: string) => void | Promise<void>;
+  onUnschedule: () => void | Promise<void>;
+  onPublishNow: () => void | Promise<void>;
+}) {
+  const { variant, job, acting, onSchedule, onUnschedule, onPublishNow } = props;
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [localDt, setLocalDt] = useState('');
+
+  const isCompact = variant === 'prepCard';
+  const btnBase = isCompact
+    ? 'rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50'
+    : 'rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50';
+
+  const canSchedule = job.status === 'ready_to_publish';
+  const canUnschedule = job.status === 'scheduled';
+  const canPublishNow = job.status === 'ready_to_publish' || job.status === 'scheduled';
+
+  const confirmSchedule = () => {
+    if (!localDt.trim()) return;
+    const ms = new Date(localDt).getTime();
+    if (!Number.isFinite(ms)) return;
+    void onSchedule(new Date(ms).toISOString());
+    setShowSchedule(false);
+    setLocalDt('');
+  };
+
+  return (
+    <div className={isCompact ? 'space-y-2' : 'space-y-3'}>
+      <div
+        className={
+          isCompact ?
+            'rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-[11px] text-[var(--muted)]'
+          : 'rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--muted)]'
+        }
+      >
+        <p>
+          <span className="font-medium text-[var(--text)]">Scheduled:</span>{' '}
+          {formatWhen(job.scheduled_publish_at)}
+        </p>
+        <p className={isCompact ? 'mt-1' : 'mt-2'}>
+          <span className="font-medium text-[var(--text)]">Published:</span>{' '}
+          {formatWhen(job.published_at)}
+        </p>
+        <p className={isCompact ? 'mt-1' : 'mt-2'}>
+          <span className="font-medium text-[var(--text)]">Publish attempts:</span>{' '}
+          {job.publish_attempt_count ?? 0}
+          {job.last_publish_attempt_at ?
+            ` · last ${formatWhen(job.last_publish_attempt_at)}`
+          : ''}
+        </p>
+        {job.instagram_permalink && (
+          <p className={isCompact ? 'mt-1' : 'mt-2'}>
+            <span className="font-medium text-[var(--text)]">Permalink:</span>{' '}
+            <a
+              href={job.instagram_permalink}
+              target="_blank"
+              rel="noreferrer"
+              className="break-all text-[var(--accent)] underline hover:opacity-80"
+            >
+              {job.instagram_permalink}
+            </a>
+          </p>
+        )}
+      </div>
+
+      {(canSchedule || canUnschedule || canPublishNow) && (
+        <div className={isCompact ? 'flex flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-3'}>
+          {canSchedule && (
+            <>
+              {!showSchedule ?
+                <button
+                  type="button"
+                  disabled={acting}
+                  onClick={() => setShowSchedule(true)}
+                  className={btnBase}
+                >
+                  Schedule
+                </button>
+              : <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="datetime-local"
+                    value={localDt}
+                    onChange={(e) => setLocalDt(e.target.value)}
+                    className={
+                      isCompact ?
+                        'rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-[11px] text-[var(--text)]'
+                      : 'rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]'
+                    }
+                  />
+                  <button
+                    type="button"
+                    disabled={acting || !localDt}
+                    onClick={() => void confirmSchedule()}
+                    className={btnBase}
+                  >
+                    Confirm schedule
+                  </button>
+                  <button
+                    type="button"
+                    disabled={acting}
+                    onClick={() => {
+                      setShowSchedule(false);
+                      setLocalDt('');
+                    }}
+                    className={btnBase}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              }
+            </>
+          )}
+          {canUnschedule && (
+            <button type="button" disabled={acting} onClick={() => void onUnschedule()} className={btnBase}>
+              Unschedule
+            </button>
+          )}
+          {canPublishNow && (
+            <button
+              type="button"
+              disabled={acting}
+              onClick={() => {
+                if (!window.confirm('Publish this post to Instagram now?')) return;
+                void onPublishNow();
+              }}
+              className={
+                isCompact ?
+                  'rounded-md border border-[var(--accent)] px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
+                : 'rounded-md border border-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
+              }
+            >
+              Publish now
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PublishingJobView({
   job,
@@ -22,14 +178,29 @@ export function PublishingJobView({
   refreshing,
   onRefreshGraph,
   reviewDriveFolderUrl,
+  publishingActing = false,
+  onSchedulePublish,
+  onUnschedulePublish,
+  onPublishNow,
 }: {
   job: PublishingJobDto;
   variant: PublishingJobViewVariant;
   refreshing: boolean;
   onRefreshGraph: () => void;
   reviewDriveFolderUrl?: string | null;
+  publishingActing?: boolean;
+  onSchedulePublish?: (iso: string) => void | Promise<void>;
+  onUnschedulePublish?: () => void | Promise<void>;
+  onPublishNow?: () => void | Promise<void>;
 }) {
   const media = sortedPreparedMedia(job);
+  const showPublishOps =
+    (job.status === 'ready_to_publish' || job.status === 'scheduled' || job.status === 'published') &&
+    onSchedulePublish &&
+    onUnschedulePublish &&
+    onPublishNow;
+
+  const refreshLabel = refreshing ? 'Refreshing…' : 'Refresh container status';
 
   if (variant === 'prepCard') {
     return (
@@ -44,9 +215,20 @@ export function PublishingJobView({
             onClick={() => void onRefreshGraph()}
             className="ml-auto rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50"
           >
-            {refreshing ? 'Refreshing…' : 'Refresh Graph API status'}
+            {refreshLabel}
           </button>
         </div>
+
+        {showPublishOps && (
+          <PublishScheduleBlock
+            variant="prepCard"
+            job={job}
+            acting={publishingActing}
+            onSchedule={onSchedulePublish}
+            onUnschedule={onUnschedulePublish}
+            onPublishNow={onPublishNow}
+          />
+        )}
 
         {job.error_message && (
           <p className="text-xs text-[var(--bad)] whitespace-pre-wrap">{job.error_message}</p>
@@ -164,9 +346,20 @@ export function PublishingJobView({
           onClick={() => void onRefreshGraph()}
           className="rounded-md border border-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50"
         >
-          {refreshing ? 'Refreshing…' : 'Refresh Graph API status'}
+          {refreshLabel}
         </button>
       </div>
+
+      {showPublishOps && (
+        <PublishScheduleBlock
+          variant="detailPage"
+          job={job}
+          acting={publishingActing}
+          onSchedule={onSchedulePublish}
+          onUnschedule={onUnschedulePublish}
+          onPublishNow={onPublishNow}
+        />
+      )}
 
       {job.error_message && (
         <div className="rounded-md border border-[var(--bad)] bg-[var(--bad)]/10 p-3 text-sm text-[var(--bad)] whitespace-pre-wrap">

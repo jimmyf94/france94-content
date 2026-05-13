@@ -460,6 +460,11 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
       instagram_container_status: null,
       graph_api_raw: null,
       instagram_media_id: null,
+      instagram_permalink: null,
+      scheduled_publish_at: null,
+      published_at: null,
+      publish_attempt_count: 0,
+      last_publish_attempt_at: null,
       error_message: null,
       status: 'draft',
     });

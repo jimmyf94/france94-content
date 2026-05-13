@@ -1,5 +1,5 @@
 /**
- * Instagram Graph API — container creation only (never calls .../media_publish).
+ * Instagram Graph API — containers + optional `media_publish` / media read.
  * Carousel children use IMAGE or VIDEO + is_carousel_item=true (Reels cannot be carousel items).
  * @see https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-user/media/
  */
@@ -271,6 +271,20 @@ export function isTerminalStatusCode(code: string | null): boolean {
 
 export function isFinished(code: string | null): boolean {
   return (code ?? '').toUpperCase() === 'FINISHED';
+}
+
+/** Publish a finished container (creation id). Returns published Instagram media id. */
+export async function mediaPublish(igUserId: string, creationId: string): Promise<string> {
+  const res = await igFormPost(`${igUserId}/media_publish`, {
+    creation_id: creationId,
+  });
+  return extractCreationId(res);
+}
+
+/** Best-effort permalink for a published media id. */
+export async function getMediaPermalink(mediaId: string): Promise<string | null> {
+  const r = await igGet(`${mediaId}?fields=permalink`);
+  return typeof r.permalink === 'string' && r.permalink.trim() ? r.permalink.trim() : null;
 }
 
 export async function sleep(ms: number): Promise<void> {

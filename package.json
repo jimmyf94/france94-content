@@ -11,6 +11,8 @@
     "process:assets": "tsx scripts/process-analyzed-assets.ts",
     "generate:posts": "tsx scripts/generate-post-candidates.ts",
     "prepare:publishing": "tsx scripts/prepare-publishing-jobs.ts",
+    "publish:scheduled": "tsx scripts/publish-scheduled-jobs.ts",
+    "render:reels": "tsx scripts/render-reel-jobs.ts",
     "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts",
     "check:drive-token": "tsx scripts/check-google-drive-token.ts",

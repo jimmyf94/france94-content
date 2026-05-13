@@ -22,6 +22,7 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [publishingActing, setPublishingActing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,6 +71,77 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
     }
   };
 
+  const schedulePublish = async (scheduledPublishAt: string) => {
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/schedule`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scheduled_publish_at: scheduledPublishAt }),
+        },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
+  const unschedulePublish = async () => {
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/unschedule`,
+        { method: 'POST', credentials: 'include' },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
+  const publishNow = async () => {
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/publish-now`,
+        { method: 'POST', credentials: 'include' },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 text-[var(--text)]">
       <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -110,6 +182,10 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
             refreshing={refreshing}
             onRefreshGraph={refreshGraph}
             reviewDriveFolderUrl={candidate?.review_drive_folder_url}
+            publishingActing={publishingActing}
+            onSchedulePublish={schedulePublish}
+            onUnschedulePublish={unschedulePublish}
+            onPublishNow={publishNow}
           />
         </div>
       )}

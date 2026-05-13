@@ -243,10 +243,48 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: readBackErr.message }, { status: 500 });
   }
 
+  const candidateOut = fresh ?? data;
+  if (status === 'approved' && candidateOut) {
+    const pt = (candidateOut as { post_type?: string }).post_type?.trim();
+    if (pt === 'reel') {
+      const c = candidateOut as unknown as {
+        id: string;
+        reel_instructions: unknown;
+        source_asset_ids: unknown;
+        source_drive_file_ids: unknown;
+      };
+      const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
+      const sd =
+        Array.isArray(c.source_drive_file_ids) ? (c.source_drive_file_ids as string[]) : [];
+      void supabase
+        .from('production_jobs')
+        .upsert(
+          {
+            post_candidate_id: c.id,
+            production_type: 'reel',
+            status: 'queued',
+            source_asset_ids: sa,
+            source_drive_file_ids: sd,
+            instructions: c.reel_instructions ?? {},
+            error_message: null,
+            render_log: null,
+            output_video_url: null,
+            output_drive_file_id: null,
+            render_strategy: null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'post_candidate_id,production_type' },
+        )
+        .then(({ error: pjErr }) => {
+          if (pjErr) console.error('[candidate patch] production_jobs upsert', pjErr);
+        });
+    }
+  }
+
   const noStore = {
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     Pragma: 'no-cache',
   } as const;
 
-  return NextResponse.json({ candidate: fresh ?? data }, { headers: noStore });
+  return NextResponse.json({ candidate: candidateOut }, { headers: noStore });
 }

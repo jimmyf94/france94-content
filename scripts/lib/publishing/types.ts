@@ -13,6 +13,8 @@ export type PublishingJobStatus =
   | 'containers_created'
   | 'processing'
   | 'ready_to_publish'
+  | 'scheduled'
+  | 'publishing'
   | 'published'
   | 'failed';
 
@@ -46,9 +48,14 @@ export type PublishingJobRow = {
   instagram_creation_id: string | null;
   instagram_container_status: string | null;
   instagram_media_id: string | null;
+  instagram_permalink: string | null;
   graph_api_review_url: string | null;
   graph_api_raw: Record<string, unknown> | null;
   error_message: string | null;
+  scheduled_publish_at: string | null;
+  published_at: string | null;
+  publish_attempt_count: number;
+  last_publish_attempt_at: string | null;
   created_at: string;
   updated_at: string;
 };

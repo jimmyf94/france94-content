@@ -14,5 +14,11 @@ export type PublishingJobDto = {
   instagram_parent_container_id: string | null;
   instagram_creation_id: string | null;
   instagram_container_status: string | null;
+  instagram_media_id: string | null;
+  instagram_permalink: string | null;
   error_message: string | null;
+  scheduled_publish_at: string | null;
+  published_at: string | null;
+  publish_attempt_count: number | null;
+  last_publish_attempt_at: string | null;
 };

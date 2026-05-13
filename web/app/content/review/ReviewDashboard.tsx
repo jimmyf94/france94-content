@@ -12,6 +12,7 @@ import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
 import { MediaPreviewStage } from './MediaPreviewStage';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
 import { invalidateCandidateMediaCache } from './useCandidateMedia';
+import { ProductionJobCard } from './ProductionJobCard';
 import { PublishingPrepCard } from './PublishingPrepCard';
 import { ReviewHeader } from './ReviewHeader';
 import { ShortcutsBanner } from './ShortcutsBanner';
@@ -624,11 +625,14 @@ export function ReviewDashboard() {
         <div className="flex min-h-0 flex-col">
           <CandidateOverviewHeader candidate={selected} mediaReloadNonce={mediaReloadNonce} />
           {selected && (
-            <PublishingPrepCard
-              candidate={selected}
-              reviewDriveFolderUrl={selected.review_drive_folder_url}
-              onRefreshQueue={() => void silentReloadCandidates()}
-            />
+            <>
+              <PublishingPrepCard
+                candidate={selected}
+                reviewDriveFolderUrl={selected.review_drive_folder_url}
+                onRefreshQueue={() => void silentReloadCandidates()}
+              />
+              {selected.post_type === 'reel' && <ProductionJobCard candidate={selected} />}
+            </>
           )}
           <MediaPreviewStage
             candidate={selected}

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DecisionButtons } from '../decision/DecisionButtons';
+import { ProductionJobCard } from '../ProductionJobCard';
 import { PublishingPrepCard } from '../PublishingPrepCard';
 import { RewriteChips } from '../decision/RewriteChips';
 import { FilterForm, type ReviewFilters } from '../FilterDrawer';
@@ -419,6 +420,7 @@ function MobileCandidateView({
           reviewDriveFolderUrl={candidate.review_drive_folder_url}
           onRefreshQueue={onRefreshQueue}
         />
+        {candidate.post_type === 'reel' && <ProductionJobCard candidate={candidate} />}
         {candidate.hook && (
           <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
         )}

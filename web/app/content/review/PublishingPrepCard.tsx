@@ -28,6 +28,7 @@ export function PublishingPrepCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [publishingActing, setPublishingActing] = useState(false);
 
   const load = useCallback(async () => {
     if (!candidate.publishing_job_id && candidate.status !== 'approved' && candidate.status !== 'ready_to_publish') {
@@ -84,6 +85,80 @@ export function PublishingPrepCard({
     }
   };
 
+  const schedulePublish = async (scheduledPublishAt: string) => {
+    if (!job?.id) return;
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/schedule`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scheduled_publish_at: scheduledPublishAt }),
+        },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      onRefreshQueue?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
+  const unschedulePublish = async () => {
+    if (!job?.id) return;
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/unschedule`,
+        { method: 'POST', credentials: 'include' },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      onRefreshQueue?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
+  const publishNow = async () => {
+    if (!job?.id) return;
+    setPublishingActing(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/publish-now`,
+        { method: 'POST', credentials: 'include' },
+      );
+      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      if (!res.ok) {
+        const err = json.error;
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      if (json.job) setJob(json.job as PublishingJobDto);
+      onRefreshQueue?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
   if (!show) return null;
 
   return (
@@ -132,6 +207,10 @@ export function PublishingPrepCard({
           refreshing={refreshing}
           onRefreshGraph={refreshGraph}
           reviewDriveFolderUrl={reviewDriveFolderUrl}
+          publishingActing={publishingActing}
+          onSchedulePublish={schedulePublish}
+          onUnschedulePublish={unschedulePublish}
+          onPublishNow={publishNow}
         />
       )}
     </section>

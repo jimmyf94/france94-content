@@ -170,7 +170,22 @@ export async function refreshPublishingJobFromGraph(
   let errorMessage: string | null =
     typeof r.error_message === 'string' ? r.error_message : null;
 
-  if (anyError) {
+  const preserveGraphDerivedStatus =
+    prevStatus === 'scheduled' || prevStatus === 'publishing' || prevStatus === 'published';
+
+  if (preserveGraphDerivedStatus) {
+    if (anyError) {
+      if (prevStatus === 'published') {
+        nextStatus = 'published';
+      } else {
+        nextStatus = 'failed';
+        errorMessage =
+          errorMessage ?? 'Graph API container reported ERROR/EXPIRED or poll failed.';
+      }
+    } else {
+      nextStatus = prevStatus;
+    }
+  } else if (anyError) {
     nextStatus = 'failed';
     errorMessage = errorMessage ?? 'Graph API container reported ERROR/EXPIRED or poll failed.';
   } else if (childIds.length > 0) {
@@ -206,7 +221,7 @@ export async function refreshPublishingJobFromGraph(
     error_message: nextStatus === 'failed' ? errorMessage : null,
   });
 
-  if (nextStatus === 'ready_to_publish') {
+  if (nextStatus === 'ready_to_publish' && prevStatus !== 'scheduled' && prevStatus !== 'publishing') {
     const candidateId = r.post_candidate_id as string;
     await syncCandidateReadyToPublish(supabase, candidateId, jobId);
   }
