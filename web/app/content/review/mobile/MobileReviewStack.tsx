@@ -182,6 +182,12 @@ export function MobileReviewStack({
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
           <Link
+            href="/content/assets"
+            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
+          >
+            Assets
+          </Link>
+          <Link
             href="/content/review/settings"
             className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
           >

@@ -25,7 +25,19 @@ export function middleware(req: NextRequest) {
     return NextResponse.redirect(u);
   }
 
+  if (path.startsWith('/content/assets')) {
+    if (isReviewAuthorized(req)) return NextResponse.next();
+    const u = new URL('/content/review/unlock', req.url);
+    u.searchParams.set('next', path);
+    return NextResponse.redirect(u);
+  }
+
   if (path.startsWith('/api/content-review')) {
+    if (isReviewAuthorized(req)) return NextResponse.next();
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (path.startsWith('/api/content-assets')) {
     if (isReviewAuthorized(req)) return NextResponse.next();
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -34,5 +46,12 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/content/review', '/content/review/:path*', '/api/content-review/:path*'],
+  matcher: [
+    '/content/review',
+    '/content/review/:path*',
+    '/content/assets',
+    '/content/assets/:path*',
+    '/api/content-review/:path*',
+    '/api/content-assets/:path*',
+  ],
 };

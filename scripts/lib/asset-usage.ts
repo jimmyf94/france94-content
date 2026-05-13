@@ -96,6 +96,29 @@ export function computeAssetReusePolicy(postType: string | null | undefined): {
   return { lockStrength: 'hard', cooldownDays: 0 };
 }
 
+/** Maps ledger usage_stage to v0.8 event_kind vocabulary (override for manual_* etc.). */
+export function mapUsageStageToEventKind(usageStage: string): string {
+  const s = (usageStage ?? '').trim();
+  switch (s) {
+    case 'suggested':
+      return 'suggested';
+    case 'approved':
+      return 'approved_candidate';
+    case 'scheduled':
+      return 'scheduled';
+    case 'published':
+      return 'published';
+    case 'rejected':
+      return 'rejected';
+    case 'released':
+      return 'released';
+    case 'expired':
+      return 'expired';
+    default:
+      return s || 'unknown';
+  }
+}
+
 export type RecordAssetUsageEventParams = {
   contentAssetId: string;
   postCandidateId: string | null;
@@ -108,6 +131,12 @@ export type RecordAssetUsageEventParams = {
   reuseAllowedAfter?: string | null;
   lockStrength?: 'soft' | 'hard';
   notes?: string | null;
+  /** When set, stored as asset_usage_events.event_kind (else derived from usageStage). */
+  eventKind?: string | null;
+  /** Stored as asset_usage_events.post_type; defaults to usageType. */
+  ledgerPostType?: string | null;
+  /** When set, used as asset_usage_events.used_at (ISO). */
+  usedAt?: string | null;
 };
 
 export async function recordAssetUsageEvent(
@@ -115,6 +144,10 @@ export async function recordAssetUsageEvent(
   params: RecordAssetUsageEventParams,
 ): Promise<void> {
   const now = new Date().toISOString();
+  const usedAt = params.usedAt?.trim() || now;
+  const eventKind =
+    (params.eventKind && params.eventKind.trim()) || mapUsageStageToEventKind(params.usageStage);
+  const ledgerPostType = (params.ledgerPostType && params.ledgerPostType.trim()) || params.usageType;
   const row = {
     content_asset_id: params.contentAssetId,
     post_candidate_id: params.postCandidateId,
@@ -123,15 +156,38 @@ export async function recordAssetUsageEvent(
     usage_type: params.usageType,
     usage_role: params.usageRole ?? null,
     platform: params.platform ?? 'instagram',
-    used_at: now,
+    used_at: usedAt,
     published_at: params.publishedAt ?? null,
     reuse_allowed_after: params.reuseAllowedAfter ?? null,
     lock_strength: params.lockStrength ?? 'soft',
     notes: params.notes ?? null,
     created_at: now,
+    event_kind: eventKind,
+    post_type: ledgerPostType,
   };
   const { error } = await supabase.from('asset_usage_events').insert(row);
   if (error) throw new Error(`recordAssetUsageEvent: ${error.message}`);
+
+  if ((params.usageStage ?? '').trim() === 'suggested') {
+    const { data: cur, error: readErr } = await supabase
+      .from('content_assets')
+      .select('suggestion_count')
+      .eq('id', params.contentAssetId)
+      .maybeSingle();
+    if (readErr) throw new Error(`recordAssetUsageEvent(suggestion_count read): ${readErr.message}`);
+    const n = typeof (cur as { suggestion_count?: number } | null)?.suggestion_count === 'number'
+      ? (cur as { suggestion_count: number }).suggestion_count
+      : 0;
+    const { error: bumpErr } = await supabase
+      .from('content_assets')
+      .update({
+        suggestion_count: n + 1,
+        last_suggested_at: usedAt,
+        updated_at: now,
+      })
+      .eq('id', params.contentAssetId);
+    if (bumpErr) throw new Error(`recordAssetUsageEvent(suggestion bump): ${bumpErr.message}`);
+  }
 }
 
 async function fetchActiveEvents(supabase: SupabaseClient, assetId: string) {
@@ -162,8 +218,48 @@ function maxIso(dates: (string | null | undefined)[]): string | null {
 }
 
 /**
- * Recompute content_assets summary fields from asset_usage_events (non-released/rejected).
+ * After a non-story publish lock, mark asset as stale for future candidate generation
+ * (does not override excluded/manual_only or an existing manual stale timestamp).
  */
+async function maybeAutoStaleCandidateEligibility(
+  supabase: SupabaseClient,
+  assetId: string,
+  usageStatus: string,
+  publishedActiveEvents: Array<{ usage_type?: string | null }>,
+): Promise<void> {
+  if (usageStatus !== 'published' && usageStatus !== 'hard_locked') return;
+
+  if (publishedActiveEvents.length > 0) {
+    const allManual = publishedActiveEvents.every((e) => {
+      const t = String(e.usage_type ?? '').trim();
+      return t === 'manual_post' || t === 'manual_story' || t === 'manual_reel';
+    });
+    if (allManual) return;
+  }
+
+  const { data: row, error } = await supabase
+    .from('content_assets')
+    .select('candidate_eligibility, manually_marked_stale_at')
+    .eq('id', assetId)
+    .maybeSingle();
+  if (error || !row) return;
+
+  const el = String((row as { candidate_eligibility?: string | null }).candidate_eligibility ?? 'eligible').trim();
+  if (el === 'excluded' || el === 'manual_only' || el === 'stale') return;
+  const marked = (row as { manually_marked_stale_at?: string | null }).manually_marked_stale_at;
+  if (marked && String(marked).trim()) return;
+  if (el !== 'eligible' && el !== 'needs_review') return;
+
+  const { error: upErr } = await supabase
+    .from('content_assets')
+    .update({
+      candidate_eligibility: 'stale',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', assetId);
+  if (upErr) throw new Error(`maybeAutoStaleCandidateEligibility: ${upErr.message}`);
+}
+
 function isBlockingUsageEvent(
   e: { usage_stage?: string; lock_strength?: string; usage_type?: string; reuse_allowed_after?: string | null },
   nowMs: number,
@@ -178,6 +274,9 @@ function isBlockingUsageEvent(
   return true;
 }
 
+/**
+ * Recompute content_assets summary fields from asset_usage_events (non-released/rejected).
+ */
 export async function updateAssetUsageSummary(supabase: SupabaseClient, assetId: string): Promise<void> {
   const events = await fetchActiveEvents(supabase, assetId);
   const now = Date.now();
@@ -279,6 +378,8 @@ export async function updateAssetUsageSummary(supabase: SupabaseClient, assetId:
     })
     .eq('id', assetId);
   if (error) throw new Error(`updateAssetUsageSummary: ${error.message}`);
+
+  await maybeAutoStaleCandidateEligibility(supabase, assetId, usage_status, published);
 }
 
 async function loadCandidate(supabase: SupabaseClient, candidateId: string): Promise<CandidateLike | null> {
@@ -409,6 +510,7 @@ export async function reserveAssetsForCandidate(supabase: SupabaseClient, candid
       publishingJobId: null,
       usageStage: 'approved',
       usageType,
+      ledgerPostType: candidate.post_type ?? null,
       usageRole: 'unknown',
       lockStrength: 'soft',
       notes: 'Reservation on human approval',
@@ -594,6 +696,7 @@ export async function recordScheduledUsageForPublishingJob(
       publishingJobId: jobId,
       usageStage: 'scheduled',
       usageType,
+      ledgerPostType: (cand as { post_type?: string } | null)?.post_type ?? null,
       usageRole: 'unknown',
       lockStrength: 'soft',
       notes: 'Publishing job scheduled / in-flight (Graph containers)',
@@ -665,6 +768,7 @@ export async function applyPublishedAssetLocks(supabase: SupabaseClient, publish
       publishingJobId,
       usageStage: 'published',
       usageType,
+      ledgerPostType: postType,
       usageRole: 'primary',
       publishedAt,
       reuseAllowedAfter: reuseAfter,

@@ -16,7 +16,13 @@ import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './
 import { loadResolvedStablePrompt } from './lib/ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
 import { buildPostPlannerPromptParts } from './lib/ai/prompts/post-planner.js';
-import { isFreshForStory, refreshCandidateAssetConflicts } from './lib/asset-usage.js';
+import {
+  isFreshForStory,
+  mapPostTypeToUsageType,
+  recordAssetUsageEvent,
+  refreshCandidateAssetConflicts,
+  updateAssetUsageSummary,
+} from './lib/asset-usage.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -242,18 +248,6 @@ export function buildAssetSummaryForLLM(asset: CandidateSourceAsset, excerptLen 
   };
 }
 
-function isAssetSelectableForGeneration(
-  a: Record<string, unknown>,
-  nowMs: number,
-): boolean {
-  if (a.hard_locked === true) return false;
-  const ra = a.reuse_allowed_after;
-  if (typeof ra === 'string' && ra && Date.parse(ra) > nowMs) return false;
-  const st = String(a.usage_status ?? 'unused').trim();
-  if (st === 'published' || st === 'hard_locked') return false;
-  return true;
-}
-
 export async function getCandidateSourceAssets(
   supabase: SupabaseClient,
   params: { batchDays: number; maxAssets: number },
@@ -261,7 +255,6 @@ export async function getCandidateSourceAssets(
   const cutoff = new Date(Date.now() - params.batchDays * 24 * 60 * 60 * 1000);
   const cutoffIso = cutoff.toISOString();
   const fetchLimit = Math.min(Math.max(params.maxAssets * 4, params.maxAssets), 500);
-  const nowMs = Date.now();
 
   const { data, error } = await supabase
     .from('content_assets')
@@ -296,11 +289,12 @@ export async function getCandidateSourceAssets(
         'analysis_status',
         'usage_status',
         'hard_locked',
-        'reuse_allowed_after',
+        'candidate_eligibility',
       ].join(', '),
     )
     .eq('status', 'processed')
     .eq('analysis_status', 'complete')
+    .eq('candidate_eligibility', 'eligible')
     .not('quality_score', 'is', null)
     .gte('processed_at', cutoffIso)
     .or('content_lane.is.null,content_lane.neq.archive')
@@ -308,9 +302,7 @@ export async function getCandidateSourceAssets(
     .limit(fetchLimit);
 
   if (error) throw error;
-  const rows = (data ?? []).filter((r) =>
-    isAssetSelectableForGeneration(r as unknown as Record<string, unknown>, nowMs),
-  );
+  const rows = data ?? [];
   return rows.slice(0, params.maxAssets) as unknown as CandidateSourceAsset[];
 }
 
@@ -711,6 +703,26 @@ export async function generatePostCandidates(): Promise<void> {
 
     existingTitles.add(dedupeKey);
     inserted += 1;
+
+    const usageType = mapPostTypeToUsageType(c.post_type);
+    for (const aid of c.source_asset_ids) {
+      try {
+        await recordAssetUsageEvent(supabase, {
+          contentAssetId: aid,
+          postCandidateId: id,
+          publishingJobId: null,
+          usageStage: 'suggested',
+          usageType,
+          ledgerPostType: c.post_type,
+          usageRole: 'primary',
+          lockStrength: 'soft',
+          notes: 'Included in generated post candidate',
+        });
+        await updateAssetUsageSummary(supabase, aid);
+      } catch (e) {
+        console.warn(`[suggested usage event]\tasset=${aid}\tcandidate=${id}`, e);
+      }
+    }
 
     try {
       await refreshCandidateAssetConflicts(supabase, id);

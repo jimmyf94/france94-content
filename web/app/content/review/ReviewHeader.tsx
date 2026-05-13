@@ -122,6 +122,12 @@ export function ReviewHeader({
         </button>
       ) : null}
       <Link
+        href="/content/assets"
+        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+      >
+        Asset library
+      </Link>
+      <Link
         href="/content/review/settings"
         className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
       >
