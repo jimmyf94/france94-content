@@ -5,7 +5,7 @@ import { loadEnvConfig } from '@next/env';
 import type { NextConfig } from 'next';
 
 const webDir = path.dirname(fileURLToPath(import.meta.url));
-// Merge repo-root `.env` so Supabase/Drive keys don't need duplicating into web/.env.local
+// Merge repo-root `.env` — single env file for local dev and Vercel (set env vars in dashboard)
 loadEnvConfig(path.join(webDir, '..'));
 
 const nextConfig: NextConfig = {

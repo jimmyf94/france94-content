@@ -17,11 +17,7 @@ import { uploadPublicMedia } from './lib/publishing/public-upload.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-for (const envPath of [
-  path.join(repoRoot, '.env'),
-  path.join(repoRoot, '.env.local'),
-  path.join(repoRoot, 'web', '.env.local'),
-]) {
+for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.local')]) {
   dotenv.config({ path: envPath });
 }
 

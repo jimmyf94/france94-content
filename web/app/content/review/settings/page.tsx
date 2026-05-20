@@ -5,6 +5,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { readJsonResponse } from '@/lib/read-json-response';
 
+import { AutoIngestSection } from './AutoIngestSection';
+
 type Fr94RouteOperation =
   | 'asset_analysis_image'
   | 'asset_analysis_video_sampled'
@@ -953,6 +955,8 @@ export default function LlmSettingsPage() {
             </button>
           </div>
         )}
+
+        <AutoIngestSection />
 
         <UsageSection
           usageDays={usageDays}

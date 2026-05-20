@@ -1,6 +1,6 @@
 /**
  * Verify INSTAGRAM_GRAPH_ACCESS_TOKEN + INSTAGRAM_BUSINESS_ACCOUNT_ID against the Graph API.
- * Loads the same env files as `npm run prepare:publishing` (repo `.env`, `.env.local`, `web/.env.local`).
+ * Loads the same env files as `npm run prepare:publishing` (repo `.env`, `.env.local`).
  *
  * Usage: npm run check:instagram-token
  *
@@ -14,11 +14,7 @@ import dotenv from 'dotenv';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-for (const envPath of [
-  path.join(repoRoot, '.env'),
-  path.join(repoRoot, '.env.local'),
-  path.join(repoRoot, 'web', '.env.local'),
-]) {
+for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.local')]) {
   dotenv.config({ path: envPath });
 }
 
@@ -35,7 +31,7 @@ async function main(): Promise<void> {
   const raw = process.env.INSTAGRAM_GRAPH_ACCESS_TOKEN ?? '';
   const rawId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? '';
 
-  console.log('Env load order: repo .env → .env.local → web/.env.local (later files override).');
+  console.log('Env load order: repo .env → .env.local (later files override).');
   console.log('');
   console.log('INSTAGRAM_GRAPH_ACCESS_TOKEN raw length:', raw.length);
   console.log('INSTAGRAM_BUSINESS_ACCOUNT_ID raw:', rawId.trim() ? `"${rawId.trim().slice(0, 8)}…"` : '(empty)');

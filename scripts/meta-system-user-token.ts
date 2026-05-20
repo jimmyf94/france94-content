@@ -2,7 +2,7 @@
  * Meta Business System User: install app on system user, generate access token, or refresh 60-day token.
  * @see https://developers.facebook.com/docs/marketing-api/system-users/install-apps-and-generate-tokens/
  *
- * Loads env: repo .env → .env.local → web/.env.local (same order as check:instagram-token).
+ * Loads env: repo .env → .env.local (same order as check:instagram-token).
  *
  * Usage:
  *   npm run meta:system-user:install
@@ -22,11 +22,7 @@ import { graphApiVersion, normalizeMetaAccessToken } from './lib/publishing/inst
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-for (const envPath of [
-  path.join(repoRoot, '.env'),
-  path.join(repoRoot, '.env.local'),
-  path.join(repoRoot, 'web', '.env.local'),
-]) {
+for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.local')]) {
   dotenv.config({ path: envPath });
 }
 

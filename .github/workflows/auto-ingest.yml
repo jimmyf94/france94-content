@@ -1,0 +1,37 @@
+name: auto-ingest
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: auto-ingest
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run auto:ingest-tick
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_OAUTH_CLIENT_SECRETS_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRETS_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_DRIVE_PROCESSED_RAW_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PROCESSED_RAW_FOLDER_ID }}
+          GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOMINATIM_USER_AGENT: ${{ secrets.NOMINATIM_USER_AGENT }}
+          POST_CANDIDATE_BATCH_DAYS: '10'
+          POST_CANDIDATE_MAX_ASSETS: '80'
+          POST_CANDIDATE_DAILY_TARGET: '2'
+          FR94_PROMPT_VERSION: '2026-05-10-v1'

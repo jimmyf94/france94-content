@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+import { readJsonResponse } from '@/lib/read-json-response';
 
 import type { ReviewFilters } from './FilterDrawer';
 import { PostTypeBadge } from './PostTypeBadge';
@@ -27,6 +29,68 @@ export function ReviewHeader({
   /** Clears stale `approved` usage rows (e.g. after bulk reject outside normal release). */
   onHealAssetLedger?: () => void;
 }) {
+  const [pipelineOn, setPipelineOn] = useState<boolean | null>(null);
+  const [pipelineLastRun, setPipelineLastRun] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/content-review/pipeline', { credentials: 'include' });
+        const json = await readJsonResponse<{
+          auto_ingest_enabled?: boolean;
+          last_run_finished_at?: string | null;
+        }>(res);
+        if (!res.ok || cancelled) return;
+        setPipelineOn(Boolean(json.auto_ingest_enabled));
+        setPipelineLastRun(json.last_run_finished_at ?? null);
+      } catch {
+        if (!cancelled) {
+          setPipelineOn(null);
+          setPipelineLastRun(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const pipelinePill = useMemo(() => {
+    if (pipelineOn === null) return null;
+    if (!pipelineOn) {
+      return (
+        <Link
+          href="/content/review/settings"
+          className="rounded-full border border-[var(--border)] px-2.5 py-0.5 text-[11px] text-[var(--muted)] hover:border-[var(--accent)]"
+          title="Auto-ingest is off"
+        >
+          Auto-ingest off
+        </Link>
+      );
+    }
+    const rel =
+      pipelineLastRun != null
+        ? (() => {
+            const t = new Date(pipelineLastRun).getTime();
+            if (Number.isNaN(t)) return '';
+            const mins = Math.round((Date.now() - t) / 60_000);
+            if (mins < 1) return 'just now';
+            if (mins < 60) return `${mins}m ago`;
+            return `${Math.round(mins / 60)}h ago`;
+          })()
+        : '';
+    return (
+      <Link
+        href="/content/review/settings"
+        className="rounded-full border border-[var(--good)] px-2.5 py-0.5 text-[11px] text-[var(--good)]"
+        title="Auto-ingest runs every 30 minutes via GitHub Actions"
+      >
+        Auto-ingest on{rel ? ` · last ${rel}` : ''}
+      </Link>
+    );
+  }, [pipelineOn, pipelineLastRun]);
+
   const chips = useMemo<Chip[]>(() => {
     const out: Chip[] = [];
     if (filters.postType) {
@@ -80,6 +144,7 @@ export function ReviewHeader({
         pending
       </span>
       <div className="flex flex-1 flex-wrap items-center gap-1">
+        {pipelinePill}
         {chips.map((c) => (
           <button
             key={c.key}

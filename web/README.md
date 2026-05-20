@@ -2,6 +2,24 @@
 
 Next.js App Router UI for reviewing `post_candidates` and previewing files copied into each candidate’s Google Drive review folder.
 
+## Environment (single file)
+
+All configuration lives in the **repository root** `.env` (see `.env.example`).
+
+- Local: copy `.env.example` → `.env` and fill in values.
+- **`next.config.ts` loads the repo-root `.env`** when you run the app from `web/`, so you do not need a second env file.
+- **Vercel:** set the same variables in the project dashboard (Production + Preview). Use **Root Directory = `web`**. For Google OAuth, set `GOOGLE_OAUTH_CLIENT_SECRETS_JSON` to the full JSON from GCP (instead of committing `f94client.json`).
+- **GitHub Actions (auto-ingest):** add the same keys as [repository secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions) listed in `.github/workflows/auto-ingest.yml`.
+
+When OAuth JSON lives at the repo root locally, `GOOGLE_OAUTH_CLIENT_SECRETS_PATH=f94client.json` is enough.
+
+Apply Supabase migrations under `supabase/migrations/`, including:
+
+- `20260517120000_post_candidates_review_audit.sql` — `reviewed_at`, `reviewed_by`
+- `20260513120000_pipeline_settings.sql` — auto-ingest toggle + last-run status
+
+For **Regenerate Candidate** (v0.6), ensure `post_candidates` has regeneration columns (see SQL in prior README sections).
+
 ## How to run
 
 From the repository root (after `npm install` at root so workspaces link):
@@ -18,31 +36,37 @@ cd web && npm run dev
 
 Default URL: [http://127.0.0.1:3040/content/review](http://127.0.0.1:3040/content/review)
 
-Configure environment in `web/.env.local` (see `web/.env.example`). **`next.config.ts` also loads the repository root `.env`**, so the same `SUPABASE_*` and `GOOGLE_*` values as your CLI scripts usually work without copying files.
+## Deploy to Vercel (Hobby)
 
-When OAuth JSON lives at the repo root, set `GOOGLE_OAUTH_CLIENT_SECRETS_PATH` to `../f94client.json` from `web/` or use an absolute path.
+1. Import the GitHub repo in Vercel.
+2. **Root Directory:** `web`
+3. **Build command:** `npm run build` (default for Next.js)
+4. **Environment variables:** copy from `.env.example` (same names as local). Required minimum: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRETS_JSON`, `GEMINI_API_KEY`, and any vars your API routes use (Instagram, public media bucket, etc.).
+5. Optional: `REVIEW_DASHBOARD_SECRET` to gate `/content/review`.
 
-Apply the Supabase migration `20260517120000_post_candidates_review_audit.sql` so `reviewed_at` and `reviewed_by` exist before relying on PATCH updates.
+Heavy workers (auto-ingest pipeline, reel render, publishing prep) run **outside** Vercel — see auto-ingest below.
 
-For the **Regenerate Candidate** flow (v0.6), also apply the following columns to `post_candidates` (run once in the Supabase SQL editor):
+## Auto-ingest (Drive → post suggestions)
 
-```sql
-alter table post_candidates
-  add column if not exists regeneration_count integer not null default 0,
-  add column if not exists last_regenerated_at timestamptz,
-  add column if not exists previous_versions jsonb not null default '[]'::jsonb;
+1. Drop files in the Drive inbox folder (`GOOGLE_DRIVE_FOLDER_ID`).
+2. In the app: **LLM settings** → **Auto-ingest** → turn **On** and set the pause threshold (default: pause when ≥ 5 candidates are `needs_review`).
+3. GitHub Actions runs `npm run auto:ingest-tick` every 30 minutes (workflow `.github/workflows/auto-ingest.yml`). The tick no-ops when auto-ingest is off or the queue is full.
+4. When paused, review candidates and turn auto-ingest back on from settings.
+
+Local test (uses root `.env`):
+
+```bash
+npm run auto:ingest-tick
 ```
-
-The regenerate route requires `GEMINI_API_KEY` (same key used by `npm run generate:posts`) and reuses the same `GEMINI_MODEL` env (default `gemini-2.5-flash`).
 
 ## Optional access gate
 
 If `REVIEW_DASHBOARD_SECRET` is set, the middleware requires either:
 
-- `Authorization: Bearer <secret>` or `x-review-secret: <secret>` on API calls, or  
+- `Authorization: Bearer <secret>` or `x-review-secret: <secret>` on API calls, or
 - an HTTP-only cookie set via **POST** `/api/content-review/unlock` with JSON `{ "secret": "..." }`.
 
-Browse to `/content/review/unlock` once to enter the secret (or open that page from the link on the review screen).
+Browse to `/content/review/unlock` once to enter the secret.
 
 ## API routes
 
@@ -50,19 +74,20 @@ Browse to `/content/review/unlock` once to enter the secret (or open that page f
 |--------|------|---------|
 | GET | `/api/content-review/candidates` | List/filter candidates (Supabase). |
 | PATCH | `/api/content-review/candidates/[id]` | Set `approved` / `rejected` / `needs_rewrite` + notes. |
-| POST | `/api/content-review/candidates/[id]/regenerate` | Re-run planner LLM in place using current row + attached assets + reviewer notes. Status is preserved (a `needs_rewrite` candidate stays in the rewrite queue). |
+| POST | `/api/content-review/candidates/[id]/regenerate` | Re-run planner LLM in place. |
+| GET/PATCH | `/api/content-review/pipeline` | Auto-ingest toggle, threshold, last-run status. |
 | GET | `/api/content-review/candidates/[id]/files` | List files in `review_drive_folder_id`. |
-| GET | `/api/content-review/drive-file/[fileId]?candidateId=` | Stream file bytes after parent-folder check; forwards `Range` when supported. |
-| POST | `/api/content-review/unlock` | Set session cookie when `REVIEW_DASHBOARD_SECRET` is configured. |
+| GET | `/api/content-review/drive-file/[fileId]?candidateId=` | Stream file bytes after parent-folder check. |
+| POST | `/api/content-review/unlock` | Set session cookie when secret is configured. |
 | POST | `/api/content-review/logout` | Clear session cookie. |
 
 ## Video streaming vs fallback
 
 - The UI uses `<video src={/api/content-review/drive-file/...}>` when MIME type is video. The route proxies Google Drive `alt=media` and forwards the browser `Range` header when Drive returns partial content.
-- If playback fails (codec, Range, or Drive errors), the tile falls back to a Drive thumbnail (if present) plus **Open in Drive**.
+- If playback fails, the tile falls back to a Drive thumbnail plus **Open in Drive**.
 
 ## Known limitations
 
-- Drive **thumbnail URLs** may expire or return 403 for some accounts; images then retry via the proxy URL.
-- **Safari and mobile** browsers can be stricter about video ranges and codecs; Drive **webViewLink** remains the reliable fallback.
-- The dashboard does **not** implement Supabase end-user auth; protect it with network access control, the optional shared secret, or both.
+- Drive thumbnail URLs may expire or return 403; images then retry via the proxy URL.
+- Safari/mobile can be stricter about video ranges and codecs; Drive `webViewLink` remains the reliable fallback.
+- The dashboard does not implement Supabase end-user auth; protect it with network access control, the optional shared secret, or both.

@@ -7,12 +7,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-/** Same roots many devs use for Next (`web/.env.local`) + repo `.env` (tsx cwd may vary). */
-for (const envPath of [
-  path.join(repoRoot, '.env'),
-  path.join(repoRoot, '.env.local'),
-  path.join(repoRoot, 'web', '.env.local'),
-]) {
+for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.local')]) {
   dotenv.config({ path: envPath });
 }
 import type { drive_v3 } from 'googleapis';
