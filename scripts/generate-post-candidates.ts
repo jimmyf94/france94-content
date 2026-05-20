@@ -26,14 +26,16 @@ import {
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
-const postTypeEnum = z.enum([
+export const ALL_POST_TYPES = [
   'reel',
   'story_sequence',
   'carousel',
   'static_post',
   'sponsor_post',
   'archive_note',
-]);
+] as const;
+
+const postTypeEnum = z.enum(ALL_POST_TYPES);
 
 const llmCandidateSchema = z.object({
   post_type: postTypeEnum,
@@ -324,12 +326,16 @@ async function fetchExistingTitlesForDate(
 export function validatePostCandidateOutput(
   raw: unknown,
   assetById: Map<string, CandidateSourceAsset>,
+  enabledPostTypes?: Set<string>,
 ): { ok: true; data: ValidatedPostCandidate } | { ok: false; error: string } {
   const parsed = llmCandidateSchema.safeParse(raw);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.message };
   }
   const c = parsed.data;
+  if (enabledPostTypes && !enabledPostTypes.has(c.post_type)) {
+    return { ok: false, error: `disabled post_type ${c.post_type}` };
+  }
   const title = c.title?.trim();
   if (!title) {
     return { ok: false, error: 'empty title' };
@@ -361,10 +367,28 @@ export function validatePostCandidateOutput(
   };
 }
 
+async function loadEnabledPostTypes(supabase: SupabaseClient): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('pipeline_settings')
+    .select('enabled_post_types')
+    .eq('singleton', true)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  const allowed = new Set<string>(ALL_POST_TYPES);
+  const raw = data?.enabled_post_types;
+  if (!Array.isArray(raw)) return allowed;
+  const enabled = new Set<string>();
+  for (const v of raw) {
+    if (typeof v === 'string' && allowed.has(v)) enabled.add(v);
+  }
+  return enabled.size > 0 ? enabled : allowed;
+}
+
 export async function generatePostCandidatesWithLLM(params: {
   summaries: AssetSummaryForLLM[];
   dailyTarget: number;
   batchDays: number;
+  enabledPostTypes: string[];
   supabase: SupabaseClient | null;
 }): Promise<{
   candidates: ValidatedPostCandidate[];
@@ -376,11 +400,13 @@ export async function generatePostCandidatesWithLLM(params: {
   const apiKey = requireEnv('GEMINI_API_KEY');
   const ai = new GoogleGenAI({ apiKey });
   const stableTemplate = (await loadResolvedStablePrompt(params.supabase, 'post_planner')).text;
+  const enabledSet = new Set(params.enabledPostTypes);
   const { stableSystemInstruction, dynamicText } = buildPostPlannerPromptParts({
     stableText: stableTemplate,
     summaries: params.summaries as unknown[],
     dailyTarget: params.dailyTarget,
     batchDays: params.batchDays,
+    enabledPostTypes: params.enabledPostTypes,
   });
   const promptVersion = getFr94PromptVersion();
   const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
@@ -453,8 +479,11 @@ export async function generatePostCandidatesWithLLM(params: {
 
   for (let i = 0; i < validated.data.candidates.length; i++) {
     const row = validated.data.candidates[i];
-    const v = validatePostCandidateOutput(row, assetById);
+    const v = validatePostCandidateOutput(row, assetById, enabledSet);
     if (!v.ok) {
+      if (v.error.startsWith('disabled post_type')) {
+        console.warn(`[skip disabled lane]\t${v.error}`);
+      }
       errors.push(`candidate[${i}]: ${v.error}`);
       continue;
     }
@@ -627,6 +656,7 @@ export async function generatePostCandidates(): Promise<void> {
 
   const supabase = getSupabaseClient();
   const drive = await getDriveClient();
+  const enabledPostTypes = [...(await loadEnabledPostTypes(supabase))];
 
   const assets = await getCandidateSourceAssets(supabase, { batchDays, maxAssets });
   console.log(`source assets (processed, last ${batchDays}d, max ${maxAssets}): ${assets.length}`);
@@ -649,6 +679,7 @@ export async function generatePostCandidates(): Promise<void> {
       summaries,
       dailyTarget,
       batchDays,
+      enabledPostTypes,
       supabase,
     });
   } catch (e) {

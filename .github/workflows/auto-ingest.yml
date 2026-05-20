@@ -2,8 +2,13 @@ name: auto-ingest
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      stage:
+        description: 'full | candidates_only'
+        required: false
+        default: 'full'
 
 concurrency:
   group: auto-ingest
@@ -17,11 +22,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm run auto:ingest-tick
         env:
+          AUTO_INGEST_STAGE: ${{ github.event.inputs.stage || 'full' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
@@ -34,4 +40,4 @@ jobs:
           POST_CANDIDATE_BATCH_DAYS: '10'
           POST_CANDIDATE_MAX_ASSETS: '80'
           POST_CANDIDATE_DAILY_TARGET: '2'
-          FR94_PROMPT_VERSION: '2026-05-10-v1'
+          FR94_PROMPT_VERSION: '2026-05-23-v1'

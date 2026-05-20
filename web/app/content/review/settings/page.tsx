@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { readJsonResponse } from '@/lib/read-json-response';
 
-import { AutoIngestSection } from './AutoIngestSection';
+import { PipelineSection } from './PipelineSection';
 
 type Fr94RouteOperation =
   | 'asset_analysis_image'
@@ -411,7 +411,7 @@ function UsageSection({
       : null;
 
   return (
-    <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+    <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">Usage (UTC days)</h2>
@@ -632,7 +632,7 @@ export default function LlmSettingsPage() {
   const [promptSaving, setPromptSaving] = useState<Record<string, boolean>>({});
   const [promptErr, setPromptErr] = useState<string | null>(null);
 
-  const [tab, setTab] = useState<'prompts' | 'models'>('prompts');
+  const [tab, setTab] = useState<'pipeline' | 'prompts' | 'models' | 'usage'>('pipeline');
   const [selectedPromptKey, setSelectedPromptKey] = useState<StablePromptKey>('direct_media_analysis');
   const [promptEditing, setPromptEditing] = useState(false);
 
@@ -913,35 +913,92 @@ export default function LlmSettingsPage() {
   const routeDraft = selectedRoutePayload ? drafts[selectedRoute] : undefined;
   const routeBusy = saving[selectedRoute] === true;
 
+  const tabClass = (active: boolean) =>
+    `flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+      active ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm' : 'text-[var(--muted)] hover:text-[var(--text)]'
+    }`;
+
   return (
     <div className="min-h-[100dvh] bg-[var(--bg)] text-[var(--text)]">
-      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 lg:px-6">
-        <Link
-          href="/content/review"
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
-        >
-          Back to review
-        </Link>
-        <h1 className="text-base font-semibold tracking-tight">LLM settings</h1>
-      </header>
-
-      <main className="mx-auto max-w-4xl space-y-6 px-4 py-6 lg:px-6">
+      <header className="sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-4 lg:px-6">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
+          <Link
+            href="/content/review"
+            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+          >
+            Back to review
+          </Link>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-base font-semibold tracking-tight">Settings</h1>
+            <p className="text-xs text-[var(--muted)]">Pipeline, LLM prompts, models, and usage</p>
+          </div>
+        </div>
         {feedback && (
           <div
-            className={`rounded-md border px-3 py-2 text-sm ${
+            className={`mx-auto mt-3 max-w-4xl rounded-md border px-3 py-2 text-sm ${
               feedback.kind === 'good'
-                ? 'border-[var(--good)] bg-[var(--surface)] text-[var(--good)]'
-                : 'border-[var(--bad)] bg-[var(--surface)] text-[var(--bad)]'
+                ? 'border-[var(--good)] text-[var(--good)]'
+                : 'border-[var(--bad)] text-[var(--bad)]'
             }`}
             role="status"
           >
             {feedback.msg}
           </div>
         )}
+      </header>
 
-        {loading && <p className="text-sm text-[var(--muted)]">Loading…</p>}
-        {error && (
-          <div className="rounded-md border border-[var(--bad)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--bad)]">
+      <main className="mx-auto max-w-4xl space-y-5 px-4 py-6 lg:px-6">
+        <div className="flex gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-1">
+          <button type="button" onClick={() => setTab('pipeline')} className={tabClass(tab === 'pipeline')}>
+            Pipeline
+          </button>
+          <button type="button" onClick={() => setTab('prompts')} className={tabClass(tab === 'prompts')}>
+            Prompts
+          </button>
+          <button type="button" onClick={() => setTab('models')} className={tabClass(tab === 'models')}>
+            Models
+          </button>
+          <button type="button" onClick={() => setTab('usage')} className={tabClass(tab === 'usage')}>
+            Usage
+          </button>
+        </div>
+
+        {tab === 'pipeline' && <PipelineSection onFeedback={setFeedback} />}
+
+        {tab === 'usage' && (
+          <>
+            <UsageSection
+              usageDays={usageDays}
+              onChangeDays={setUsageDays}
+              usage={usage}
+              usageErr={usageErr}
+            />
+            {(hints ?? usage?.runtimeHints) && (
+              <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-xs text-[var(--muted)]">
+                <span className="font-medium text-[var(--text)]">Runtime</span>
+                <span className="mx-2">·</span>
+                Prompt{' '}
+                <code className="text-[11px]">
+                  {hints?.fr94PromptVersion ?? usage?.runtimeHints.fr94PromptVersion}
+                </code>
+                <span className="mx-2">·</span>
+                Explicit cache{' '}
+                {(hints?.geminiExplicitCaching ?? usage?.runtimeHints.geminiExplicitCaching) ? 'on' : 'off'}
+                <span className="mx-2">·</span>
+                LLM logging{' '}
+                {(hints?.llmLoggingDisabled ?? usage?.runtimeHints.llmLoggingDisabled) ? 'disabled' : 'enabled'}
+                <span className="mx-2">·</span>
+                Prompt edits change cache-key fingerprints until Gemini caches refresh.
+              </section>
+            )}
+          </>
+        )}
+
+        {(tab === 'prompts' || tab === 'models') && loading && (
+          <p className="text-sm text-[var(--muted)]">Loading…</p>
+        )}
+        {(tab === 'prompts' || tab === 'models') && error && (
+          <div className="rounded-xl border border-[var(--bad)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--bad)]">
             {error}
             <button
               type="button"
@@ -956,59 +1013,8 @@ export default function LlmSettingsPage() {
           </div>
         )}
 
-        <AutoIngestSection />
-
-        <UsageSection
-          usageDays={usageDays}
-          onChangeDays={setUsageDays}
-          usage={usage}
-          usageErr={usageErr}
-        />
-
-        {(hints ?? usage?.runtimeHints) && (
-          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-xs text-[var(--muted)]">
-            <span className="font-medium text-[var(--text)]">Runtime</span>
-            <span className="mx-2">·</span>
-            Prompt{' '}
-            <code className="text-[11px]">{hints?.fr94PromptVersion ?? usage?.runtimeHints.fr94PromptVersion}</code>
-            <span className="mx-2">·</span>
-            Explicit cache{' '}
-            {(hints?.geminiExplicitCaching ?? usage?.runtimeHints.geminiExplicitCaching) ? 'on' : 'off'}
-            <span className="mx-2">·</span>
-            LLM logging{' '}
-            {(hints?.llmLoggingDisabled ?? usage?.runtimeHints.llmLoggingDisabled) ? 'disabled' : 'enabled'}
-            <span className="mx-2">·</span>
-            Prompt edits change cache-key fingerprints until Gemini caches refresh.
-          </section>
-        )}
-
-        <div className="flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-1">
-          <button
-            type="button"
-            onClick={() => setTab('prompts')}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              tab === 'prompts'
-                ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
-                : 'text-[var(--muted)] hover:text-[var(--text)]'
-            }`}
-          >
-            Prompts
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('models')}
-            className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-              tab === 'models'
-                ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
-                : 'text-[var(--muted)] hover:text-[var(--text)]'
-            }`}
-          >
-            Models
-          </button>
-        </div>
-
         {tab === 'prompts' && (
-          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+          <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <p className="text-xs text-[var(--muted)]">
               Stable prompts live in <code className="text-[11px]">llm_stable_prompts</code> when saved; otherwise
               repo files. Select a prompt, review full text, then Edit to change.
@@ -1126,7 +1132,7 @@ export default function LlmSettingsPage() {
         )}
 
         {tab === 'models' && (
-          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
+          <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <datalist id="fr94-model-suggestions">
               {modelSuggestions.map((m) => (
                 <option key={m} value={m} />

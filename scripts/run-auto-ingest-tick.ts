@@ -22,7 +22,20 @@ const PIPELINE_SINGLETON = true;
 type PipelineRow = {
   auto_ingest_enabled: boolean;
   auto_pause_threshold: number;
+  auto_ingest_interval_minutes: number;
+  last_run_finished_at: string | null;
 };
+
+type AutoIngestStage = 'full' | 'candidates_only';
+
+function resolveAutoIngestStage(): AutoIngestStage {
+  const raw = process.env.AUTO_INGEST_STAGE?.trim();
+  return raw === 'candidates_only' ? 'candidates_only' : 'full';
+}
+
+function isScheduledGithubEvent(): boolean {
+  return process.env.GITHUB_EVENT_NAME?.trim() === 'schedule';
+}
 
 type TickSummary = {
   ingested: number;
@@ -52,14 +65,29 @@ function getSupabase(): SupabaseClient {
 async function loadPipeline(supabase: SupabaseClient): Promise<PipelineRow> {
   const { data, error } = await supabase
     .from('pipeline_settings')
-    .select('auto_ingest_enabled,auto_pause_threshold')
+    .select('auto_ingest_enabled,auto_pause_threshold,auto_ingest_interval_minutes,last_run_finished_at')
     .eq('singleton', PIPELINE_SINGLETON)
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (!data) {
     throw new Error('pipeline_settings row missing; apply migration 20260513120000_pipeline_settings.sql');
   }
-  return data as PipelineRow;
+  const row = data as PipelineRow;
+  return {
+    ...row,
+    auto_ingest_interval_minutes: row.auto_ingest_interval_minutes ?? 30,
+  };
+}
+
+function shouldSkipIntervalGate(settings: PipelineRow): boolean {
+  if (!isScheduledGithubEvent()) return false;
+  const finished = settings.last_run_finished_at;
+  if (!finished) return false;
+  const finishedMs = new Date(finished).getTime();
+  if (Number.isNaN(finishedMs)) return false;
+  const elapsedMs = Date.now() - finishedMs;
+  const minMs = settings.auto_ingest_interval_minutes * 60_000;
+  return elapsedMs < minMs;
 }
 
 async function needsReviewCount(supabase: SupabaseClient): Promise<number> {
@@ -123,17 +151,25 @@ export async function runAutoIngestTick(): Promise<void> {
   const supabase = getSupabase();
   const settings = await loadPipeline(supabase);
   const needsReview = await needsReviewCount(supabase);
+  const stage = resolveAutoIngestStage();
 
   console.log(
-    `[auto-ingest]\tenabled=${settings.auto_ingest_enabled}\tneeds_review=${needsReview}\tthreshold=${settings.auto_pause_threshold}`,
+    `[auto-ingest]\tstage=${stage}\tenabled=${settings.auto_ingest_enabled}\tneeds_review=${needsReview}\tthreshold=${settings.auto_pause_threshold}\tinterval_min=${settings.auto_ingest_interval_minutes}`,
   );
 
-  if (!settings.auto_ingest_enabled) {
+  if (!settings.auto_ingest_enabled && isScheduledGithubEvent()) {
     console.log('[auto-ingest]\tdisabled; exiting');
     return;
   }
 
-  if (needsReview >= settings.auto_pause_threshold) {
+  if (shouldSkipIntervalGate(settings)) {
+    console.log(
+      `[auto-ingest]\tskipped_interval_gate: last finished ${settings.last_run_finished_at}, interval ${settings.auto_ingest_interval_minutes}m`,
+    );
+    return;
+  }
+
+  if (needsReview >= settings.auto_pause_threshold && isScheduledGithubEvent()) {
     await patchPipeline(supabase, {
       auto_ingest_enabled: false,
       last_run_status: 'paused_threshold_reached',
@@ -162,17 +198,21 @@ export async function runAutoIngestTick(): Promise<void> {
   };
 
   try {
-    console.log('[auto-ingest]\tstep: ingest');
-    await ingestDriveFolder();
+    if (stage === 'full') {
+      console.log('[auto-ingest]\tstep: ingest');
+      await ingestDriveFolder();
 
-    console.log('[auto-ingest]\tstep: analyze');
-    await analyzePendingAssets();
+      console.log('[auto-ingest]\tstep: analyze');
+      await analyzePendingAssets();
 
-    console.log('[auto-ingest]\tstep: process (rename/move)');
-    await processAnalyzedAssets();
+      console.log('[auto-ingest]\tstep: process (rename/move)');
+      await processAnalyzedAssets();
 
-    console.log('[auto-ingest]\tstep: geocode');
-    await reverseGeocodePendingAssets();
+      console.log('[auto-ingest]\tstep: geocode');
+      await reverseGeocodePendingAssets();
+    } else {
+      console.log('[auto-ingest]\tskipping ingest/analyze/process/geocode (candidates_only)');
+    }
 
     console.log('[auto-ingest]\tstep: generate post candidates');
     await generatePostCandidates();

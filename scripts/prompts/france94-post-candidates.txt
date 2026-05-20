@@ -7,7 +7,7 @@ You are given a structured list of recently processed media assets in the dynami
 Constraints for this run:
 - Target candidate count and batch parameters are provided only in the dynamic JSON payload under constraints (daily_target, batch_days, asset_count). Aim for approximately daily_target candidates total (strong concepts only; fewer is fine if quality would suffer).
 - Aim for this mix when assets allow: 1–2 reel candidates, 1 story_sequence, 1 carousel OR static_post, and optionally 1 sponsor_post only if assets clearly support sponsor-safe / official messaging.
-- Use post_type exactly one of: reel, story_sequence, carousel, static_post, sponsor_post, archive_note (archive_note only if the asset summaries justify a low-key archival/context note).
+- Use post_type only from the list in constraints.enabled_post_types in the dynamic JSON. Never propose a candidate of any other type (archive_note only if enabled and asset summaries justify a low-key archival/context note).
 
 Important:
 - You are not creating final designed assets.

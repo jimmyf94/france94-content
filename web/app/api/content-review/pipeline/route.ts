@@ -1,69 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import {
+  loadPipelineRow,
+  needsReviewCount,
+  PIPELINE_POST_TYPES,
+  toPipelinePayload,
+  PIPELINE_SINGLETON_KEY,
+} from '@/lib/pipeline-settings-server';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
-const PIPELINE_SINGLETON = true;
-
-type PipelineRow = {
-  auto_ingest_enabled: boolean;
-  auto_pause_threshold: number;
-  last_run_started_at: string | null;
-  last_run_finished_at: string | null;
-  last_run_status: string | null;
-  last_run_summary: Record<string, unknown> | null;
-  updated_at: string;
-};
+const pipelinePostTypeSchema = z.enum(PIPELINE_POST_TYPES);
 
 const patchBodySchema = z
   .object({
     auto_ingest_enabled: z.boolean().optional(),
     auto_pause_threshold: z.number().int().min(1).max(100).optional(),
+    auto_ingest_interval_minutes: z.number().int().min(5).max(60 * 24 * 30).optional(),
+    enabled_post_types: z.array(pipelinePostTypeSchema).min(0).optional(),
   })
-  .refine((b) => b.auto_ingest_enabled !== undefined || b.auto_pause_threshold !== undefined, {
-    message: 'Provide auto_ingest_enabled and/or auto_pause_threshold',
-  });
-
-async function needsReviewCount(supabase: ReturnType<typeof getSupabaseServiceRole>): Promise<number> {
-  const { count, error } = await supabase
-    .from('post_candidates')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'needs_review');
-  if (error) throw new Error(error.message);
-  return count ?? 0;
-}
-
-async function loadPipelineRow(
-  supabase: ReturnType<typeof getSupabaseServiceRole>,
-): Promise<PipelineRow> {
-  const { data, error } = await supabase
-    .from('pipeline_settings')
-    .select(
-      'auto_ingest_enabled,auto_pause_threshold,last_run_started_at,last_run_finished_at,last_run_status,last_run_summary,updated_at',
-    )
-    .eq('singleton', PIPELINE_SINGLETON)
-    .maybeSingle();
-
-  if (error) throw new Error(error.message);
-  if (!data) {
-    throw new Error('pipeline_settings row missing; apply migration 20260513120000_pipeline_settings.sql');
-  }
-  return data as PipelineRow;
-}
-
-function toPayload(row: PipelineRow, needsReview: number) {
-  return {
-    auto_ingest_enabled: row.auto_ingest_enabled,
-    auto_pause_threshold: row.auto_pause_threshold,
-    needs_review_count: needsReview,
-    last_run_started_at: row.last_run_started_at,
-    last_run_finished_at: row.last_run_finished_at,
-    last_run_status: row.last_run_status,
-    last_run_summary: row.last_run_summary,
-    updated_at: row.updated_at,
-  };
-}
+  .refine(
+    (b) =>
+      b.auto_ingest_enabled !== undefined ||
+      b.auto_pause_threshold !== undefined ||
+      b.auto_ingest_interval_minutes !== undefined ||
+      b.enabled_post_types !== undefined,
+    {
+      message:
+        'Provide auto_ingest_enabled, auto_pause_threshold, auto_ingest_interval_minutes, and/or enabled_post_types',
+    },
+  );
 
 export async function GET(req: NextRequest) {
   try {
@@ -72,7 +39,7 @@ export async function GET(req: NextRequest) {
 
     const supabase = getSupabaseServiceRole();
     const [row, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
-    return NextResponse.json(toPayload(row, needsReview));
+    return NextResponse.json(toPipelinePayload(row, needsReview));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[pipeline] GET', e);
@@ -98,12 +65,18 @@ export async function PATCH(req: NextRequest) {
     if (parsed.data.auto_pause_threshold !== undefined) {
       patch.auto_pause_threshold = parsed.data.auto_pause_threshold;
     }
+    if (parsed.data.auto_ingest_interval_minutes !== undefined) {
+      patch.auto_ingest_interval_minutes = parsed.data.auto_ingest_interval_minutes;
+    }
+    if (parsed.data.enabled_post_types !== undefined) {
+      patch.enabled_post_types = parsed.data.enabled_post_types;
+    }
 
     const supabase = getSupabaseServiceRole();
     const { error } = await supabase
       .from('pipeline_settings')
       .update(patch)
-      .eq('singleton', PIPELINE_SINGLETON);
+      .eq('singleton', PIPELINE_SINGLETON_KEY);
 
     if (error) {
       console.error('[pipeline] PATCH', error);
@@ -111,7 +84,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     const [row, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
-    return NextResponse.json(toPayload(row, needsReview));
+    return NextResponse.json(toPipelinePayload(row, needsReview));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[pipeline] PATCH', e);

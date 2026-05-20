@@ -35,12 +35,14 @@ export function buildPostPlannerPromptParts(params: {
   summaries: unknown[];
   dailyTarget: number;
   batchDays: number;
+  enabledPostTypes: string[];
 }): { stableSystemInstruction: string; dynamicText: string } {
   const dynamicPayload = {
     constraints: {
       batch_days: params.batchDays,
       daily_target: params.dailyTarget,
       asset_count: params.summaries.length,
+      enabled_post_types: params.enabledPostTypes,
     },
     assets: params.summaries,
   };

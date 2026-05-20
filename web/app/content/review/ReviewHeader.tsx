@@ -84,7 +84,7 @@ export function ReviewHeader({
       <Link
         href="/content/review/settings"
         className="rounded-full border border-[var(--good)] px-2.5 py-0.5 text-[11px] text-[var(--good)]"
-        title="Auto-ingest runs every 30 minutes via GitHub Actions"
+        title="Auto-ingest checks every 5 min; runs at your configured interval"
       >
         Auto-ingest on{rel ? ` · last ${rel}` : ''}
       </Link>
@@ -196,7 +196,7 @@ export function ReviewHeader({
         href="/content/review/settings"
         className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
       >
-        LLM settings
+        Settings
       </Link>
       <button
         type="button"
