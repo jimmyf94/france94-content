@@ -104,11 +104,15 @@ async function countSince(
   table: 'content_assets' | 'post_candidates',
   sinceIso: string,
 ): Promise<number> {
+  const dateColumn = table === 'content_assets' ? 'imported_at' : 'created_at';
   const { count, error } = await supabase
     .from(table)
     .select('id', { count: 'exact', head: true })
-    .gte('created_at', sinceIso);
-  if (error) throw new Error(error.message);
+    .gte(dateColumn, sinceIso);
+  if (error) {
+    const detail = [error.message, error.details, error.hint].filter(Boolean).join(' — ');
+    throw new Error(detail || `countSince failed on ${table}`);
+  }
   return count ?? 0;
 }
 
