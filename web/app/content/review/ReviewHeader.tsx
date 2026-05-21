@@ -202,14 +202,14 @@ export function ReviewHeader({
         type="button"
         onClick={async () => {
           try {
-            await fetch('/api/content-review/logout', {
+            await fetch('/api/auth/signout', {
               method: 'POST',
               credentials: 'include',
             });
           } catch {
             /* ignore */
           }
-          window.location.href = '/content/review/unlock';
+          window.location.href = '/login';
         }}
         className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)]"
       >

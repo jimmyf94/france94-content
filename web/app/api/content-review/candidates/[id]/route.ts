@@ -9,7 +9,7 @@ import {
   reserveAssetsForCandidate,
 } from '@fr94/asset-usage';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
-import { assertReviewAuthorized } from '@/lib/review-auth';
+import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 const reelStructureRowSchema = z.object({
@@ -123,7 +123,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     reel_instructions,
   } = parsed.data;
   const now = new Date().toISOString();
-  const reviewedBy = process.env.REVIEWED_BY?.trim() || null;
+  const reviewedBy = await getCurrentUserEmail(req);
 
   const supabase = getSupabaseServiceRole();
 

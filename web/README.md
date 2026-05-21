@@ -42,7 +42,7 @@ Default URL: [http://127.0.0.1:3040/content/review](http://127.0.0.1:3040/conten
 2. **Root Directory:** `web`
 3. **Build command:** `npm run build` (default for Next.js)
 4. **Environment variables:** copy from `.env.example` (same names as local). Required minimum: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_OAUTH_CLIENT_SECRETS_JSON`, `GEMINI_API_KEY`, and any vars your API routes use (Instagram, public media bucket, etc.).
-5. Optional: `REVIEW_DASHBOARD_SECRET` to gate `/content/review`.
+5. Auth: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `ALLOWED_EMAILS` (Google OAuth via Supabase).
 
 Heavy workers (auto-ingest pipeline, reel render, publishing prep) run **outside** Vercel — see auto-ingest below.
 
@@ -59,14 +59,16 @@ Local test (uses root `.env`):
 npm run auto:ingest-tick
 ```
 
-## Optional access gate
+## Access (Google sign-in)
 
-If `REVIEW_DASHBOARD_SECRET` is set, the middleware requires either:
+Protected routes require a Supabase session from **Google OAuth**:
 
-- `Authorization: Bearer <secret>` or `x-review-secret: <secret>` on API calls, or
-- an HTTP-only cookie set via **POST** `/api/content-review/unlock` with JSON `{ "secret": "..." }`.
+1. Supabase dashboard → Authentication → Providers → **Google** (Client ID + Secret from Google Cloud).
+2. Google Cloud OAuth client → authorized redirect URI: `https://<project-ref>.supabase.co/auth/v1/callback`.
+3. Supabase → Authentication → URL Configuration → add `http://localhost:3040/auth/callback` and your production `/auth/callback` URL.
+4. Set `ALLOWED_EMAILS` (comma-separated) in `.env` — only those Google accounts can use the app.
 
-Browse to `/content/review/unlock` once to enter the secret.
+Sign in at `/login`. Sign out from the review header (clears session).
 
 ## API routes
 
@@ -78,8 +80,7 @@ Browse to `/content/review/unlock` once to enter the secret.
 | GET/PATCH | `/api/content-review/pipeline` | Auto-ingest toggle, threshold, last-run status. |
 | GET | `/api/content-review/candidates/[id]/files` | List files in `review_drive_folder_id`. |
 | GET | `/api/content-review/drive-file/[fileId]?candidateId=` | Stream file bytes after parent-folder check. |
-| POST | `/api/content-review/unlock` | Set session cookie when secret is configured. |
-| POST | `/api/content-review/logout` | Clear session cookie. |
+| POST | `/api/auth/signout` | Clear Supabase session cookies. |
 
 ## Video streaming vs fallback
 
@@ -90,4 +91,4 @@ Browse to `/content/review/unlock` once to enter the secret.
 
 - Drive thumbnail URLs may expire or return 403; images then retry via the proxy URL.
 - Safari/mobile can be stricter about video ranges and codecs; Drive `webViewLink` remains the reliable fallback.
-- The dashboard does not implement Supabase end-user auth; protect it with network access control, the optional shared secret, or both.
+- Access is limited to emails in `ALLOWED_EMAILS`; API routes still use the service role for data (not per-user RLS).
