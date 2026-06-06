@@ -11,9 +11,13 @@ import { CandidateQueueSidebar } from './CandidateQueueSidebar';
 import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
 import { MediaPreviewStage } from './MediaPreviewStage';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
-import { invalidateCandidateMediaCache } from './useCandidateMedia';
+import {
+  invalidateCandidateMediaCache,
+  useCandidateMedia,
+} from './useCandidateMedia';
 import { ProductionJobCard } from './ProductionJobCard';
 import { PublishingPrepCard } from './PublishingPrepCard';
+import { PublishingScheduleQueue } from './PublishingScheduleQueue';
 import { ReviewHeader } from './ReviewHeader';
 import { ShortcutsBanner } from './ShortcutsBanner';
 import { Toast, type ToastState } from './Toast';
@@ -91,23 +95,52 @@ export function ReviewDashboard() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
   const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
+  const [publishingQueueNonce, setPublishingQueueNonce] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [queueThumbnails, setQueueThumbnails] = useState<Record<string, string | null>>({});
   const thumbFetchGen = useRef(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const activatePrimaryVideoStream = useRef<(() => void) | null>(null);
+
+  const registerActivatePrimaryVideo = useCallback((fn: () => void) => {
+    activatePrimaryVideoStream.current = fn;
+  }, []);
+
+  useEffect(() => {
+    activatePrimaryVideoStream.current = null;
+  }, [selectedId]);
+
+  const {
+    files: selectedMediaFiles,
+    loading: selectedMediaLoading,
+    error: selectedMediaError,
+  } = useCandidateMedia(selectedId, mediaReloadNonce);
+
+  const selectedMedia = useMemo(
+    () => ({
+      files: selectedMediaFiles,
+      loading: selectedMediaLoading,
+      error: selectedMediaError,
+    }),
+    [selectedMediaFiles, selectedMediaLoading, selectedMediaError],
+  );
+
+  const [includeBlocked, setIncludeBlocked] = useState(false);
 
   const queryString = useMemo(() => {
     const q = new URLSearchParams();
     q.set('status', ALL_STATUSES);
     q.set('limit', '500');
+    if (includeBlocked) q.set('include_blocked', 'true');
     if (filters.postType.trim()) q.set('post_type', filters.postType.trim());
     if (filters.date.trim()) q.set('candidate_date', filters.date.trim());
     if (filters.priorityMin.trim()) q.set('priority_min', filters.priorityMin.trim());
     if (filters.priorityMax.trim()) q.set('priority_max', filters.priorityMax.trim());
     if (filters.search.trim()) q.set('q', filters.search.trim());
     return q.toString();
-  }, [filters]);
+  }, [filters, includeBlocked]);
 
   const [candidates, setCandidates] = useState<CandidateListItem[]>([]);
   const [selectedDetail, setSelectedDetail] = useState<PostCandidate | null>(null);
@@ -141,6 +174,7 @@ export function ReviewDashboard() {
           if (!row) return null;
           return { ...prev, ...row } as PostCandidate;
         });
+        setPublishingQueueNonce((n) => n + 1);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         if (showLoading) {
@@ -339,10 +373,18 @@ export function ReviewDashboard() {
   );
 
   const decide = useCallback(
-    async (status: DecisionStatus) => {
+    async (status: DecisionStatus, opts?: { overrideCollision?: boolean }) => {
       if (!selected) return;
       if (selected.invalidated_at) return;
       if (status === 'approved' && selected.has_asset_conflict === true) return;
+      const collisionRisk = (selected.collision_risk ?? '').trim();
+      if (
+        status === 'approved' &&
+        !opts?.overrideCollision &&
+        (collisionRisk === 'blocked' || collisionRisk === 'high')
+      ) {
+        return;
+      }
       const decidedId = selected.id;
       const decidedTitle = selected.title;
       const previousStatus = selected.status;
@@ -375,7 +417,11 @@ export function ReviewDashboard() {
           method: 'PATCH',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status, reviewer_notes: notes }),
+          body: JSON.stringify({
+            status,
+            reviewer_notes: notes,
+            ...(opts?.overrideCollision ? { override_collision: true } : {}),
+          }),
         });
         const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
         if (!res.ok) throw new Error(json.error || res.statusText);
@@ -408,6 +454,66 @@ export function ReviewDashboard() {
     },
     [selected, draftNotes, visible, silentReloadCandidates],
   );
+
+  const deleteCandidate = useCallback(async () => {
+    if (!selected) return;
+    if (selected.invalidated_at) return;
+    if (selected.status === 'ready_to_publish') return;
+    if (deleting) return;
+
+    const deletedId = selected.id;
+    const deletedTitle = selected.title;
+    const previousCandidates = candidates;
+    const previousSelectedId = selectedId;
+    const previousDetail = selectedDetail;
+
+    const oldIndex = visible.findIndex((c) => c.id === deletedId);
+    const remaining = visible.filter((c) => c.id !== deletedId);
+    const next =
+      remaining[oldIndex] ?? remaining[oldIndex - 1] ?? remaining[0] ?? null;
+
+    setCandidates((prev) => prev.filter((c) => c.id !== deletedId));
+    setSelectedDetail((prev) => (prev?.id === deletedId ? null : prev));
+    setSelectedId(next?.id ?? null);
+    setDraftNotes((prev) => {
+      const copy = { ...prev };
+      delete copy[deletedId];
+      return copy;
+    });
+    invalidateCandidateMediaCache(deletedId);
+    setMediaReloadNonce((n) => n + 1);
+    setToast({ kind: 'good', msg: `Deleted ${shortTitle(deletedTitle)}`.trim() });
+
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/content-review/candidates/${deletedId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      const json = await readJsonResponse<{ ok?: boolean; error?: string }>(res);
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      await silentReloadCandidates();
+      setPublishingQueueNonce((n) => n + 1);
+    } catch (e) {
+      setCandidates(previousCandidates);
+      setSelectedId(previousSelectedId);
+      setSelectedDetail(previousDetail);
+      setToast({
+        kind: 'bad',
+        msg: e instanceof Error ? `Delete failed: ${e.message}` : 'Delete failed',
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }, [
+    selected,
+    deleting,
+    candidates,
+    selectedId,
+    selectedDetail,
+    visible,
+    silentReloadCandidates,
+  ]);
 
   const goNext = useCallback(() => {
     if (visible.length === 0) {
@@ -446,9 +552,20 @@ export function ReviewDashboard() {
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v) {
+      activatePrimaryVideoStream.current?.();
+      requestAnimationFrame(() => {
+        const el = videoRef.current;
+        if (el?.paused) {
+          void el.play().catch(() => {
+            /* ignore */
+          });
+        }
+      });
+      return;
+    }
     if (v.paused) {
-      v.play().catch(() => {
+      void v.play().catch(() => {
         /* ignore */
       });
     } else {
@@ -458,7 +575,10 @@ export function ReviewDashboard() {
 
   useKeyboardShortcuts({
     enabled: !!selected && selected.status !== 'ready_to_publish' && !selected.invalidated_at,
-    canApprove: selected ? selected.has_asset_conflict !== true : true,
+    canApprove: selected
+      ? selected.has_asset_conflict !== true &&
+        !['blocked', 'high'].includes((selected.collision_risk ?? '').trim())
+      : true,
     onApprove: useCallback(() => void decide('approved'), [decide]),
     onRewrite: useCallback(() => void decide('needs_rewrite'), [decide]),
     onReject: useCallback(() => void decide('rejected'), [decide]),
@@ -587,6 +707,8 @@ export function ReviewDashboard() {
         onToggleFilters={() => setFiltersOpen((o) => !o)}
         onRefresh={() => void silentReloadCandidates()}
         onHealAssetLedger={() => void healStaleAssetLedger()}
+        includeBlocked={includeBlocked}
+        onToggleIncludeBlocked={() => setIncludeBlocked((v) => !v)}
       />
 
       {filtersOpen && (
@@ -609,7 +731,7 @@ export function ReviewDashboard() {
       )}
 
       {/* Desktop cockpit */}
-      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)_minmax(300px,380px)]">
+      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)_minmax(300px,380px)_minmax(280px,340px)]">
         <div className="flex min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)]">
           <CandidateQueueSidebar
             candidates={candidates}
@@ -623,7 +745,10 @@ export function ReviewDashboard() {
           />
         </div>
         <div className="flex min-h-0 flex-col">
-          <CandidateOverviewHeader candidate={selected} mediaReloadNonce={mediaReloadNonce} />
+          <CandidateOverviewHeader
+            candidate={selected}
+            mediaFiles={selectedMedia.files}
+          />
           {selected && (
             <>
               <PublishingPrepCard
@@ -637,7 +762,8 @@ export function ReviewDashboard() {
           <MediaPreviewStage
             candidate={selected}
             videoRef={videoRef}
-            mediaReloadNonce={mediaReloadNonce}
+            media={selectedMedia}
+            onRegisterActivateStream={registerActivatePrimaryVideo}
             onRemoveReviewAsset={handleRemoveReviewAsset}
           />
         </div>
@@ -648,12 +774,22 @@ export function ReviewDashboard() {
           onChangeNotes={setNotes}
           onSaveNotes={saveNotes}
           onDecide={decide}
+          onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
           activeTab={activeDetailTab}
           onChangeTab={setActiveDetailTab}
           onCandidateUpdated={handleCandidateUpdated}
           onRegenerate={regenerate}
           regenerating={regenerating}
+          onDelete={() => void deleteCandidate()}
+          deleting={deleting}
         />
+        <div className="flex min-h-0 flex-col border-l border-[var(--border)]">
+          <PublishingScheduleQueue
+            variant="column"
+            reloadNonce={publishingQueueNonce}
+            onRefresh={() => void silentReloadCandidates()}
+          />
+        </div>
       </div>
 
       {/* Mobile stack */}
@@ -670,6 +806,7 @@ export function ReviewDashboard() {
           onChangeNotes={setNotes}
           onSaveNotes={saveNotes}
           onDecide={decide}
+          onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
           activeDetailTab={activeDetailTab}
           onChangeDetailTab={setActiveDetailTab}
           mobileSheet={mobileSheet}
@@ -682,12 +819,15 @@ export function ReviewDashboard() {
           onRefreshQueue={() => void silentReloadCandidates()}
           onSwipeNext={swipeNext}
           onSwipePrev={swipePrev}
-          mediaReloadNonce={mediaReloadNonce}
+          media={selectedMedia}
+          onRegisterActivateStream={registerActivatePrimaryVideo}
           firstThumbnailById={queueThumbnails}
           onCandidateUpdated={handleCandidateUpdated}
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onRegenerate={regenerate}
           regenerating={regenerating}
+          onDelete={() => void deleteCandidate()}
+          deleting={deleting}
         />
       </div>
 

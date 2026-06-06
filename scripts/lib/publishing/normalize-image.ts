@@ -3,8 +3,6 @@ import sharp from 'sharp';
 
 const MAX_FEED_WIDTH = 1440;
 const MAX_BYTES = 8 * 1024 * 1024;
-const MIN_ASPECT = 4 / 5;
-const MAX_ASPECT = 1.91;
 
 function isHeicMime(m: string | null | undefined): boolean {
   const x = (m ?? '').toLowerCase();
@@ -17,25 +15,6 @@ async function heicToJpegBuffer(buf: Buffer): Promise<Buffer> {
   return Buffer.from(out);
 }
 
-async function ensureFeedAspect(img: sharp.Sharp): Promise<sharp.Sharp> {
-  const meta = await img.metadata();
-  const w = meta.width ?? 0;
-  const h = meta.height ?? 0;
-  if (!w || !h) return img;
-  const r = w / h;
-  if (r >= MIN_ASPECT && r <= MAX_ASPECT) return img;
-  if (r < MIN_ASPECT) {
-    const targetW = Math.ceil(h * MIN_ASPECT);
-    const pad = Math.max(0, Math.floor((targetW - w) / 2));
-    const right = Math.max(0, targetW - w - pad);
-    return img.extend({ left: pad, right, background: '#ffffff' });
-  }
-  const targetH = Math.ceil(w / MAX_ASPECT);
-  const pad = Math.max(0, Math.floor((targetH - h) / 2));
-  const bottom = Math.max(0, targetH - h - pad);
-  return img.extend({ top: pad, bottom, background: '#ffffff' });
-}
-
 export type NormalizedImage = {
   buffer: Buffer;
   mimeType: string;
@@ -45,6 +24,7 @@ export type NormalizedImage = {
 
 /**
  * Instagram Content Publishing: JPEG only (no PNG/WebP for containers).
+ * Preserves source aspect ratio — Instagram handles feed/story display cropping.
  * Alpha is flattened onto white so carousel and feed image_urls are always image/jpeg.
  * @see https://developers.facebook.com/docs/instagram-platform/content-publishing
  */
@@ -58,10 +38,9 @@ export async function normalizeImageForInstagram(params: {
   }
 
   let img = sharp(buf).rotate();
-  img = await ensureFeedAspect(img);
 
-  const metaAfterAspect = await img.metadata();
-  let w = metaAfterAspect.width ?? 0;
+  const meta = await img.metadata();
+  let w = meta.width ?? 0;
 
   if (w > MAX_FEED_WIDTH) {
     img = img.resize({

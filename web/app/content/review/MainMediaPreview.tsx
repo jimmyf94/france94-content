@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+
+import { sizedDriveThumbnail } from '@/lib/drive-thumbnail';
 
 import type { ReviewDriveFile } from './types';
 
@@ -8,7 +10,12 @@ function proxySrc(fileId: string, candidateId: string) {
   return `/api/content-review/drive-file/${encodeURIComponent(fileId)}?candidateId=${encodeURIComponent(candidateId)}`;
 }
 
+function drivePreviewSrc(fileId: string) {
+  return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/preview`;
+}
+
 function FallbackTile({ file, compact }: { file: ReviewDriveFile; compact: boolean }) {
+  const thumb = sizedDriveThumbnail(file.thumbnailLink, compact ? 320 : 800);
   return (
     <div
       className={`flex max-w-md flex-col items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-sm text-[var(--muted)] ${
@@ -16,12 +23,13 @@ function FallbackTile({ file, compact }: { file: ReviewDriveFile; compact: boole
       }`}
     >
       <p>Preview unavailable</p>
-      {file.thumbnailLink && (
+      {thumb && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={file.thumbnailLink}
+          src={thumb}
           alt=""
           loading="lazy"
+          decoding="async"
           className={`rounded ${compact ? 'max-h-32' : 'max-h-64'}`}
         />
       )}
@@ -42,49 +50,68 @@ function FallbackTile({ file, compact }: { file: ReviewDriveFile; compact: boole
 export function MainMediaPreview({
   file,
   candidateId,
-  videoRef,
+  videoRef: _videoRef,
   compact = false,
+  onRegisterActivateStream,
 }: {
   file: ReviewDriveFile;
   candidateId: string;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   compact?: boolean;
+  /** Legacy: spacebar play; videos use Drive embed (no-op). */
+  onRegisterActivateStream?: (activate: () => void) => void;
 }) {
   const proxy = proxySrc(file.id, candidateId);
   const isImage = file.mimeType.startsWith('image/');
   const isVideo = file.mimeType.startsWith('video/');
-  const [imgFailed, setImgFailed] = useState(false);
-  const [videoFailed, setVideoFailed] = useState(false);
+  const previewWidth = compact ? 480 : 800;
+  const sizedThumb = sizedDriveThumbnail(file.thumbnailLink, previewWidth);
+
+  const [imgSrc, setImgSrc] = useState<'thumb' | 'proxy' | 'failed'>(
+    sizedThumb ? 'thumb' : 'proxy',
+  );
+
+  useEffect(() => {
+    setImgSrc(sizedThumb ? 'thumb' : 'proxy');
+  }, [file.id, sizedThumb]);
+
+  useEffect(() => {
+    if (!isVideo || !onRegisterActivateStream) return;
+    onRegisterActivateStream(() => {});
+    return () => onRegisterActivateStream(() => {});
+  }, [isVideo, onRegisterActivateStream]);
 
   return (
     <figure className="flex h-full max-h-full w-full max-w-full flex-col items-center justify-center gap-1.5">
-      <div className="flex min-h-0 w-full flex-1 items-center justify-center">
-        {isImage && !imgFailed && (
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center">
+        {isImage && imgSrc !== 'failed' && (
           /* eslint-disable-next-line @next/next/no-img-element */
           <img
             key={file.id}
-            src={proxy}
+            src={imgSrc === 'thumb' && sizedThumb ? sizedThumb : proxy}
             alt={file.name}
             loading="lazy"
+            decoding="async"
             className="max-h-full max-w-full rounded-lg object-contain"
-            onError={() => setImgFailed(true)}
+            onError={() => {
+              if (imgSrc === 'thumb' && sizedThumb) setImgSrc('proxy');
+              else setImgSrc('failed');
+            }}
           />
         )}
-        {isImage && imgFailed && <FallbackTile file={file} compact={compact} />}
-        {isVideo && !videoFailed && (
-          <video
-            ref={videoRef}
-            key={file.id}
-            src={proxy}
-            controls
-            playsInline
-            muted
-            preload="metadata"
-            className="max-h-full max-w-full rounded-lg object-contain"
-            onError={() => setVideoFailed(true)}
+        {isImage && imgSrc === 'failed' && <FallbackTile file={file} compact={compact} />}
+        {isVideo && file.id && (
+          <iframe
+            key={`drive-${file.id}`}
+            src={drivePreviewSrc(file.id)}
+            title={file.name}
+            allow="autoplay"
+            className={`max-h-full max-w-full rounded-lg border-0 ${
+              compact ? 'aspect-square min-h-[8rem] w-full' : 'aspect-video w-full max-w-3xl min-h-[12rem]'
+            }`}
           />
         )}
-        {isVideo && videoFailed && <FallbackTile file={file} compact={compact} />}
+        {isVideo && !file.id && <FallbackTile file={file} compact={compact} />}
         {!isImage && !isVideo && <FallbackTile file={file} compact={compact} />}
       </div>
       {compact ? (

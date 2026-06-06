@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import {
+  estimateLlmCostUsd,
   FR94_MODEL_ROUTE_KEYS,
   getModelRoute,
   mergeResolvedRouteForPreview,
@@ -63,17 +64,65 @@ function effectiveRoute(
   return mergeResolvedRouteForPreview(base, row);
 }
 
+const ROUTE_TELEMETRY_DAYS = 7;
+
+type RpcTelemetryRow = {
+  operation: string;
+  call_count: number | string;
+  failed_count: number | string;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error_message: string | null;
+  latency_p50_ms: number | string | null;
+  latency_p95_ms: number | string | null;
+  input_tokens: number | string;
+  output_tokens: number | string;
+};
+
+function mapTelemetryRow(raw: RpcTelemetryRow) {
+  const inputTokens = Number(raw.input_tokens) || 0;
+  const outputTokens = Number(raw.output_tokens) || 0;
+  return {
+    callCount: Number(raw.call_count) || 0,
+    failedCount: Number(raw.failed_count) || 0,
+    lastSuccessAt: raw.last_success_at,
+    lastErrorAt: raw.last_error_at,
+    lastErrorMessage: raw.last_error_message,
+    latencyP50Ms: raw.latency_p50_ms != null ? Number(raw.latency_p50_ms) : null,
+    latencyP95Ms: raw.latency_p95_ms != null ? Number(raw.latency_p95_ms) : null,
+    inputTokens,
+    outputTokens,
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const denied = assertReviewAuthorized(req);
     if (denied) return denied;
 
     const supabase = getSupabaseServiceRole();
-    const { data: rows, error } = await supabase.from('llm_route_settings').select('*');
+    const [settingsRes, telemetryRes] = await Promise.all([
+      supabase.from('llm_route_settings').select('*'),
+      supabase.rpc('fr94_llm_route_telemetry', {
+        p_operation: null,
+        p_days: ROUTE_TELEMETRY_DAYS,
+      }),
+    ]);
+
+    const { data: rows, error } = settingsRes;
 
     if (error) {
       console.error('[llm-settings]', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const telemetryByOp = new Map<string, ReturnType<typeof mapTelemetryRow>>();
+    if (telemetryRes.error) {
+      console.warn('[llm-settings] telemetry RPC:', telemetryRes.error.message);
+    } else {
+      for (const raw of (Array.isArray(telemetryRes.data) ? telemetryRes.data : []) as RpcTelemetryRow[]) {
+        if (raw?.operation) telemetryByOp.set(String(raw.operation), mapTelemetryRow(raw));
+      }
     }
 
     const byOp = new Map<string, LlmRouteSettingsRow>();
@@ -86,6 +135,11 @@ export async function GET(req: NextRequest) {
       const base = getModelRoute(operation);
       const dbRow = byOp.get(operation);
       const effective = effectiveRoute(operation, base, dbRow);
+      const tel = telemetryByOp.get(operation);
+      const estimatedCostUsd7d =
+        tel != null
+          ? estimateLlmCostUsd(effective.model, tel.inputTokens, tel.outputTokens)
+          : null;
       return {
         operation,
         effective: {
@@ -97,6 +151,25 @@ export async function GET(req: NextRequest) {
           thinkingLevel: thinkingLevelToDb(effective.thinkingLevel),
         },
         modelLockedByEnv: base.modelOverriddenFromEnv,
+        telemetry: tel
+          ? {
+              days: ROUTE_TELEMETRY_DAYS,
+              ...tel,
+              estimatedCostUsd: estimatedCostUsd7d,
+            }
+          : {
+              days: ROUTE_TELEMETRY_DAYS,
+              callCount: 0,
+              failedCount: 0,
+              lastSuccessAt: null,
+              lastErrorAt: null,
+              lastErrorMessage: null,
+              latencyP50Ms: null,
+              latencyP95Ms: null,
+              inputTokens: 0,
+              outputTokens: 0,
+              estimatedCostUsd: null,
+            },
         dbRow: dbRow
           ? {
               model: dbRow.model,
@@ -113,6 +186,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       routes,
+      telemetryRpcError: telemetryRes.error?.message ?? null,
+      telemetryDays: ROUTE_TELEMETRY_DAYS,
       runtimeHints: {
         fr94PromptVersion: getFr94PromptVersion(),
         geminiExplicitCaching: explicitCachingEnabled(),

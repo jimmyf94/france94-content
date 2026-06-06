@@ -8,8 +8,14 @@ import {
   resolveAudioTranscriptionPromptPath,
   resolveVideoSampledPromptPath,
 } from '@fr94/ai/prompts/asset-analysis.js';
-import { resolveCandidateRegenerationStablePromptPath } from '@fr94/ai/prompts/candidate-regeneration.js';
-import { resolvePostPlannerStablePromptPath } from '@fr94/ai/prompts/post-planner.js';
+import {
+  STABLE_CONTEXT_KEYS,
+  TASK_PROMPT_KEYS,
+  resolveStableContextFilePath,
+  resolveTaskPromptFilePath,
+  type StableContextKey,
+  type TaskPromptKey,
+} from '@fr94/ai/prompts/composed-context.js';
 import {
   loadResolvedStablePrompt,
   STABLE_PROMPT_KEYS,
@@ -26,6 +32,14 @@ const putBodySchema = z.object({
   body: z.string().min(1).max(400_000),
 });
 
+function isContextKey(key: StablePromptKey): key is StableContextKey {
+  return (STABLE_CONTEXT_KEYS as readonly string[]).includes(key);
+}
+
+function isTaskKey(key: StablePromptKey): key is TaskPromptKey {
+  return (TASK_PROMPT_KEYS as readonly string[]).includes(key);
+}
+
 function fileBasenameHint(key: StablePromptKey): string {
   switch (key) {
     case 'direct_media_analysis':
@@ -34,14 +48,10 @@ function fileBasenameHint(key: StablePromptKey): string {
       return path.basename(resolveVideoSampledPromptPath());
     case 'audio_transcription':
       return path.basename(resolveAudioTranscriptionPromptPath());
-    case 'post_planner':
-      return path.basename(resolvePostPlannerStablePromptPath());
-    case 'candidate_regeneration':
-      return path.basename(resolveCandidateRegenerationStablePromptPath());
-    default: {
-      const _e: never = key;
-      return _e;
-    }
+    default:
+      if (isContextKey(key)) return path.basename(resolveStableContextFilePath(key));
+      if (isTaskKey(key)) return path.basename(resolveTaskPromptFilePath(key));
+      throw new Error(`Unknown stable prompt key: ${String(key)}`);
   }
 }
 

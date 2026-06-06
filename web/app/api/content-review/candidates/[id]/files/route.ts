@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { enrichReviewDriveFiles } from '@/lib/enrich-review-drive-files';
 import { getDriveClient } from '@/lib/google-drive-server';
 import { listReviewFolderFiles, mapDriveFileToReviewDto } from '@/lib/list-review-folder';
 import { assertReviewAuthorized } from '@/lib/review-auth';
+import { warmReviewVideoPosters } from '@/lib/review-video-poster-cache';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
@@ -43,9 +45,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   try {
     const drive = await getDriveClient();
     const files = await listReviewFolderFiles(drive, folderId);
-    return NextResponse.json({
-      files: files.map(mapDriveFileToReviewDto),
-    });
+    const mapped = files.map(mapDriveFileToReviewDto);
+    const enriched = await enrichReviewDriveFiles(drive, mapped, id);
+    warmReviewVideoPosters(drive, enriched, id, folderId);
+    return NextResponse.json({ files: enriched });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[files drive]', msg);

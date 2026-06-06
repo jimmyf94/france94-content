@@ -5,8 +5,9 @@ import { z } from 'zod';
 import {
   callGeminiWithLogging,
   getResolvedModelRoute,
-  loadResolvedStablePrompt,
+  loadComposedStableSystemInstruction,
   responseToJson,
+  STABLE_CONTEXT_KEYS,
 } from '@fr94/ai/gemini-client.js';
 import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
 import { buildCandidateRegenerationDynamicPayload } from '@fr94/ai/prompts/candidate-regeneration.js';
@@ -40,6 +41,16 @@ const rewriteOutputSchema = z.object({
   reel_instructions: z.any().optional(),
   carousel_slides: z.any().optional(),
   static_post_instructions: z.any().optional(),
+  // Lane metadata from the composed prompt; persisted only via `llm_raw`.
+  selected_lane: z.string().optional(),
+  secondary_flavor: z.string().optional(),
+  lane_reasoning: z.string().optional(),
+  target_audience: z.string().optional(),
+  asset_fit_score: z.number().min(0).max(10).optional(),
+  caption_strategy: z.string().optional(),
+  overlay_strategy: z.string().optional(),
+  cta_strategy: z.string().optional(),
+  warnings: z.array(z.string()).optional(),
 });
 
 export type RewriteOutput = z.infer<typeof rewriteOutputSchema>;
@@ -292,7 +303,11 @@ export async function regenerateCandidateWithLLM(params: {
   }
   const route = await getResolvedModelRoute(params.supabase ?? null, 'candidate_regeneration');
 
-  const stable = (await loadResolvedStablePrompt(params.supabase ?? null, 'candidate_regeneration')).text;
+  const composed = await loadComposedStableSystemInstruction(
+    params.supabase ?? null,
+    'task_regenerate_with_notes',
+  );
+  const stable = composed.text;
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';
   const dynamicText = buildCandidateRegenerationDynamicPayload({
     reviewerNotes,
@@ -309,6 +324,11 @@ export async function regenerateCandidateWithLLM(params: {
     promptVersion,
     cacheKey: cacheKeyCandidateRegeneration(promptVersion, stable),
     stableSystemInstruction: stable,
+    entity: {
+      post_candidate_id: params.candidate.id,
+      prompt_keys: [...STABLE_CONTEXT_KEYS, 'task_regenerate_with_notes'],
+      pipeline_step: 'candidate_regeneration',
+    },
     getContentsImplicit: () => [
       createPartFromText(stable),
       createPartFromText(dynamicText),

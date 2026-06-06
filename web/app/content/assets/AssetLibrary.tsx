@@ -8,6 +8,7 @@ import type { AssetListRow } from '@/lib/asset-library-types';
 import { ASSET_ELIGIBILITY_VALUES } from '@/lib/asset-library-types';
 
 import { AssetCard } from './AssetCard';
+import { AssetMediaThumb } from './AssetMediaThumb';
 import { AssetDetailDrawer } from './AssetDetailDrawer';
 import { ManualUsageModal } from './ManualUsageModal';
 
@@ -364,17 +365,17 @@ export function AssetLibrary() {
               <tbody>
                 {items.map((row) => (
                   <tr key={row.id} className="border-b border-[var(--border)]">
-                    <td className="p-1">
-                      {row.thumbnail_link ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={row.thumbnail_link}
-                          alt=""
-                          className="h-12 w-20 object-cover"
-                        />
-                      ) : (
-                        <span className="text-[var(--muted)]">—</span>
-                      )}
+                    <td className="h-12 w-20 p-1">
+                      <AssetMediaThumb
+                        thumbnail_link={row.thumbnail_link}
+                        poster_url={row.poster_url}
+                        still_url={row.still_url}
+                        isVideo={(row.mime_type ?? row.media_type ?? '')
+                          .toLowerCase()
+                          .startsWith('video')}
+                        className="h-12 w-20 object-cover"
+                        placeholderClassName="flex h-12 w-20 items-center justify-center text-[10px] text-[var(--muted)]"
+                      />
                     </td>
                     <td className="max-w-[200px] truncate p-2 font-medium text-[var(--text)]">
                       <button

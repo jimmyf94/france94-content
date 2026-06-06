@@ -3,6 +3,7 @@
 import { useState } from 'react';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
+import { isoToDatetimeLocalValue } from '@/lib/publishing-schedule-datetime';
 
 function statusTone(status: string): string {
   if (status === 'ready_to_publish' || status === 'scheduled') return 'text-[var(--good)]';
@@ -45,9 +46,25 @@ function PublishScheduleBlock(props: {
     ? 'rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50'
     : 'rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50';
 
-  const canSchedule = job.status === 'ready_to_publish';
+  const schedulableStatuses = new Set([
+    'draft',
+    'media_prepared',
+    'containers_created',
+    'processing',
+    'ready_to_publish',
+    'scheduled',
+  ]);
+  const canSetSchedule = schedulableStatuses.has(job.status);
+  const isEditingSchedule = job.status === 'scheduled';
   const canUnschedule = job.status === 'scheduled';
-  const canPublishNow = job.status === 'ready_to_publish' || job.status === 'scheduled';
+  const canPublishNow = schedulableStatuses.has(job.status) && job.status !== 'published';
+
+  const openScheduleEditor = () => {
+    setShowSchedule(true);
+    setLocalDt(
+      isEditingSchedule ? isoToDatetimeLocalValue(job.scheduled_publish_at) : '',
+    );
+  };
 
   const confirmSchedule = () => {
     if (!localDt.trim()) return;
@@ -97,18 +114,18 @@ function PublishScheduleBlock(props: {
         )}
       </div>
 
-      {(canSchedule || canUnschedule || canPublishNow) && (
+      {(canSetSchedule || canUnschedule || canPublishNow) && (
         <div className={isCompact ? 'flex flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-3'}>
-          {canSchedule && (
+          {canSetSchedule && (
             <>
               {!showSchedule ?
                 <button
                   type="button"
                   disabled={acting}
-                  onClick={() => setShowSchedule(true)}
+                  onClick={openScheduleEditor}
                   className={btnBase}
                 >
-                  Schedule
+                  {isEditingSchedule ? 'Edit schedule' : 'Schedule'}
                 </button>
               : <div className="flex flex-wrap items-center gap-2">
                   <input
@@ -127,7 +144,7 @@ function PublishScheduleBlock(props: {
                     onClick={() => void confirmSchedule()}
                     className={btnBase}
                   >
-                    Confirm schedule
+                    {isEditingSchedule ? 'Save schedule' : 'Confirm schedule'}
                   </button>
                   <button
                     type="button"
@@ -195,7 +212,13 @@ export function PublishingJobView({
 }) {
   const media = sortedPreparedMedia(job);
   const showPublishOps =
-    (job.status === 'ready_to_publish' || job.status === 'scheduled' || job.status === 'published') &&
+    (job.status === 'draft' ||
+      job.status === 'ready_to_publish' ||
+      job.status === 'scheduled' ||
+      job.status === 'published' ||
+      job.status === 'media_prepared' ||
+      job.status === 'processing' ||
+      job.status === 'containers_created') &&
     onSchedulePublish &&
     onUnschedulePublish &&
     onPublishNow;

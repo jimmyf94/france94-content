@@ -20,6 +20,7 @@ export const POST_CANDIDATE_LIST_COLUMNS = [
   'reviewer_notes',
   'review_drive_folder_id',
   'review_drive_folder_url',
+  'cover_thumbnail_url',
   'source_asset_ids',
   'source_drive_file_ids',
   'publishing_job_id',
@@ -37,6 +38,13 @@ export const POST_CANDIDATE_LIST_COLUMNS = [
   'asset_conflict_summary',
   'freshness_warning',
   'is_fresh_story',
+  'selected_lane',
+  'narrative_function',
+  'collision_risk',
+  'collision_summary',
+  'collision_overridden_by',
+  'collision_overridden_at',
+  'cooldown_until',
 ].join(',');
 
 /** Extra columns loaded for a single candidate (detail view, PATCH body, etc.). */
@@ -45,6 +53,8 @@ export const POST_CANDIDATE_DETAIL_EXTRA_COLUMNS = [
   'reel_instructions',
   'carousel_slides',
   'static_post_instructions',
+  'title_overlay',
+  'collision_details',
   'llm_raw',
   'previous_versions',
 ].join(',');

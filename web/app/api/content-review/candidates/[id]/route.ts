@@ -3,11 +3,18 @@ import { z } from 'zod';
 
 import {
   AssetUsageError,
+  computeLaneCooldownUntil,
+  deletePostCandidateCompletely,
   refreshCandidateAssetConflicts,
   releaseAssetsForCandidate,
   releaseStaleApprovedReservationsIfNeeded,
   reserveAssetsForCandidate,
 } from '@fr94/asset-usage';
+import { getDriveClient } from '@/lib/google-drive-server';
+import {
+  extractLaneFieldsFromLlmRaw,
+  extractTitleOverlayFromCandidate,
+} from '@fr94/candidate-collision';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
@@ -20,6 +27,7 @@ const reelStructureRowSchema = z.object({
 const patchSchema = z
   .object({
     status: z.enum(['approved', 'rejected', 'needs_rewrite']).optional(),
+    override_collision: z.boolean().optional(),
     reviewer_notes: z.string().optional().nullable(),
     caption_fr: z.string().optional().nullable(),
     caption_en: z.string().optional().nullable(),
@@ -116,6 +124,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
   const {
     status,
+    override_collision,
     reviewer_notes,
     caption_fr,
     caption_en,
@@ -126,6 +135,21 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   const reviewedBy = await getCurrentUserEmail(req);
 
   const supabase = getSupabaseServiceRole();
+
+  if (status === 'approved' && override_collision === true) {
+    const { error: ovErr } = await supabase
+      .from('post_candidates')
+      .update({
+        collision_overridden_by: reviewedBy,
+        collision_overridden_at: now,
+        updated_at: now,
+      })
+      .eq('id', id);
+    if (ovErr) {
+      console.error('[candidate patch] collision override', ovErr);
+      return NextResponse.json({ error: ovErr.message }, { status: 500 });
+    }
+  }
 
   if (status === 'approved') {
     try {
@@ -181,6 +205,37 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     update.status = status;
     update.reviewed_at = now;
     update.reviewed_by = reviewedBy;
+  }
+
+  if (status === 'approved') {
+    const { data: laneRow, error: laneErr } = await supabase
+      .from('post_candidates')
+      .select('post_type,selected_lane,narrative_function,title_overlay,llm_raw,reel_instructions,static_post_instructions')
+      .eq('id', id)
+      .maybeSingle();
+    if (!laneErr && laneRow) {
+      const r = laneRow as {
+        post_type?: string | null;
+        selected_lane?: string | null;
+        narrative_function?: string | null;
+        title_overlay?: string | null;
+        llm_raw?: unknown;
+        reel_instructions?: unknown;
+        static_post_instructions?: unknown;
+      };
+      const fromRaw = extractLaneFieldsFromLlmRaw(r.llm_raw);
+      if (!r.selected_lane?.trim() && fromRaw.selected_lane) {
+        update.selected_lane = fromRaw.selected_lane;
+      }
+      if (!r.narrative_function?.trim() && fromRaw.narrative_function) {
+        update.narrative_function = fromRaw.narrative_function;
+      }
+      if (!r.title_overlay?.trim()) {
+        const overlay = extractTitleOverlayFromCandidate(r);
+        if (overlay) update.title_overlay = overlay;
+      }
+      update.cooldown_until = computeLaneCooldownUntil(r.post_type, new Date(now));
+    }
   }
   if (caption_fr !== undefined) {
     update.caption_fr = caption_fr ?? null;
@@ -287,4 +342,30 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   } as const;
 
   return NextResponse.json({ candidate: candidateOut }, { headers: noStore });
+}
+
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const denied = assertReviewAuthorized(req);
+  if (denied) return denied;
+
+  const { id } = await ctx.params;
+  if (!id?.trim()) {
+    return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+  }
+
+  const supabase = getSupabaseServiceRole();
+
+  try {
+    const drive = await getDriveClient();
+    const result = await deletePostCandidateCompletely(supabase, id, drive);
+    return NextResponse.json({ ok: true, drive_folder_deleted: result.drive_folder_deleted });
+  } catch (e) {
+    if (e instanceof AssetUsageError) {
+      const status = e.code === 'not_found' ? 404 : 409;
+      return NextResponse.json({ error: e.message, code: e.code }, { status });
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[candidate delete]', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }

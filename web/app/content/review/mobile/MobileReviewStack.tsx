@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
+import { DeleteCandidateButton } from '../decision/DeleteCandidateButton';
 import { DecisionButtons } from '../decision/DecisionButtons';
 import { ProductionJobCard } from '../ProductionJobCard';
 import { PublishingPrepCard } from '../PublishingPrepCard';
@@ -26,7 +27,7 @@ import type {
   StatusTab,
 } from '../types';
 import { STATUS_TAB_LABEL } from '../types';
-import { useCandidateMedia } from '../useCandidateMedia';
+import type { CandidateMediaState } from '../useCandidateMedia';
 
 import { BottomSheet } from './BottomSheet';
 
@@ -97,6 +98,7 @@ export function MobileReviewStack({
   onChangeNotes,
   onSaveNotes,
   onDecide,
+  onApproveAnyway,
   activeDetailTab,
   onChangeDetailTab,
   mobileSheet,
@@ -109,12 +111,15 @@ export function MobileReviewStack({
   onRefreshQueue,
   onSwipeNext,
   onSwipePrev,
-  mediaReloadNonce,
+  media,
+  onRegisterActivateStream,
   firstThumbnailById = {},
   onCandidateUpdated,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
+  onDelete,
+  deleting,
 }: {
   candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
@@ -127,6 +132,7 @@ export function MobileReviewStack({
   onChangeNotes: (v: string) => void;
   onSaveNotes: () => void | Promise<void>;
   onDecide: (s: DecisionStatus) => void;
+  onApproveAnyway?: () => void;
   activeDetailTab: DetailTab;
   onChangeDetailTab: (t: DetailTab) => void;
   mobileSheet: MobileSheet;
@@ -139,12 +145,15 @@ export function MobileReviewStack({
   onRefreshQueue?: () => void;
   onSwipeNext: () => void;
   onSwipePrev: () => void;
-  mediaReloadNonce: number;
+  media: CandidateMediaState;
+  onRegisterActivateStream?: (activate: () => void) => void;
   firstThumbnailById?: Readonly<Record<string, string | null>>;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
+  onDelete?: () => void;
+  deleting?: boolean;
 }) {
   // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
   const sheetTab: MobileDetailSheetTab =
@@ -182,6 +191,12 @@ export function MobileReviewStack({
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
           <Link
+            href="/content/publishing"
+            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
+          >
+            Schedule
+          </Link>
+          <Link
             href="/content/assets"
             className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
           >
@@ -217,16 +232,20 @@ export function MobileReviewStack({
           onChangeNotes={onChangeNotes}
           onSaveNotes={onSaveNotes}
           onDecide={onDecide}
+          onApproveAnyway={onApproveAnyway}
           videoRef={videoRef}
           onOpenDetails={openDetails}
           onSwipeNext={onSwipeNext}
           onSwipePrev={onSwipePrev}
-          mediaReloadNonce={mediaReloadNonce}
+          media={media}
+          onRegisterActivateStream={onRegisterActivateStream}
           onCandidateUpdated={onCandidateUpdated}
           onRemoveReviewAsset={onRemoveReviewAsset}
           onRegenerate={onRegenerate}
           regenerating={regenerating}
           onRefreshQueue={onRefreshQueue}
+          onDelete={onDelete}
+          deleting={deleting}
         />
       )}
 
@@ -313,16 +332,20 @@ function MobileCandidateView({
   onChangeNotes,
   onSaveNotes,
   onDecide,
+  onApproveAnyway,
   videoRef,
   onOpenDetails,
   onSwipeNext,
   onSwipePrev,
-  mediaReloadNonce,
+  media,
+  onRegisterActivateStream,
   onCandidateUpdated,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
   onRefreshQueue,
+  onDelete,
+  deleting,
 }: {
   candidate: PostCandidate;
   notes: string;
@@ -330,16 +353,20 @@ function MobileCandidateView({
   onChangeNotes: (v: string) => void;
   onSaveNotes: () => void | Promise<void>;
   onDecide: (s: DecisionStatus) => void;
+  onApproveAnyway?: () => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onOpenDetails: () => void;
   onSwipeNext: () => void;
   onSwipePrev: () => void;
-  mediaReloadNonce: number;
+  media: CandidateMediaState;
+  onRegisterActivateStream?: (activate: () => void) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
   onRefreshQueue?: () => void;
+  onDelete?: () => void;
+  deleting?: boolean;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
   const notesNonEmpty = (notes ?? '').trim().length > 0 || (savedNotes ?? '').trim().length > 0;
@@ -348,7 +375,7 @@ function MobileCandidateView({
   const regenerateDisabled =
     !!regenerating ||
     (candidate.status === 'needs_rewrite' && !notesNonEmpty);
-  const { files, loading, error } = useCandidateMedia(candidate.id, mediaReloadNonce);
+  const { files, loading, error } = media;
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
   const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
 
@@ -484,6 +511,9 @@ function MobileCandidateView({
                       file={f}
                       candidateId={candidate.id}
                       videoRef={i === firstVideoIdx ? videoRef : undefined}
+                      onRegisterActivateStream={
+                        i === firstVideoIdx ? onRegisterActivateStream : undefined
+                      }
                       compact
                     />
                   </div>
@@ -520,16 +550,50 @@ function MobileCandidateView({
             {candidate.freshness_warning}
           </div>
         )}
+        {candidate.collision_summary &&
+          ['blocked', 'high', 'medium'].includes((candidate.collision_risk ?? '').trim()) && (
+            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-[11px] text-[var(--muted)]">
+              <span className="font-semibold capitalize text-[var(--text)]">
+                {candidate.collision_risk}
+              </span>
+              : {candidate.collision_summary}
+            </div>
+          )}
         <DecisionButtons
           onDecide={onDecide}
           size="lg"
           variant="iconOnly"
           disabled={candidate.status === 'ready_to_publish'}
           approveDisabled={
-            candidate.has_asset_conflict === true || Boolean(candidate.freshness_warning)
+            candidate.has_asset_conflict === true ||
+            Boolean(candidate.freshness_warning) ||
+            ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
           }
           allDecisionsDisabled={Boolean(candidate.invalidated_at)}
         />
+        {onApproveAnyway &&
+          ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
+          candidate.has_asset_conflict !== true &&
+          !candidate.invalidated_at && (
+            <button
+              type="button"
+              onClick={() => onApproveAnyway()}
+              className="w-full rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] font-semibold text-[var(--muted)]"
+            >
+              Approve anyway
+            </button>
+          )}
+        {onDelete && (
+          <DeleteCandidateButton
+            onDelete={onDelete}
+            size="lg"
+            disabled={
+              Boolean(deleting) ||
+              candidate.status === 'ready_to_publish' ||
+              Boolean(candidate.invalidated_at)
+            }
+          />
+        )}
       </section>
 
       <section className="px-3 pb-2">

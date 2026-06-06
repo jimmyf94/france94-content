@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { PostTypeBadge } from './PostTypeBadge';
 import { ScoreStrip } from './ScoreStrip';
 import type { PostCandidate, ReviewDriveFile } from './types';
-import { useCandidateMedia } from './useCandidateMedia';
 
 function assetSummary(files: ReviewDriveFile[]): string {
   if (files.length === 0) return '';
@@ -34,24 +33,13 @@ function MetaChip({ children }: { children: React.ReactNode }) {
 
 export function CandidateOverviewHeader({
   candidate,
-  mediaReloadNonce = 0,
+  mediaFiles = [],
 }: {
   candidate: PostCandidate | null;
-  mediaReloadNonce?: number;
+  mediaFiles?: ReviewDriveFile[];
 }) {
   if (!candidate) return null;
-  return <Inner candidate={candidate} mediaReloadNonce={mediaReloadNonce} />;
-}
-
-function Inner({
-  candidate,
-  mediaReloadNonce,
-}: {
-  candidate: PostCandidate;
-  mediaReloadNonce: number;
-}) {
-  const { files } = useCandidateMedia(candidate.id, mediaReloadNonce);
-  const assets = assetSummary(files);
+  const assets = assetSummary(mediaFiles);
 
   return (
     <>

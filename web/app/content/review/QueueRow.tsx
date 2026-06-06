@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 
 import { PostTypeBadge } from './PostTypeBadge';
 import type { CandidateListItem } from './types';
@@ -44,12 +44,26 @@ function PostTypeAvatar({
 }) {
   const k = postTypeKey(candidate.post_type);
   const shell = `overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-2)] ${className}`;
+  const [imgFailed, setImgFailed] = useState(false);
 
-  if (thumbnailUrl) {
+  useEffect(() => {
+    setImgFailed(false);
+  }, [thumbnailUrl]);
+
+  const showImg = thumbnailUrl && !imgFailed;
+
+  if (showImg) {
     return (
       <div className={shell}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={thumbnailUrl} alt="" className="h-full w-full object-cover" />
+        <img
+          src={thumbnailUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+          onError={() => setImgFailed(true)}
+        />
       </div>
     );
   }
@@ -90,13 +104,26 @@ export const QueueRow = memo(function QueueRow({
 
   const conflict = candidate.has_asset_conflict === true;
   const stale = Boolean(candidate.freshness_warning);
+  const risk = (candidate.collision_risk ?? '').trim();
+  const riskGreyed = risk === 'blocked' || risk === 'high';
+
+  const riskBadgeCls =
+    risk === 'blocked'
+      ? 'border-[var(--bad)]/35 bg-[var(--bad)]/10 text-[var(--bad)]'
+      : risk === 'high'
+        ? 'border-orange-500/35 bg-orange-500/10 text-orange-200'
+        : risk === 'medium'
+          ? 'border-amber-500/35 bg-amber-500/10 text-amber-200'
+          : risk === 'low'
+            ? 'border-[var(--good)]/35 bg-[var(--good)]/10 text-[var(--good)]'
+            : '';
 
   return (
     <button
       type="button"
       onClick={handleClick}
       className={`grid w-full grid-cols-[7rem_minmax(0,1fr)] items-stretch gap-3 rounded-xl border p-4 text-left transition-colors ${
-        conflict || stale ? 'opacity-50' : ''
+        conflict || stale || riskGreyed ? 'opacity-50' : ''
       } ${
         selected
           ? 'border-[color:rgb(91_140_255_/0.55)] bg-[var(--surface-2)] ring-1 ring-[var(--ring)]'
@@ -137,6 +164,14 @@ export const QueueRow = memo(function QueueRow({
                 title={candidate.asset_conflict_summary ?? 'Asset conflict'}
               >
                 Conflict
+              </span>
+            )}
+            {risk && (
+              <span
+                className={`rounded-md border px-2 py-0.5 text-[11px] capitalize ${riskBadgeCls}`}
+                title={candidate.collision_summary ?? `Collision risk: ${risk}`}
+              >
+                {risk}
               </span>
             )}
           </div>

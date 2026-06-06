@@ -35,6 +35,11 @@ import {
   buildVideoSampledMetadataDynamicText,
   buildVideoSampledTranscriptSuffix,
 } from './lib/ai/prompts/asset-analysis.js';
+import {
+  generateAssetThumbnailJpeg,
+  persistAssetThumbnailFields,
+  uploadAssetThumbnail,
+} from './lib/asset-thumbnail.js';
 
 const activityEnum = z.enum([
   'run',
@@ -299,6 +304,7 @@ export async function analyzeWithGemini(
     mimeType: string;
     displayName: string;
     prompt?: string;
+    contentAssetId?: string;
     llm?: { supabase: SupabaseClient | null; promptVersion: string };
     subOperation?: string;
   },
@@ -351,6 +357,13 @@ export async function analyzeWithGemini(
       cacheKey: cacheKeyAssetAnalysisImage(promptVersion, stable),
       stableSystemInstruction: stable,
       disableExplicitCaching: params.prompt !== undefined,
+      entity: params.contentAssetId
+        ? {
+            content_asset_id: params.contentAssetId,
+            prompt_keys: ['direct_media_analysis'],
+            pipeline_step: 'asset_analysis_image',
+          }
+        : undefined,
       getContentsImplicit: () => [
         createPartFromUri(uri, mimeType),
         createPartFromText(fullText),
@@ -402,6 +415,7 @@ async function transcribeAudioWithGemini(
   params: {
     wavBuffer: Buffer;
     displayName: string;
+    contentAssetId?: string;
     llm?: { supabase: SupabaseClient | null; promptVersion: string };
   },
 ): Promise<string> {
@@ -439,6 +453,13 @@ async function transcribeAudioWithGemini(
       cacheKey: cacheKeyAssetAnalysisVideoSampledAudio(promptVersion, stable),
       stableSystemInstruction: stable,
       jsonResponse: false,
+      entity: params.contentAssetId
+        ? {
+            content_asset_id: params.contentAssetId,
+            prompt_keys: ['audio_transcription'],
+            pipeline_step: 'asset_analysis_video_sampled',
+          }
+        : undefined,
       getContentsImplicit: () => [
         createPartFromUri(uri, 'audio/wav'),
         createPartFromText(stable),
@@ -477,6 +498,7 @@ export async function analyzeVideoSampled(
     mimeType: string;
     displayName: string;
     fileExtension: string;
+    contentAssetId?: string;
     config: {
       mode: 'sampled' | 'frames_only';
       frameMaxWidth: number;
@@ -520,6 +542,7 @@ export async function analyzeVideoSampled(
         audioTranscript = await transcribeAudioWithGemini(ai, {
           wavBuffer: wavBuf,
           displayName: `${displayName}.audio`,
+          contentAssetId: params.contentAssetId,
           llm: params.llm,
         });
         if (audioTranscript.trim()) {
@@ -579,6 +602,13 @@ export async function analyzeVideoSampled(
       promptVersion,
       cacheKey: cacheKeyAssetAnalysisVideoSampledFrames(promptVersion, stableVideo),
       stableSystemInstruction: stableVideo,
+      entity: params.contentAssetId
+        ? {
+            content_asset_id: params.contentAssetId,
+            prompt_keys: ['video_sampled_analysis', 'audio_transcription'],
+            pipeline_step: 'asset_analysis_video_sampled',
+          }
+        : undefined,
       getContentsImplicit: () => buildPromptParts(stableVideo, false),
       getContentsExplicit: () => buildPromptParts('', true),
     });
@@ -633,6 +663,9 @@ export async function updateAssetAnalysis(
     camera_make?: string | null;
     camera_model?: string | null;
     geo_source?: string | null;
+    thumbnail_path?: string | null;
+    thumbnail_status?: 'pending' | 'ready' | 'failed' | null;
+    thumbnail_updated_at?: string | null;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -649,6 +682,9 @@ export async function updateAssetAnalysis(
     frame_sample_paths = null,
     audio_transcript = null,
     geo_source,
+    thumbnail_path,
+    thumbnail_status,
+    thumbnail_updated_at,
   } = payload;
 
   const update: Record<string, unknown> = {
@@ -698,6 +734,12 @@ export async function updateAssetAnalysis(
     update.camera_model = payload.camera_model ?? null;
   }
 
+  if (thumbnail_status != null) {
+    update.thumbnail_path = thumbnail_path ?? null;
+    update.thumbnail_status = thumbnail_status;
+    update.thumbnail_updated_at = thumbnail_updated_at ?? new Date().toISOString();
+  }
+
   const { error } = await supabase
     .from('content_assets')
     .update(update)
@@ -732,6 +774,34 @@ export async function markAssetError(
     .eq('id', assetId);
 
   if (updateErr) throw updateErr;
+}
+
+/** Best-effort thumbnail upload; does not throw. */
+export async function tryPersistAssetThumbnailFromBuffer(
+  supabase: SupabaseClient,
+  assetId: string,
+  buffer: Buffer,
+  mimeType: string,
+  fileExtension: string,
+): Promise<{ thumbnail_path: string | null; thumbnail_status: 'ready' | 'failed' }> {
+  try {
+    const jpeg = await generateAssetThumbnailJpeg(buffer, { mimeType, fileExtension });
+    if (!jpeg?.length) {
+      await persistAssetThumbnailFields(supabase, assetId, { thumbnail_status: 'failed' });
+      return { thumbnail_path: null, thumbnail_status: 'failed' };
+    }
+    const { objectPath } = await uploadAssetThumbnail(supabase, assetId, jpeg);
+    return { thumbnail_path: objectPath, thumbnail_status: 'ready' };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[thumb] failed for ${assetId}: ${msg}`);
+    try {
+      await persistAssetThumbnailFields(supabase, assetId, { thumbnail_status: 'failed' });
+    } catch {
+      /* ignore */
+    }
+    return { thumbnail_path: null, thumbnail_status: 'failed' };
+  }
 }
 
 function resolveVideoAnalysisMode(): 'sampled' | 'frames_only' {
@@ -843,6 +913,7 @@ export async function analyzePendingAssets(): Promise<void> {
           mimeType,
           displayName: label,
           fileExtension: fileExtensionFromAsset(asset),
+          contentAssetId: asset.id,
           config: {
             mode: videoMode,
             frameMaxWidth: videoFrameMaxWidth,
@@ -878,6 +949,7 @@ export async function analyzePendingAssets(): Promise<void> {
           buffer,
           mimeType,
           displayName: label,
+          contentAssetId: asset.id,
           llm: llmCtx,
           subOperation:
             category === 'audio' ? 'audio_direct' : category === 'image' ? 'image_direct' : 'other_media',
@@ -914,6 +986,21 @@ export async function analyzePendingAssets(): Promise<void> {
       console.log('[llm_result_json]');
       console.log(JSON.stringify(terminalResult, null, 2));
 
+      const thumbExt = fileExtensionFromAsset(asset);
+      const thumbResult = await tryPersistAssetThumbnailFromBuffer(
+        supabase,
+        asset.id,
+        buffer,
+        mimeType,
+        thumbExt,
+      );
+      const thumbNow = new Date().toISOString();
+      if (thumbResult.thumbnail_status === 'ready') {
+        console.log(`[thumb]\tstored\t${asset.id}\t${thumbResult.thumbnail_path}`);
+      } else {
+        console.warn(`[thumb]\tnot stored\t${asset.id}`);
+      }
+
       await updateAssetAnalysis(supabase, asset.id, {
         analysis,
         llm_model: llmModelForDb,
@@ -933,6 +1020,9 @@ export async function analyzePendingAssets(): Promise<void> {
         camera_make: videoCameraMake,
         camera_model: videoCameraModel,
         geo_source: videoGeoSource,
+        thumbnail_path: thumbResult.thumbnail_path,
+        thumbnail_status: thumbResult.thumbnail_status,
+        thumbnail_updated_at: thumbNow,
       });
 
       console.log(`[supabase]\tstatus=analyzed\t${asset.id}`);

@@ -16,6 +16,8 @@ When OAuth JSON lives at the repo root locally, `GOOGLE_OAUTH_CLIENT_SECRETS_PAT
 Apply Supabase migrations under `supabase/migrations/`, including:
 
 - `20260517120000_post_candidates_review_audit.sql` — `reviewed_at`, `reviewed_by`
+- `20260603120000_post_candidates_cover_thumbnail.sql` — `cover_thumbnail_url` (queue thumbnails)
+- `20260604140000_content_assets_thumbnail.sql` — `thumbnail_path` / `thumbnail_status` + private `asset-thumbnails` bucket
 - `20260513120000_pipeline_settings.sql` — auto-ingest toggle + last-run status
 
 For **Regenerate Candidate** (v0.6), ensure `post_candidates` has regeneration columns (see SQL in prior README sections).
@@ -80,12 +82,32 @@ Sign in at `/login`. Sign out from the review header (clears session).
 | GET/PATCH | `/api/content-review/pipeline` | Auto-ingest toggle, threshold, last-run status. |
 | GET | `/api/content-review/candidates/[id]/files` | List files in `review_drive_folder_id`. |
 | GET | `/api/content-review/drive-file/[fileId]?candidateId=` | Stream file bytes after parent-folder check. |
+| GET | `/api/content-review/drive-file/[fileId]/poster?candidateId=` | JPEG poster for a review-folder video file (viewport). |
+| GET | `/api/content-review/candidates/[id]/cover-poster` | Queue cover JPEG for first video in folder (rate-limited; one job per candidate). |
+| GET | `/api/content-assets/list` | Paginated processed assets with enriched thumb URLs. |
+| GET | `/api/content-assets/[id]/preview` | Stream asset bytes from Drive (detail drawer). |
+| GET | `/api/content-assets/[id]/poster` | JPEG poster for video assets (ffmpeg when Drive has no thumb). |
+| GET | `/api/content-assets/[id]/thumbnail` | Stored JPEG from Supabase `asset-thumbnails` (canonical when `thumbnail_path` is set). |
+| GET | `/api/content-assets/[id]/thumb` | Resized JPEG still for image assets (sharp when Drive has no thumb). |
 | POST | `/api/auth/signout` | Clear Supabase session cookies. |
 
-## Video streaming vs fallback
+## Asset library thumbnails
 
-- The UI uses `<video src={/api/content-review/drive-file/...}>` when MIME type is video. The route proxies Google Drive `alt=media` and forwards the browser `Range` header when Drive returns partial content.
-- If playback fails, the tile falls back to a Drive thumbnail plus **Open in Drive**.
+- At **analyze** time, scripts upload a ~512px JPEG to the private `asset-thumbnails` bucket and set `content_assets.thumbnail_path`.
+- Grid/table prefers `/api/content-assets/[id]/thumbnail`, then Drive `thumbnailLink`, then `/poster` (video) or `/thumb` (image) for assets not yet backfilled.
+- Backfill existing processed assets from the repo root:
+
+```bash
+npm run backfill:thumbnails
+```
+
+Re-run until the script reports nothing to process; use `--retry-failed` to retry rows marked `thumbnail_status=failed`.
+
+## Review viewport (candidates)
+
+- **Videos** in the candidate viewport always embed the Google Drive preview iframe (`drive.google.com/file/d/.../preview`) so the first frame is visible without pressing play.
+- **Images** use Drive thumb or the same-origin Drive proxy stream.
+- Queue covers prefer stored asset thumbnails (via `source_drive_file_ids`), then Drive folder thumbs, then `/cover-poster`.
 
 ## Known limitations
 

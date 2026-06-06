@@ -23,6 +23,7 @@ export type PostCandidate = {
   reviewer_notes: string | null;
   review_drive_folder_id: string | null;
   review_drive_folder_url: string | null;
+  cover_thumbnail_url?: string | null;
   source_asset_ids?: string[] | null;
   source_drive_file_ids?: string[] | null;
   publishing_job_id?: string | null;
@@ -42,6 +43,15 @@ export type PostCandidate = {
   asset_conflict_summary?: string | null;
   freshness_warning?: string | null;
   is_fresh_story?: boolean | null;
+  selected_lane?: string | null;
+  narrative_function?: string | null;
+  title_overlay?: string | null;
+  collision_risk?: string | null;
+  collision_summary?: string | null;
+  collision_details?: unknown;
+  collision_overridden_by?: string | null;
+  collision_overridden_at?: string | null;
+  cooldown_until?: string | null;
 };
 
 /** Row shape from `GET /api/content-review/candidates` (no heavy JSONB). */
@@ -73,6 +83,8 @@ export type ReviewDriveFile = {
   name: string;
   mimeType: string;
   thumbnailLink: string | null;
+  /** Same-origin ffmpeg poster when Drive has no thumbnailLink (videos). */
+  posterUrl?: string | null;
   webViewLink: string | null;
   webContentLink: string | null;
   size: string | null;

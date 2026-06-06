@@ -1,5 +1,6 @@
 'use client';
 
+import { DeleteCandidateButton } from './decision/DeleteCandidateButton';
 import { DecisionButtons } from './decision/DecisionButtons';
 import { RewriteChips } from './decision/RewriteChips';
 import { CandidateTabs } from './tabs/CandidateTabs';
@@ -30,11 +31,14 @@ export function CandidateDecisionPanel({
   onChangeNotes,
   onSaveNotes,
   onDecide,
+  onApproveAnyway,
   activeTab,
   onChangeTab,
   onCandidateUpdated,
   onRegenerate,
   regenerating,
+  onDelete,
+  deleting,
 }: {
   candidate: PostCandidate | null;
   notes: string;
@@ -42,11 +46,14 @@ export function CandidateDecisionPanel({
   onChangeNotes: (v: string) => void;
   onSaveNotes: () => void | Promise<void>;
   onDecide: (s: DecisionStatus) => void;
+  onApproveAnyway?: () => void;
   activeTab: DetailTab;
   onChangeTab: (t: DetailTab) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
+  onDelete?: () => void;
+  deleting?: boolean;
 }) {
   if (!candidate) {
     return (
@@ -97,16 +104,60 @@ export function CandidateDecisionPanel({
             )}
           </div>
         )}
+        {candidate.collision_summary &&
+          ['blocked', 'high', 'medium'].includes((candidate.collision_risk ?? '').trim()) && (
+            <div
+              className={`rounded-md border px-3 py-2 text-xs ${
+                candidate.collision_risk === 'blocked'
+                  ? 'border-[var(--bad)]/40 bg-[var(--bad)]/10 text-[var(--bad)]'
+                  : candidate.collision_risk === 'high'
+                    ? 'border-orange-500/40 bg-orange-500/10 text-orange-200'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+              }`}
+              role="status"
+            >
+              <span className="font-semibold capitalize">
+                Content risk: {candidate.collision_risk}
+              </span>
+              : {candidate.collision_summary}
+            </div>
+          )}
         <DecisionButtons
           onDecide={onDecide}
           layout="column"
           size="lg"
           disabled={candidate.status === 'ready_to_publish'}
           approveDisabled={
-            candidate.has_asset_conflict === true || Boolean(candidate.freshness_warning)
+            candidate.has_asset_conflict === true ||
+            Boolean(candidate.freshness_warning) ||
+            ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
           }
           allDecisionsDisabled={Boolean(candidate.invalidated_at)}
         />
+        {onApproveAnyway &&
+          ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
+          candidate.has_asset_conflict !== true &&
+          !candidate.invalidated_at &&
+          candidate.status !== 'ready_to_publish' && (
+            <button
+              type="button"
+              onClick={() => onApproveAnyway()}
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+            >
+              Approve anyway (override collision warning)
+            </button>
+          )}
+        {onDelete && (
+          <DeleteCandidateButton
+            onDelete={onDelete}
+            size="lg"
+            disabled={
+              Boolean(deleting) ||
+              candidate.status === 'ready_to_publish' ||
+              Boolean(candidate.invalidated_at)
+            }
+          />
+        )}
         <section className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">

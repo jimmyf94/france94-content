@@ -19,6 +19,8 @@ export function ReviewHeader({
   onToggleFilters,
   onRefresh,
   onHealAssetLedger,
+  includeBlocked,
+  onToggleIncludeBlocked,
 }: {
   pendingCount: number;
   filters: ReviewFilters;
@@ -28,6 +30,8 @@ export function ReviewHeader({
   onRefresh: () => void;
   /** Clears stale `approved` usage rows (e.g. after bulk reject outside normal release). */
   onHealAssetLedger?: () => void;
+  includeBlocked?: boolean;
+  onToggleIncludeBlocked?: () => void;
 }) {
   const [pipelineOn, setPipelineOn] = useState<boolean | null>(null);
   const [pipelineLastRun, setPipelineLastRun] = useState<string | null>(null);
@@ -186,6 +190,32 @@ export function ReviewHeader({
           Heal ledger
         </button>
       ) : null}
+      {onToggleIncludeBlocked ? (
+        <button
+          type="button"
+          onClick={onToggleIncludeBlocked}
+          className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+            includeBlocked
+              ? 'border-[var(--warn)] text-[var(--warn)]'
+              : 'border-[var(--border)] text-[var(--muted)]'
+          }`}
+          title="Show candidates marked blocked by content collision check"
+        >
+          {includeBlocked ? 'Showing blocked' : 'Hide blocked'}
+        </button>
+      ) : null}
+      <Link
+        href="/content/publishing"
+        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+      >
+        Schedule
+      </Link>
+      <Link
+        href="/content/review/manual-ledger"
+        className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
+      >
+        Manual posts
+      </Link>
       <Link
         href="/content/assets"
         className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"

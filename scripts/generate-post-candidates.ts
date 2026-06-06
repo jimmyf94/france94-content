@@ -13,16 +13,21 @@ import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
 import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
-import { loadResolvedStablePrompt } from './lib/ai/resolve-stable-prompt.js';
+import { parseGeminiJsonObject } from './lib/ai/parse-gemini-json.js';
+import { loadComposedStableSystemInstruction, STABLE_CONTEXT_KEYS } from './lib/ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
-import { buildPostPlannerPromptParts } from './lib/ai/prompts/post-planner.js';
+import { buildPostPlannerDynamicText } from './lib/ai/prompts/post-planner.js';
 import {
+  computeLaneCooldownUntil,
   isFreshForStory,
   mapPostTypeToUsageType,
   recordAssetUsageEvent,
   refreshCandidateAssetConflicts,
   updateAssetUsageSummary,
 } from './lib/asset-usage.js';
+import { evaluateCandidateCollision } from './lib/candidate-collision-check.js';
+import { loadRecentLedgerContext, toCommittedPostForPrompt } from './lib/content-ledger.js';
+import { getFirstReviewFolderThumbnailLink } from './lib/review-folder-thumbnail.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -46,7 +51,7 @@ const llmCandidateSchema = z.object({
   caption_fr: z.string(),
   caption_en: z.string().optional(),
   hashtags: z.array(z.string()),
-  source_asset_ids: z.array(z.string().uuid()),
+  source_asset_ids: z.array(z.string()),
   source_drive_file_ids: z.array(z.string()),
   priority_score: z.number().min(0).max(10).optional().default(5),
   mission_score: z.number().min(0).max(10).optional().default(5),
@@ -57,10 +62,23 @@ const llmCandidateSchema = z.object({
   reel_instructions: z.any().optional(),
   carousel_slides: z.any().optional(),
   static_post_instructions: z.any().optional(),
+  // Lane metadata returned by the composed prompt; persisted only inside
+  // `llm_raw` for now (no `post_candidates` schema change). All optional so
+  // legacy planner outputs still validate.
+  selected_lane: z.string().optional(),
+  narrative_function: z.string().optional(),
+  secondary_flavor: z.string().optional(),
+  lane_reasoning: z.string().optional(),
+  target_audience: z.string().optional(),
+  asset_fit_score: z.number().min(0).max(10).optional(),
+  caption_strategy: z.string().optional(),
+  overlay_strategy: z.string().optional(),
+  cta_strategy: z.string().optional(),
+  warnings: z.array(z.string()).optional(),
 });
 
-const llmResponseSchema = z.object({
-  candidates: z.array(llmCandidateSchema),
+const llmResponseLooseSchema = z.object({
+  candidates: z.array(z.unknown()),
 });
 
 export type CandidateSourceAsset = {
@@ -161,41 +179,6 @@ function normalizeDedupeTitle(title: string): string {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, ' ');
-}
-
-function stripCodeFences(text: string): string {
-  let s = text.trim();
-  const fence = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/im;
-  const m = s.match(fence);
-  if (m?.[1]) {
-    s = m[1].trim();
-  }
-  return s;
-}
-
-function extractJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) return null;
-  return text.slice(start, end + 1);
-}
-
-function parseJsonToRecord(rawText: string): Record<string, unknown> {
-  const trimmed = stripCodeFences(rawText.trim());
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    const extracted = extractJsonObject(trimmed);
-    if (!extracted) {
-      throw new Error('Model output was not valid JSON (repair pass found no JSON object)');
-    }
-    parsed = JSON.parse(extracted);
-  }
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Parsed JSON is not an object');
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function getSupabaseClient(): SupabaseClient {
@@ -323,10 +306,293 @@ async function fetchExistingTitlesForDate(
   return set;
 }
 
+const REJECTED_FEEDBACK_DAYS = 90;
+const REJECTED_FEEDBACK_LIMIT = 50;
+
+export type RejectedCandidateRow = {
+  post_type: string;
+  title: string;
+  hook: string | null;
+  concept_summary: string | null;
+  caption_fr: string | null;
+  source_asset_ids: string[];
+  reviewer_notes: string | null;
+  reviewed_at: string | null;
+  updated_at: string | null;
+};
+
+export type RejectedFeedbackItem = {
+  post_type: string;
+  title: string;
+  hook?: string;
+  concept_summary?: string;
+  caption_fr?: string;
+  source_asset_ids: string[];
+  reviewer_notes?: string;
+  reviewed_at?: string;
+};
+
+export type RejectedIndexEntry = {
+  postType: string;
+  assetKey: string;
+  normTitle: string;
+  normHook: string;
+};
+
+export type RejectedIndex = {
+  normalizedTitles: Set<string>;
+  byAssets: RejectedIndexEntry[];
+};
+
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string' && x.length > 0);
+}
+
+function buildAssetKey(assetIds: string[]): string {
+  return [...assetIds].sort().join(',');
+}
+
+function normalizeMatchText(text: string | null | undefined): string {
+  if (!text?.trim()) return '';
+  return normalizeDedupeTitle(text);
+}
+
+export function buildRejectedFeedbackForPrompt(rows: RejectedCandidateRow[]): RejectedFeedbackItem[] {
+  return rows.map((r) => {
+    const item: RejectedFeedbackItem = {
+      post_type: r.post_type,
+      title: r.title,
+      source_asset_ids: r.source_asset_ids,
+    };
+    const hook = r.hook?.trim();
+    if (hook) item.hook = hook;
+    const concept = truncateText(r.concept_summary, 200);
+    if (concept) item.concept_summary = concept;
+    const caption = truncateText(r.caption_fr, 200);
+    if (caption) item.caption_fr = caption;
+    const notes = r.reviewer_notes?.trim();
+    if (notes) item.reviewer_notes = notes;
+    if (r.reviewed_at) item.reviewed_at = r.reviewed_at;
+    return item;
+  });
+}
+
+export function buildRejectedIndex(rows: RejectedCandidateRow[]): RejectedIndex {
+  const normalizedTitles = new Set<string>();
+  const byAssets: RejectedIndexEntry[] = [];
+
+  for (const r of rows) {
+    const normTitle = normalizeMatchText(r.title);
+    if (normTitle) normalizedTitles.add(normTitle);
+
+    byAssets.push({
+      postType: r.post_type,
+      assetKey: buildAssetKey(r.source_asset_ids),
+      normTitle,
+      normHook: normalizeMatchText(r.hook),
+    });
+  }
+
+  return { normalizedTitles, byAssets };
+}
+
+export async function fetchRecentRejectedCandidates(
+  supabase: SupabaseClient,
+  params: { days?: number; limit?: number } = {},
+): Promise<RejectedCandidateRow[]> {
+  const days = params.days ?? REJECTED_FEEDBACK_DAYS;
+  const limit = params.limit ?? REJECTED_FEEDBACK_LIMIT;
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  const { data, error } = await supabase
+    .from('post_candidates')
+    .select(
+      'post_type, title, hook, concept_summary, caption_fr, source_asset_ids, reviewer_notes, reviewed_at, updated_at',
+    )
+    .eq('status', 'rejected')
+    .order('reviewed_at', { ascending: false, nullsFirst: false })
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+
+  const out: RejectedCandidateRow[] = [];
+  for (const row of data ?? []) {
+    const r = row as {
+      post_type?: string | null;
+      title?: string | null;
+      hook?: string | null;
+      concept_summary?: string | null;
+      caption_fr?: string | null;
+      source_asset_ids?: unknown;
+      reviewer_notes?: string | null;
+      reviewed_at?: string | null;
+      updated_at?: string | null;
+    };
+    const title = r.title?.trim();
+    const postType = r.post_type?.trim();
+    if (!title || !postType) continue;
+
+    const reviewedAt = r.reviewed_at?.trim() || null;
+    const updatedAt = r.updated_at?.trim() || null;
+    const feedbackAt = reviewedAt ?? updatedAt;
+    if (feedbackAt && Date.parse(feedbackAt) < cutoffMs) continue;
+
+    out.push({
+      post_type: postType,
+      title,
+      hook: r.hook?.trim() || null,
+      concept_summary: r.concept_summary?.trim() || null,
+      caption_fr: r.caption_fr?.trim() || null,
+      source_asset_ids: asStringArray(r.source_asset_ids),
+      reviewer_notes: r.reviewer_notes?.trim() || null,
+      reviewed_at: reviewedAt,
+      updated_at: updatedAt,
+    });
+  }
+
+  return out;
+}
+
+export function getRejectedSkipReason(
+  candidate: ValidatedPostCandidate,
+  index: RejectedIndex,
+): string | null {
+  const normTitle = normalizeMatchText(candidate.title);
+  if (normTitle && index.normalizedTitles.has(normTitle)) {
+    return 'title matches rejected candidate';
+  }
+
+  const assetKey = buildAssetKey(candidate.source_asset_ids);
+  const normHook = normalizeMatchText(candidate.hook);
+
+  for (const entry of index.byAssets) {
+    if (entry.postType !== candidate.post_type) continue;
+    if (entry.assetKey !== assetKey) continue;
+    if (normTitle && entry.normTitle === normTitle) {
+      return 'same post_type, assets, and title as rejected candidate';
+    }
+    if (normHook && entry.normHook && entry.normHook === normHook) {
+      return 'same post_type, assets, and hook as rejected candidate';
+    }
+  }
+
+  return null;
+}
+
+export function buildAssetLookupMaps(
+  summaries: AssetSummaryForLLM[],
+): {
+  assetById: Map<string, CandidateSourceAsset>;
+  assetByDriveId: Map<string, CandidateSourceAsset>;
+} {
+  const assetById = new Map<string, CandidateSourceAsset>();
+  const assetByDriveId = new Map<string, CandidateSourceAsset>();
+
+  for (const s of summaries) {
+    const asset = {
+      id: s.id,
+      drive_file_id: s.drive_file_id,
+      current_filename: s.current_filename,
+      final_filename: s.final_filename,
+      media_type: s.media_type,
+      activity: s.activity,
+      content_lane: s.content_lane,
+      suggested_title: s.suggested_title,
+      visual_summary: s.visual_summary,
+      semantic_summary: s.semantic_summary,
+      transcript: null,
+      audio_transcript: null,
+      tags: s.tags,
+      quality_score: s.quality_score,
+      mission_score: s.mission_score,
+      human_score: s.human_score,
+      sponsor_safety_score: s.sponsor_safety_score,
+      processed_at: null,
+      geo_label: null,
+      geo_locality: s.location_guess,
+      postal_code: s.postal_code,
+      duration_seconds: s.duration_seconds,
+      drive_web_view_link: s.drive_review_link,
+      analysis_status: 'complete',
+      usage_status: s.usage_status,
+      capture_time: null,
+      drive_created_time: null,
+      imported_at: null,
+      hard_locked: false,
+      reuse_allowed_after: null,
+    } as CandidateSourceAsset;
+
+    assetById.set(s.id, asset);
+    if (s.drive_file_id) {
+      assetByDriveId.set(s.drive_file_id, asset);
+    }
+  }
+
+  return { assetById, assetByDriveId };
+}
+
+function resolveSourceAssetRef(
+  raw: string,
+  assetById: Map<string, CandidateSourceAsset>,
+  assetByDriveId: Map<string, CandidateSourceAsset>,
+): CandidateSourceAsset | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return assetById.get(trimmed) ?? assetByDriveId.get(trimmed) ?? null;
+}
+
+export function resolveSourceAssetIds(
+  rawIds: string[],
+  rawDriveIds: string[],
+  assetById: Map<string, CandidateSourceAsset>,
+  assetByDriveId: Map<string, CandidateSourceAsset>,
+): { ids: string[]; driveIds: string[]; repairs: string[] } | { error: string } {
+  const repairs: string[] = [];
+  const resolvedIds: string[] = [];
+  const resolvedDriveIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < rawIds.length; i++) {
+    const raw = rawIds[i]?.trim() ?? '';
+    if (!raw) {
+      return { error: `empty source_asset_ids entry at index ${i}` };
+    }
+
+    let asset = resolveSourceAssetRef(raw, assetById, assetByDriveId);
+    if (!asset && rawDriveIds.length === rawIds.length) {
+      const driveRaw = rawDriveIds[i]?.trim() ?? '';
+      if (driveRaw) {
+        asset = assetByDriveId.get(driveRaw) ?? null;
+        if (asset) {
+          repairs.push(`source_asset_ids[${i}]: paired via source_drive_file_ids[${i}]`);
+        }
+      }
+    }
+
+    if (!asset) {
+      return { error: `unknown asset id ${raw}` };
+    }
+
+    if (raw !== asset.id && !assetById.has(raw)) {
+      repairs.push(`source_asset_ids[${i}]: ${raw} -> ${asset.id}`);
+    }
+
+    if (seen.has(asset.id)) continue;
+    seen.add(asset.id);
+    resolvedIds.push(asset.id);
+    resolvedDriveIds.push(asset.drive_file_id);
+  }
+
+  return { ids: resolvedIds, driveIds: resolvedDriveIds, repairs };
+}
+
 export function validatePostCandidateOutput(
   raw: unknown,
   assetById: Map<string, CandidateSourceAsset>,
   enabledPostTypes?: Set<string>,
+  assetByDriveId?: Map<string, CandidateSourceAsset>,
 ): { ok: true; data: ValidatedPostCandidate } | { ok: false; error: string } {
   const parsed = llmCandidateSchema.safeParse(raw);
   if (!parsed.success) {
@@ -344,26 +610,84 @@ export function validatePostCandidateOutput(
     return { ok: false, error: 'source_asset_ids empty' };
   }
 
-  const resolvedDriveIds: string[] = [];
-  for (const id of c.source_asset_ids) {
-    const asset = assetById.get(id);
-    if (!asset) {
-      return { ok: false, error: `unknown asset id ${id}` };
-    }
-    resolvedDriveIds.push(asset.drive_file_id);
+  const driveLookup = assetByDriveId ?? new Map<string, CandidateSourceAsset>();
+  const resolved = resolveSourceAssetIds(
+    c.source_asset_ids,
+    c.source_drive_file_ids,
+    assetById,
+    driveLookup,
+  );
+  if ('error' in resolved) {
+    return { ok: false, error: resolved.error };
   }
 
   let driveIds = c.source_drive_file_ids;
   const mismatched =
-    driveIds.length !== resolvedDriveIds.length ||
-    driveIds.some((id, i) => id !== resolvedDriveIds[i]);
+    driveIds.length !== resolved.driveIds.length ||
+    driveIds.some((id, i) => id !== resolved.driveIds[i]);
   if (mismatched) {
-    driveIds = resolvedDriveIds;
+    driveIds = resolved.driveIds;
   }
 
   return {
     ok: true,
-    data: { ...c, title, source_drive_file_ids: driveIds },
+    data: {
+      ...c,
+      title,
+      source_asset_ids: resolved.ids,
+      source_drive_file_ids: driveIds,
+    },
+  };
+}
+
+export type PlannerParseResult = {
+  candidates: ValidatedPostCandidate[];
+  validationErrors: string[];
+  rawReturnedCount: number;
+  structuralError?: string;
+};
+
+export function parsePlannerResponse(
+  obj: unknown,
+  summaries: AssetSummaryForLLM[],
+  enabledPostTypes?: string[] | Set<string>,
+): PlannerParseResult {
+  const loose = llmResponseLooseSchema.safeParse(obj);
+  if (!loose.success) {
+    return {
+      candidates: [],
+      validationErrors: [],
+      rawReturnedCount: 0,
+      structuralError: `Invalid planner response shape: ${loose.error.message}`,
+    };
+  }
+
+  const { assetById, assetByDriveId } = buildAssetLookupMaps(summaries);
+  const enabledSet = enabledPostTypes
+    ? enabledPostTypes instanceof Set
+      ? enabledPostTypes
+      : new Set(enabledPostTypes)
+    : undefined;
+  const out: ValidatedPostCandidate[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < loose.data.candidates.length; i++) {
+    const row = loose.data.candidates[i];
+    const v = validatePostCandidateOutput(row, assetById, enabledSet, assetByDriveId);
+    if (!v.ok) {
+      if (v.error.startsWith('disabled post_type')) {
+        console.warn(`[skip disabled lane]\t${v.error}`);
+      }
+      errors.push(`candidate[${i}]: ${v.error}`);
+      continue;
+    }
+    out.push(v.data);
+  }
+
+  return {
+    candidates: out,
+    validationErrors: errors,
+    rawReturnedCount: loose.data.candidates.length,
   };
 }
 
@@ -384,12 +708,28 @@ async function loadEnabledPostTypes(supabase: SupabaseClient): Promise<Set<strin
   return enabled.size > 0 ? enabled : allowed;
 }
 
+function extractTitleOverlayFromValidated(c: ValidatedPostCandidate): string | null {
+  const reel = c.reel_instructions;
+  if (reel != null && typeof reel === 'object' && !Array.isArray(reel)) {
+    const t = (reel as Record<string, unknown>).thumbnail_text;
+    if (typeof t === 'string' && t.trim()) return t.trim();
+  }
+  const st = c.static_post_instructions;
+  if (st != null && typeof st === 'object' && !Array.isArray(st)) {
+    const t = (st as Record<string, unknown>).main_text;
+    if (typeof t === 'string' && t.trim()) return t.trim();
+  }
+  return null;
+}
+
 export async function generatePostCandidatesWithLLM(params: {
   summaries: AssetSummaryForLLM[];
   dailyTarget: number;
   batchDays: number;
   enabledPostTypes: string[];
   supabase: SupabaseClient | null;
+  avoidRecentRejections?: RejectedFeedbackItem[];
+  committedRecentPosts?: ReturnType<typeof toCommittedPostForPrompt>[];
 }): Promise<{
   candidates: ValidatedPostCandidate[];
   llmRaw: Record<string, unknown>;
@@ -399,96 +739,104 @@ export async function generatePostCandidatesWithLLM(params: {
 }> {
   const apiKey = requireEnv('GEMINI_API_KEY');
   const ai = new GoogleGenAI({ apiKey });
-  const stableTemplate = (await loadResolvedStablePrompt(params.supabase, 'post_planner')).text;
-  const enabledSet = new Set(params.enabledPostTypes);
-  const { stableSystemInstruction, dynamicText } = buildPostPlannerPromptParts({
-    stableText: stableTemplate,
+  const composed = await loadComposedStableSystemInstruction(
+    params.supabase,
+    'task_generate_candidate',
+  );
+  const stableSystemInstruction = composed.text;
+  const dynamicText = buildPostPlannerDynamicText({
     summaries: params.summaries as unknown[],
     dailyTarget: params.dailyTarget,
     batchDays: params.batchDays,
     enabledPostTypes: params.enabledPostTypes,
+    avoidRecentRejections: params.avoidRecentRejections,
+    committedRecentPosts: params.committedRecentPosts,
   });
   const promptVersion = getFr94PromptVersion();
   const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
 
-  const { response, modelUsed } = await callGeminiWithLogging({
+  const plannerCall = {
     ai,
     supabase: params.supabase,
     route,
     promptVersion,
     cacheKey: cacheKeyCandidateGeneration(promptVersion, stableSystemInstruction),
     stableSystemInstruction,
+    entity: {
+      prompt_keys: [...STABLE_CONTEXT_KEYS, 'task_generate_candidate'],
+      pipeline_step: 'candidate_generation',
+    },
     getContentsImplicit: () => [
       createPartFromText(stableSystemInstruction),
       createPartFromText(dynamicText),
     ],
     getContentsExplicit: () => [createPartFromText(dynamicText)],
-  });
+  };
 
-  const text = response.text?.trim();
-  if (!text) {
-    throw new Error('Gemini returned empty text');
-  }
+  const maxAttempts = 2;
+  let plannerResult: {
+    response: Awaited<ReturnType<typeof callGeminiWithLogging>>['response'];
+    modelUsed: string;
+    text: string;
+    obj: Record<string, unknown>;
+  } | null = null;
+  let out: ValidatedPostCandidate[] = [];
+  let errors: string[] = [];
+  let rawReturnedCount = 0;
 
-  const obj = parseJsonToRecord(text);
-  const validated = llmResponseSchema.safeParse(obj);
-  if (!validated.success) {
-    throw new Error(`Invalid planner response schema: ${validated.error.message}`);
-  }
-
-  const assetById = new Map<string, CandidateSourceAsset>(
-    params.summaries.map((s) => [
-      s.id,
-      {
-        id: s.id,
-        drive_file_id: s.drive_file_id,
-        current_filename: s.current_filename,
-        final_filename: s.final_filename,
-        media_type: s.media_type,
-        activity: s.activity,
-        content_lane: s.content_lane,
-        suggested_title: s.suggested_title,
-        visual_summary: s.visual_summary,
-        semantic_summary: s.semantic_summary,
-        transcript: null,
-        audio_transcript: null,
-        tags: s.tags,
-        quality_score: s.quality_score,
-        mission_score: s.mission_score,
-        human_score: s.human_score,
-        sponsor_safety_score: s.sponsor_safety_score,
-        processed_at: null,
-        geo_label: null,
-        geo_locality: s.location_guess,
-        postal_code: s.postal_code,
-        duration_seconds: s.duration_seconds,
-        drive_web_view_link: s.drive_review_link,
-        analysis_status: 'complete',
-        usage_status: s.usage_status,
-        capture_time: null,
-        drive_created_time: null,
-        imported_at: null,
-        hard_locked: false,
-        reuse_allowed_after: null,
-      } as CandidateSourceAsset,
-    ]),
-  );
-
-  const out: ValidatedPostCandidate[] = [];
-  const errors: string[] = [];
-
-  for (let i = 0; i < validated.data.candidates.length; i++) {
-    const row = validated.data.candidates[i];
-    const v = validatePostCandidateOutput(row, assetById, enabledSet);
-    if (!v.ok) {
-      if (v.error.startsWith('disabled post_type')) {
-        console.warn(`[skip disabled lane]\t${v.error}`);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { response, modelUsed } = await callGeminiWithLogging(plannerCall);
+    const text = response.text?.trim() ?? '';
+    if (!text) {
+      if (attempt < maxAttempts) {
+        console.warn('[warn] planner returned empty text; retrying...');
+        continue;
       }
-      errors.push(`candidate[${i}]: ${v.error}`);
-      continue;
+      throw new Error('Gemini returned empty text');
     }
-    out.push(v.data);
+
+    let obj: Record<string, unknown>;
+    try {
+      obj = parseGeminiJsonObject(text);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (attempt < maxAttempts) {
+        console.warn(`[warn] planner JSON parse failed (attempt ${attempt}): ${msg}; retrying...`);
+        continue;
+      }
+      throw e;
+    }
+
+    const parsed = parsePlannerResponse(obj, params.summaries, params.enabledPostTypes);
+    if (parsed.structuralError) {
+      if (attempt < maxAttempts) {
+        console.warn(`[warn] ${parsed.structuralError}; retrying...`);
+        continue;
+      }
+      throw new Error(parsed.structuralError);
+    }
+
+    if (parsed.candidates.length === 0 && parsed.validationErrors.length > 0) {
+      if (attempt < maxAttempts) {
+        console.warn(
+          `[warn] planner returned no valid candidates (${parsed.validationErrors.length} validation errors); retrying...`,
+        );
+        continue;
+      }
+    }
+
+    plannerResult = { response, modelUsed, text, obj };
+    out = parsed.candidates;
+    errors = parsed.validationErrors;
+    rawReturnedCount = parsed.rawReturnedCount;
+    break;
   }
+
+  if (!plannerResult) {
+    throw new Error('Gemini returned no parseable planner response');
+  }
+
+  const { response, modelUsed, text } = plannerResult;
 
   const llmRaw: Record<string, unknown> = {
     ...responseToJson(response),
@@ -500,7 +848,7 @@ export async function generatePostCandidatesWithLLM(params: {
     candidates: out,
     llmRaw,
     model: modelUsed,
-    rawReturnedCount: validated.data.candidates.length,
+    rawReturnedCount,
     validationErrors: errors,
   };
 }
@@ -613,6 +961,9 @@ export async function insertPostCandidate(
     sponsor_safety_score: params.c.sponsor_safety_score,
     effort_score: params.c.effort_score,
     status: 'needs_review',
+    selected_lane: params.c.selected_lane?.trim() || null,
+    narrative_function: params.c.narrative_function?.trim() || null,
+    title_overlay: extractTitleOverlayFromValidated(params.c),
     llm_model: params.llmModel,
     llm_raw: params.llmRaw,
     updated_at: new Date().toISOString(),
@@ -632,6 +983,7 @@ export async function updatePostCandidateReviewFolder(
     review_drive_folder_id: string;
     review_drive_folder_name: string;
     review_drive_folder_url: string;
+    cover_thumbnail_url?: string | null;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -641,6 +993,9 @@ export async function updatePostCandidateReviewFolder(
       review_drive_folder_id: params.review_drive_folder_id,
       review_drive_folder_name: params.review_drive_folder_name,
       review_drive_folder_url: params.review_drive_folder_url,
+      ...(params.cover_thumbnail_url !== undefined
+        ? { cover_thumbnail_url: params.cover_thumbnail_url }
+        : {}),
       updated_at: now,
     })
     .eq('id', params.id);
@@ -673,6 +1028,15 @@ export async function generatePostCandidates(): Promise<void> {
       return a.is_fresh_for_story ? -1 : 1;
     });
 
+  const rejectedRows = await fetchRecentRejectedCandidates(supabase);
+  const avoidRecentRejections = buildRejectedFeedbackForPrompt(rejectedRows);
+  const rejectedIndex = buildRejectedIndex(rejectedRows);
+  console.log(`rejected feedback: ${avoidRecentRejections.length} recent rejections loaded`);
+
+  let recentLedger = await loadRecentLedgerContext(supabase);
+  const committedRecentPosts = recentLedger.map(toCommittedPostForPrompt);
+  console.log(`content ledger: ${committedRecentPosts.length} committed posts in context`);
+
   let llmResult: Awaited<ReturnType<typeof generatePostCandidatesWithLLM>>;
   try {
     llmResult = await generatePostCandidatesWithLLM({
@@ -681,6 +1045,8 @@ export async function generatePostCandidates(): Promise<void> {
       batchDays,
       enabledPostTypes,
       supabase,
+      avoidRecentRejections,
+      committedRecentPosts,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -695,6 +1061,8 @@ export async function generatePostCandidates(): Promise<void> {
   let foldersCreated = 0;
   let assetsCopied = 0;
   let skippedDedupe = 0;
+  let skippedRejected = 0;
+  let collisionBlocked = 0;
   let insertFailures = 0;
   let driveSetupFailures = 0;
   let copyFailures = 0;
@@ -709,6 +1077,13 @@ export async function generatePostCandidates(): Promise<void> {
     if (existingTitles.has(dedupeKey)) {
       console.warn(`[skip dedupe]\t"${c.title}"\t(${candidateDate})`);
       skippedDedupe += 1;
+      continue;
+    }
+
+    const rejectedReason = getRejectedSkipReason(c, rejectedIndex);
+    if (rejectedReason) {
+      console.warn(`[skip rejected]\t"${c.title}"\t${rejectedReason}`);
+      skippedRejected += 1;
       continue;
     }
 
@@ -762,6 +1137,14 @@ export async function generatePostCandidates(): Promise<void> {
     }
 
     try {
+      const collision = await evaluateCandidateCollision(supabase, id, recentLedger);
+      console.log(`[collision]\t${c.title}\trisk=${collision.risk}`);
+      if (collision.risk === 'blocked') collisionBlocked += 1;
+    } catch (e) {
+      console.warn(`[collision check]\t${id}`, e);
+    }
+
+    try {
       const folder = await createReviewDriveFolder(drive, {
         parentFolderId: reviewParentId,
         folderName,
@@ -779,11 +1162,21 @@ export async function generatePostCandidates(): Promise<void> {
       }
 
       const folderUrl = folder.webViewLink ?? driveFolderUrl(folder.id);
+      let coverThumbnailUrl: string | null = null;
+      try {
+        coverThumbnailUrl = await getFirstReviewFolderThumbnailLink(drive, folder.id, {
+          fallbackDriveFileIds: c.source_drive_file_ids,
+        });
+      } catch (e) {
+        console.warn(`[cover thumbnail]\tpost_candidate=${id}`, e);
+      }
+
       await updatePostCandidateReviewFolder(supabase, {
         id,
         review_drive_folder_id: folder.id,
         review_drive_folder_name: folder.name,
         review_drive_folder_url: folderUrl,
+        cover_thumbnail_url: coverThumbnailUrl,
       });
     } catch (e) {
       const msg = formatGoogleDriveApiError(e);
@@ -801,6 +1194,8 @@ export async function generatePostCandidates(): Promise<void> {
       `folders_created=${foldersCreated}`,
       `assets_copied=${assetsCopied}`,
       `skipped_dedupe=${skippedDedupe}`,
+      `skipped_rejected=${skippedRejected}`,
+      `collision_blocked=${collisionBlocked}`,
       `insert_failures=${insertFailures}`,
       `drive_setup_failures=${driveSetupFailures}`,
       `drive_copy_failures=${copyFailures}`,

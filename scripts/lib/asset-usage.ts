@@ -1,7 +1,25 @@
+import type { drive_v3 } from 'googleapis';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 /** Cooldown before story-used assets may be suggested again (days). */
 export const STORY_REUSE_COOLDOWN_DAYS = 14;
+/** Lane-level cooldown after approval (days). */
+export const LANE_COOLDOWN_DAYS_REEL = 7;
+export const LANE_COOLDOWN_DAYS_STORY = 2;
+export const LANE_COOLDOWN_DAYS_DEFAULT = 5;
+
+export function computeLaneCooldownUntil(
+  postType: string | null | undefined,
+  from = new Date(),
+): string {
+  const t = (postType ?? '').trim();
+  let days = LANE_COOLDOWN_DAYS_DEFAULT;
+  if (t === 'reel') days = LANE_COOLDOWN_DAYS_REEL;
+  else if (t === 'story' || t === 'story_sequence') days = LANE_COOLDOWN_DAYS_STORY;
+  const d = new Date(from);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString();
+}
 /** Story / story_sequence must use assets with effective capture within this window (hours). */
 export const STORY_FRESHNESS_HOURS = 48;
 /** Reserved-asset warning horizon (reserved for future UX; not enforced in DB yet). */
@@ -954,4 +972,178 @@ export async function onPublishingJobStatusTransition(
   if (next === 'ready_to_publish' && prev !== 'ready_to_publish' && APPLY_ASSET_LOCKS_AT_READY_TO_PUBLISH) {
     await applyPublishedAssetLocks(supabase, jobId);
   }
+
+  if (next === 'published' && prev !== 'published') {
+    await applyPublishedAssetLocks(supabase, jobId);
+  }
+}
+
+/** Publishing job statuses that block permanent candidate deletion. */
+export const BLOCKED_PUBLISHING_JOB_STATUSES_FOR_DELETE: ReadonlySet<string> = new Set([
+  'ready_to_publish',
+  'published',
+]);
+
+export type CanDeletePostCandidateParams = {
+  candidateStatus: string;
+  invalidatedAt?: string | null;
+  publishingJobStatus?: string | null;
+  productionJobStatus?: string | null;
+};
+
+export function canDeletePostCandidate(
+  params: CanDeletePostCandidateParams,
+): { ok: true } | { ok: false; code: string; message: string } {
+  if (params.invalidatedAt?.trim()) {
+    return { ok: false, code: 'invalidated', message: 'Candidate is invalidated.' };
+  }
+  const st = (params.candidateStatus ?? '').trim();
+  if (st === 'ready_to_publish') {
+    return {
+      ok: false,
+      code: 'ready_to_publish',
+      message: 'Cannot delete a candidate that is ready to publish.',
+    };
+  }
+  const pj = (params.publishingJobStatus ?? '').trim();
+  if (pj && BLOCKED_PUBLISHING_JOB_STATUSES_FOR_DELETE.has(pj)) {
+    return {
+      ok: false,
+      code: 'publishing_in_flight',
+      message: `Cannot delete while publishing job is "${pj}".`,
+    };
+  }
+  const prod = (params.productionJobStatus ?? '').trim();
+  if (prod === 'rendering') {
+    return {
+      ok: false,
+      code: 'production_rendering',
+      message: 'Cannot delete while reel is rendering.',
+    };
+  }
+  return { ok: true };
+}
+
+export type DeletePostCandidateResult = {
+  drive_folder_deleted: boolean;
+};
+
+/**
+ * Permanently remove a post candidate, related usage events, cascaded jobs, and optionally its Drive review folder.
+ */
+export async function deletePostCandidateCompletely(
+  supabase: SupabaseClient,
+  candidateId: string,
+  drive?: drive_v3.Drive | null,
+): Promise<DeletePostCandidateResult> {
+  const { data: row, error: readErr } = await supabase
+    .from('post_candidates')
+    .select('id, status, review_drive_folder_id, publishing_job_id, invalidated_at')
+    .eq('id', candidateId)
+    .maybeSingle();
+  if (readErr) throw new Error(`deletePostCandidateCompletely(read): ${readErr.message}`);
+  if (!row) throw new AssetUsageError('not_found', 'Candidate not found.');
+
+  const candidate = row as {
+    id: string;
+    status?: string | null;
+    review_drive_folder_id?: string | null;
+    publishing_job_id?: string | null;
+    invalidated_at?: string | null;
+  };
+
+  let publishingJobStatus: string | null = null;
+  const pjId = candidate.publishing_job_id?.trim();
+  if (pjId) {
+    const { data: pj, error: pjErr } = await supabase
+      .from('publishing_jobs')
+      .select('status')
+      .eq('id', pjId)
+      .maybeSingle();
+    if (pjErr) throw new Error(`deletePostCandidateCompletely(publishing_job): ${pjErr.message}`);
+    publishingJobStatus = ((pj as { status?: string } | null)?.status ?? '').trim() || null;
+  }
+
+  let productionJobStatus: string | null = null;
+  const { data: prodRows, error: prodErr } = await supabase
+    .from('production_jobs')
+    .select('status')
+    .eq('post_candidate_id', candidateId)
+    .eq('production_type', 'reel')
+    .limit(1);
+  if (prodErr) throw new Error(`deletePostCandidateCompletely(production_jobs): ${prodErr.message}`);
+  const prod = prodRows?.[0] as { status?: string } | undefined;
+  productionJobStatus = (prod?.status ?? '').trim() || null;
+
+  const guard = canDeletePostCandidate({
+    candidateStatus: candidate.status ?? '',
+    invalidatedAt: candidate.invalidated_at,
+    publishingJobStatus,
+    productionJobStatus,
+  });
+  if (!guard.ok) {
+    throw new AssetUsageError(guard.code, guard.message);
+  }
+
+  const folderId = candidate.review_drive_folder_id?.trim() ?? '';
+
+  const { data: usageRows, error: usageReadErr } = await supabase
+    .from('asset_usage_events')
+    .select('content_asset_id')
+    .eq('post_candidate_id', candidateId);
+  if (usageReadErr) {
+    throw new Error(`deletePostCandidateCompletely(usage read): ${usageReadErr.message}`);
+  }
+  const assetIds = [
+    ...new Set(
+      (usageRows ?? [])
+        .map((e: { content_asset_id?: string }) => e.content_asset_id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ];
+
+  try {
+    await releaseAssetsForCandidate(supabase, candidateId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`deletePostCandidateCompletely(release): ${msg}`);
+  }
+
+  const { error: usageDelErr } = await supabase
+    .from('asset_usage_events')
+    .delete()
+    .eq('post_candidate_id', candidateId);
+  if (usageDelErr) {
+    throw new Error(`deletePostCandidateCompletely(usage delete): ${usageDelErr.message}`);
+  }
+
+  for (const aid of assetIds) {
+    await updateAssetUsageSummary(supabase, aid);
+  }
+  if (assetIds.length > 0) {
+    await refreshConflictsForAssets(supabase, assetIds);
+  }
+
+  const { error: delErr } = await supabase.from('post_candidates').delete().eq('id', candidateId);
+  if (delErr) throw new Error(`deletePostCandidateCompletely(delete): ${delErr.message}`);
+
+  let driveFolderDeleted = false;
+  if (folderId && drive) {
+    try {
+      await drive.files.delete({ fileId: folderId, supportsAllDrives: true });
+      driveFolderDeleted = true;
+    } catch (e) {
+      console.warn('[deletePostCandidateCompletely] Drive folder delete failed', {
+        candidateId,
+        folderId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  } else if (folderId && !drive) {
+    console.warn('[deletePostCandidateCompletely] skipped Drive delete (no client)', { candidateId, folderId });
+  } else {
+    driveFolderDeleted = true;
+  }
+
+  return { drive_folder_deleted: driveFolderDeleted };
 }

@@ -1,5 +1,12 @@
 import type { drive_v3 } from 'googleapis';
 
+import {
+  firstThumbnailFromDriveFiles,
+  getFirstReviewFolderThumbnailLink,
+} from '@fr94/review-folder-thumbnail';
+
+export { getFirstReviewFolderThumbnailLink };
+
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 const LIST_FIELDS =
@@ -30,6 +37,12 @@ export async function listReviewFolderFiles(
   } while (pageToken);
 
   return out;
+}
+
+export function firstThumbnailFromFolderFiles(
+  files: ReturnType<typeof mapDriveFileToReviewDto>[],
+): string | null {
+  return firstThumbnailFromDriveFiles(files);
 }
 
 export function mapDriveFileToReviewDto(f: drive_v3.Schema$File) {

@@ -2,7 +2,7 @@ import type { ContentListUnion, GenerateContentConfig, GenerateContentResponse, 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { getOrCreatePromptCache } from './gemini-cache.js';
-import { logLlmCall } from './llm-logging.js';
+import { logLlmCall, type LlmCallEntityTag } from './llm-logging.js';
 import type { ResolvedModelRoute } from './model-routes.js';
 import {
   explicitCachingEnabled,
@@ -10,8 +10,17 @@ import {
   geminiCacheTtlSeconds,
 } from './prompt-version.js';
 
+export type { LlmCallEntityTag } from './llm-logging.js';
 export type { Fr94ModelRouteKey, ResolvedModelRoute } from './model-routes.js';
-export { FR94_MODEL_ROUTE_KEYS, getModelRoute, ThinkingLevel } from './model-routes.js';
+export {
+  FR94_MODEL_ROUTE_KEYS,
+  GEMINI_MODEL_PRICING_USD_PER_1M,
+  estimateLlmCostUsd,
+  getModelRoute,
+  resolveModelPricingUsdPer1M,
+  ThinkingLevel,
+} from './model-routes.js';
+export type { ModelPricingUsdPer1M } from './model-routes.js';
 export {
   getResolvedModelRoute,
   mergeResolvedRouteForPreview,
@@ -21,10 +30,19 @@ export {
 export type { LlmRouteSettingsRow } from './model-route-resolve.js';
 export { stablePromptCacheSuffix } from './prompt-fingerprint.js';
 export {
-  loadResolvedStablePrompt,
+  ANALYSIS_STABLE_PROMPT_KEYS,
+  STABLE_CONTEXT_KEYS,
   STABLE_PROMPT_KEYS,
+  TASK_PROMPT_KEYS,
+  composeStableSystemInstruction,
+  loadComposedStableSystemInstruction,
+  loadResolvedStablePrompt,
 } from './resolve-stable-prompt.js';
-export type { StablePromptKey } from './resolve-stable-prompt.js';
+export type {
+  StableContextKey,
+  StablePromptKey,
+  TaskPromptKey,
+} from './resolve-stable-prompt.js';
 
 /** After 2 retries on 503, used when primary is Gemini 3.1 Pro (preview) and still overloaded. */
 export const GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL = 'gemini-2.5-pro';
@@ -207,6 +225,8 @@ export async function callGeminiWithLogging(params: {
   jsonResponse?: boolean;
   /** When true, never uses Gemini explicit context caches (e.g. custom prompt path). */
   disableExplicitCaching?: boolean;
+  /** Stored in llm_call_logs.metadata for per-candidate / per-asset pipeline tracing. */
+  entity?: LlmCallEntityTag;
 }): Promise<{ response: GenerateContentResponse; modelUsed: string }> {
   const { route } = params;
   const model = route.model;
@@ -229,6 +249,14 @@ export async function callGeminiWithLogging(params: {
     model_route_operation: route.operation,
     model_overridden_from_env: route.modelOverriddenFromEnv,
     route: routeMetadataSnapshot(route),
+    ...(params.entity?.post_candidate_id
+      ? { post_candidate_id: params.entity.post_candidate_id }
+      : {}),
+    ...(params.entity?.content_asset_id
+      ? { content_asset_id: params.entity.content_asset_id }
+      : {}),
+    ...(params.entity?.prompt_keys?.length ? { prompt_keys: params.entity.prompt_keys } : {}),
+    ...(params.entity?.pipeline_step ? { pipeline_step: params.entity.pipeline_step } : {}),
   };
 
   if (useExplicit && params.stableSystemInstruction.trim()) {

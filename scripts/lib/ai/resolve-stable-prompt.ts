@@ -5,18 +5,45 @@ import {
   loadDirectMediaAnalysisStablePrompt,
   loadVideoSampledAnalysisStablePrompt,
 } from './prompts/asset-analysis.js';
-import { loadCandidateRegenerationStablePrompt } from './prompts/candidate-regeneration.js';
-import { loadPostPlannerStablePrompt } from './prompts/post-planner.js';
+import {
+  STABLE_CONTEXT_KEYS,
+  TASK_PROMPT_KEYS,
+  composeStableSystemInstruction,
+  loadStableContextFromFile,
+  loadTaskPromptFromFile,
+  type StableContextKey,
+  type TaskPromptKey,
+} from './prompts/composed-context.js';
 
-export const STABLE_PROMPT_KEYS = [
+/** Asset-analysis single-file prompts (scripts/prompts/*.txt). */
+export const ANALYSIS_STABLE_PROMPT_KEYS = [
   'direct_media_analysis',
   'video_sampled_analysis',
   'audio_transcription',
-  'post_planner',
-  'candidate_regeneration',
+] as const;
+
+export const STABLE_PROMPT_KEYS = [
+  ...ANALYSIS_STABLE_PROMPT_KEYS,
+  ...STABLE_CONTEXT_KEYS,
+  ...TASK_PROMPT_KEYS,
 ] as const;
 
 export type StablePromptKey = (typeof STABLE_PROMPT_KEYS)[number];
+
+export {
+  STABLE_CONTEXT_KEYS,
+  TASK_PROMPT_KEYS,
+  composeStableSystemInstruction,
+} from './prompts/composed-context.js';
+export type { StableContextKey, TaskPromptKey } from './prompts/composed-context.js';
+
+function isContextKey(key: StablePromptKey): key is StableContextKey {
+  return (STABLE_CONTEXT_KEYS as readonly string[]).includes(key);
+}
+
+function isTaskKey(key: StablePromptKey): key is TaskPromptKey {
+  return (TASK_PROMPT_KEYS as readonly string[]).includes(key);
+}
 
 function loadFromFile(key: StablePromptKey): string {
   switch (key) {
@@ -26,14 +53,10 @@ function loadFromFile(key: StablePromptKey): string {
       return loadVideoSampledAnalysisStablePrompt();
     case 'audio_transcription':
       return loadAudioTranscriptionStablePrompt();
-    case 'post_planner':
-      return loadPostPlannerStablePrompt();
-    case 'candidate_regeneration':
-      return loadCandidateRegenerationStablePrompt();
-    default: {
-      const _exhaustive: never = key;
-      return _exhaustive;
-    }
+    default:
+      if (isContextKey(key)) return loadStableContextFromFile(key);
+      if (isTaskKey(key)) return loadTaskPromptFromFile(key);
+      throw new Error(`Unknown stable prompt key: ${String(key)}`);
   }
 }
 
@@ -70,4 +93,26 @@ export async function loadResolvedStablePrompt(
   } catch {
     return { text: loadFromFile(key), source: 'file' };
   }
+}
+
+/**
+ * Compose stable context (user_voice + mission + content_lanes + editorial_rules)
+ * plus a task prompt into a single Gemini `systemInstruction`. Each piece is
+ * loaded with DB-override behavior via `loadResolvedStablePrompt`.
+ */
+export async function loadComposedStableSystemInstruction(
+  supabase: SupabaseClient | null,
+  taskKey: TaskPromptKey,
+): Promise<{ text: string; parts: Array<{ key: StablePromptKey; source: 'db' | 'file' }> }> {
+  const keys: StablePromptKey[] = [...STABLE_CONTEXT_KEYS, taskKey];
+  const resolved = await Promise.all(
+    keys.map(async (key) => {
+      const r = await loadResolvedStablePrompt(supabase, key);
+      return { key, source: r.source, text: r.text };
+    }),
+  );
+  return {
+    text: composeStableSystemInstruction(resolved.map((r) => r.text)),
+    parts: resolved.map(({ key, source }) => ({ key, source })),
+  };
 }

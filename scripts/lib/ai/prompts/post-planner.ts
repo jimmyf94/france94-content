@@ -1,54 +1,54 @@
-import fs from 'node:fs';
-import path from 'node:path';
+/**
+ * Phase keys mirror `prompts/context/mission.md`. Boundaries are end-of-day UTC.
+ */
+export type Fr94ProjectPhase =
+  | 'foundation_public_build'
+  | 'pre_challenge_build'
+  | 'challenge_live'
+  | 'aftermath_legacy';
 
-import { resolveRepoRelative } from './resolve-repo-path.js';
-
-const DEFAULT_STABLE_REL = path.join('scripts', 'prompts', 'france94-post-candidates.txt');
-
-export function resolvePostPlannerStablePromptPath(): string {
-  const fromEnv = process.env.POST_CANDIDATE_PROMPT_PATH?.trim();
-  if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
-  }
-  return resolveRepoRelative(DEFAULT_STABLE_REL);
+export function resolveFr94Phase(date: Date = new Date()): Fr94ProjectPhase {
+  const t = date.getTime();
+  const preChallengeStart = Date.UTC(2027, 0, 1);
+  const challengeStart = Date.UTC(2027, 3, 12);
+  const aftermathStart = Date.UTC(2027, 6, 15);
+  if (t < preChallengeStart) return 'foundation_public_build';
+  if (t < challengeStart) return 'pre_challenge_build';
+  if (t < aftermathStart) return 'challenge_live';
+  return 'aftermath_legacy';
 }
 
-export function loadPostPlannerStablePrompt(): string {
-  const promptPath = resolvePostPlannerStablePromptPath();
-  let raw: string;
-  try {
-    raw = fs.readFileSync(promptPath, 'utf8');
-  } catch {
-    throw new Error(
-      `Cannot read post candidate prompt: ${promptPath}. Set POST_CANDIDATE_PROMPT_PATH or add scripts/prompts/france94-post-candidates.txt.`,
-    );
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    throw new Error(`Post candidate prompt is empty: ${promptPath}`);
-  }
-  return trimmed;
-}
-
-export function buildPostPlannerPromptParts(params: {
-  stableText: string;
+export function buildPostPlannerDynamicText(params: {
   summaries: unknown[];
   dailyTarget: number;
   batchDays: number;
   enabledPostTypes: string[];
-}): { stableSystemInstruction: string; dynamicText: string } {
-  const dynamicPayload = {
+  currentDate?: string;
+  currentPhase?: Fr94ProjectPhase;
+  assumeColdAudience?: boolean;
+  avoidRecentRejections?: unknown[];
+  committedRecentPosts?: unknown[];
+}): string {
+  const now = new Date();
+  const currentDate = params.currentDate ?? now.toISOString().slice(0, 10);
+  const currentPhase = params.currentPhase ?? resolveFr94Phase(now);
+  const dynamicPayload: Record<string, unknown> = {
     constraints: {
       batch_days: params.batchDays,
       daily_target: params.dailyTarget,
       asset_count: params.summaries.length,
       enabled_post_types: params.enabledPostTypes,
+      current_date: currentDate,
+      current_phase: currentPhase,
+      assume_cold_audience: params.assumeColdAudience ?? false,
     },
     assets: params.summaries,
   };
-  const dynamicText = `Dynamic payload (JSON):\n${JSON.stringify(dynamicPayload, null, 2)}`;
-  return {
-    stableSystemInstruction: params.stableText.trim(),
-    dynamicText,
-  };
+  if (params.avoidRecentRejections && params.avoidRecentRejections.length > 0) {
+    dynamicPayload.avoid_recent_rejections = params.avoidRecentRejections;
+  }
+  if (params.committedRecentPosts && params.committedRecentPosts.length > 0) {
+    dynamicPayload.committed_recent_posts = params.committedRecentPosts;
+  }
+  return `Dynamic payload (JSON):\n${JSON.stringify(dynamicPayload, null, 2)}`;
 }

@@ -22,3 +22,26 @@ export type PublishingJobDto = {
   publish_attempt_count: number | null;
   last_publish_attempt_at: string | null;
 };
+
+export type PublishingQueueCandidateBrief = {
+  id: string;
+  title: string | null;
+  post_type: string;
+  status: string;
+  review_drive_folder_url: string | null;
+  cover_thumbnail_url: string | null;
+  ready_to_publish_at: string | null;
+};
+
+export type PublishingQueueItem = {
+  id: string;
+  post_candidate_id: string;
+  status: string;
+  publish_type: string;
+  scheduled_publish_at: string | null;
+  published_at: string | null;
+  instagram_permalink: string | null;
+  created_at: string;
+  thumbnail_url: string | null;
+  candidate: PublishingQueueCandidateBrief;
+};

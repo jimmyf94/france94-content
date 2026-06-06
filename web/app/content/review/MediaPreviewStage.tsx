@@ -2,8 +2,8 @@
 
 import { MainMediaPreview } from './MainMediaPreview';
 import { ReviewMediaTrashButton } from './ReviewMediaTrashButton';
+import type { CandidateMediaState } from './useCandidateMedia';
 import type { PostCandidate, ReviewDriveFile } from './types';
-import { useCandidateMedia } from './useCandidateMedia';
 
 function gridColsClass(n: number): string {
   if (n <= 1) return 'grid-cols-1';
@@ -17,12 +17,14 @@ function gridColsClass(n: number): string {
 export function MediaPreviewStage({
   candidate,
   videoRef,
-  mediaReloadNonce = 0,
+  media,
+  onRegisterActivateStream,
   onRemoveReviewAsset,
 }: {
   candidate: PostCandidate | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
-  mediaReloadNonce?: number;
+  media: CandidateMediaState;
+  onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   if (!candidate) {
@@ -32,28 +34,8 @@ export function MediaPreviewStage({
       </section>
     );
   }
-  return (
-    <Inner
-      candidate={candidate}
-      videoRef={videoRef}
-      mediaReloadNonce={mediaReloadNonce}
-      onRemoveReviewAsset={onRemoveReviewAsset}
-    />
-  );
-}
 
-function Inner({
-  candidate,
-  videoRef,
-  mediaReloadNonce,
-  onRemoveReviewAsset,
-}: {
-  candidate: PostCandidate;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  mediaReloadNonce: number;
-  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
-}) {
-  const { files, loading, error } = useCandidateMedia(candidate.id, mediaReloadNonce);
+  const { files, loading, error } = media;
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-[var(--bg)]">
@@ -83,6 +65,7 @@ function Inner({
             files={files}
             candidateId={candidate.id}
             videoRef={videoRef}
+            onRegisterActivateStream={onRegisterActivateStream}
             onRemoveReviewAsset={onRemoveReviewAsset}
           />
         )}
@@ -96,12 +79,14 @@ function MediaGrid({
   files,
   candidateId,
   videoRef,
+  onRegisterActivateStream,
   onRemoveReviewAsset,
 }: {
   candidate: PostCandidate;
   files: ReviewDriveFile[];
   candidateId: string;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
@@ -124,6 +109,9 @@ function MediaGrid({
               file={f}
               candidateId={candidateId}
               videoRef={i === firstVideoIdx ? videoRef : undefined}
+              onRegisterActivateStream={
+                i === firstVideoIdx ? onRegisterActivateStream : undefined
+              }
               compact
             />
           </div>

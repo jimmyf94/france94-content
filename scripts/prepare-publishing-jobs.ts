@@ -690,6 +690,143 @@ async function ensureJobForApprovedCandidate(
   return jobId;
 }
 
+const OPEN_PUBLISHING_JOB_STATUSES = [
+  'draft',
+  'media_prepared',
+  'containers_created',
+  'processing',
+  'failed',
+] as const;
+
+function parseCandidateIdArg(): string | undefined {
+  const fromEquals = process.argv.find((a) => a.startsWith('--candidate-id='));
+  if (fromEquals) {
+    const v = fromEquals.slice('--candidate-id='.length).trim();
+    if (v) return v;
+  }
+  const idx = process.argv.indexOf('--candidate-id');
+  if (idx >= 0) {
+    const v = process.argv[idx + 1]?.trim();
+    if (v && !v.startsWith('-')) return v;
+  }
+  return undefined;
+}
+
+function parseValidateOnlyArg(): boolean {
+  return (
+    process.argv.includes('--validate-only') ||
+    process.argv.some((a) => a.startsWith('--validate-only'))
+  );
+}
+
+/** Create a draft publishing job after eligibility checks — no media prep or Graph containers. */
+export async function validatePublishingForCandidate(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<string | null> {
+  const { data: candidate, error: cErr } = await supabase
+    .from('post_candidates')
+    .select('*')
+    .eq('id', candidateId)
+    .maybeSingle();
+  if (cErr) throw new Error(cErr.message);
+  if (!candidate) throw new Error(`Candidate not found: ${candidateId}`);
+
+  const st = String(candidate.status ?? '');
+  if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
+    throw new Error(`Cannot stage publishing: post_candidates.status is "${st}".`);
+  }
+  if (st !== 'approved' && st !== 'ready_to_publish') {
+    throw new Error(`Cannot stage publishing for candidate status "${st}".`);
+  }
+
+  const { data: existingJob, error: jErr } = await supabase
+    .from('publishing_jobs')
+    .select('id, status')
+    .eq('post_candidate_id', candidateId)
+    .maybeSingle();
+  if (jErr) throw new Error(jErr.message);
+
+  if (existingJob) {
+    const js = String(existingJob.status ?? '');
+    if (js === 'scheduled' || js === 'ready_to_publish' || js === 'published' || js === 'publishing') {
+      pubLog('validate-only: existing job already staged', { candidateId, jobId: existingJob.id, jobStatus: js });
+      return existingJob.id as string;
+    }
+    if (js === 'draft' || (OPEN_PUBLISHING_JOB_STATUSES as readonly string[]).includes(js)) {
+      pubLog('validate-only: reuse existing job', { candidateId, jobId: existingJob.id, jobStatus: js });
+      return existingJob.id as string;
+    }
+    throw new Error(`Cannot stage publishing: existing job status is "${js}".`);
+  }
+
+  pubLog('validate-only: create draft job', { candidateId, post_type: candidate.post_type });
+  return ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
+}
+
+/** Prepare (or resume) publishing for one candidate — used by CLI `--candidate-id` and review UI. */
+export async function preparePublishingForCandidate(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<void> {
+  const { data: candidate, error: cErr } = await supabase
+    .from('post_candidates')
+    .select('*')
+    .eq('id', candidateId)
+    .maybeSingle();
+  if (cErr) throw new Error(cErr.message);
+  if (!candidate) throw new Error(`Candidate not found: ${candidateId}`);
+
+  const st = String(candidate.status ?? '');
+  if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
+    throw new Error(`Cannot prepare publishing: post_candidates.status is "${st}".`);
+  }
+
+  const { data: existingJob, error: jErr } = await supabase
+    .from('publishing_jobs')
+    .select('id, status')
+    .eq('post_candidate_id', candidateId)
+    .maybeSingle();
+  if (jErr) throw new Error(jErr.message);
+
+  if (existingJob) {
+    const js = String(existingJob.status ?? '');
+    if (st === 'ready_to_publish' && js === 'ready_to_publish') {
+      pubLog('nothing to do (candidate and job both ready_to_publish)', { candidateId });
+      return;
+    }
+    if (
+      (OPEN_PUBLISHING_JOB_STATUSES as readonly string[]).includes(js) &&
+      (st === 'approved' || (st === 'ready_to_publish' && js !== 'ready_to_publish'))
+    ) {
+      pubLog('resume single candidate', {
+        candidateId,
+        jobId: existingJob.id,
+        jobStatus: js,
+        candidateStatus: st,
+      });
+      await processPublishingJob(supabase, existingJob.id as string);
+      return;
+    }
+    if (st === 'approved') {
+      throw new Error(
+        `Cannot prepare publishing: existing job status is "${js}". Delete the job or use publishing detail to continue.`,
+      );
+    }
+  }
+
+  if (st === 'approved') {
+    pubLog('fresh single candidate', { candidateId, post_type: candidate.post_type });
+    const jobId = await ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
+    if (jobId) {
+      await processPublishingJob(supabase, jobId);
+    }
+    return;
+  }
+
+  throw new Error(`Cannot prepare publishing for candidate status "${st}".`);
+}
+
 export async function getApprovedCandidatesWithoutPublishingJobs(
   supabase: SupabaseClient,
 ): Promise<PostCandidateRow[]> {
@@ -713,7 +850,19 @@ async function main(): Promise<void> {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const openStatuses = ['draft', 'media_prepared', 'containers_created', 'processing', 'failed'];
+  const singleCandidateId = parseCandidateIdArg();
+  if (singleCandidateId) {
+    if (parseValidateOnlyArg()) {
+      pubLog('single-candidate validate-only', { candidateId: singleCandidateId });
+      await validatePublishingForCandidate(supabase, singleCandidateId);
+    } else {
+      pubLog('single-candidate mode', { candidateId: singleCandidateId });
+      await preparePublishingForCandidate(supabase, singleCandidateId);
+    }
+    return;
+  }
+
+  const openStatuses = [...OPEN_PUBLISHING_JOB_STATUSES];
   const { data: openJobs, error: oErr } = await supabase
     .from('publishing_jobs')
     .select('id, post_candidate_id, status')
@@ -738,34 +887,16 @@ async function main(): Promise<void> {
     const st = candStatusById.get(cid);
     if (!st) return false;
     const js = j.status as string;
+    if (js === 'scheduled') return false;
     if (st === 'approved') return true;
     if (st === 'ready_to_publish' && js !== 'ready_to_publish') return true;
     return false;
   });
 
-  const fresh = await getApprovedCandidatesWithoutPublishingJobs(supabase);
-
-  console.log(
-    `[prepare:publishing]\tfresh candidates: ${fresh.length}, resume jobs: ${resumeJobs.length}`,
-  );
+  console.log(`[prepare:publishing]\tresume jobs: ${resumeJobs.length} (scheduled jobs use publish:scheduled)`);
   for (const j of resumeJobs) {
     const st = candStatusById.get(j.post_candidate_id as string) ?? '?';
     pubLog('resume queue item', { jobId: j.id, post_candidate_id: j.post_candidate_id, jobStatus: j.status, candidateStatus: st });
-  }
-  for (const c of fresh) {
-    pubLog('fresh candidate', { candidateId: c.id, post_type: c.post_type, status: c.status });
-  }
-
-  for (const c of fresh) {
-    try {
-      const jobId = await ensureJobForApprovedCandidate(supabase, c);
-      if (jobId) {
-        await processPublishingJob(supabase, jobId);
-      }
-    } catch (e) {
-      console.error(`[prepare:publishing]\tcandidate ${c.id}`, e);
-      if (e instanceof Error && e.stack) console.error(e.stack);
-    }
   }
 
   for (const j of resumeJobs) {
@@ -778,8 +909,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  if (e instanceof Error && e.stack) console.error(e.stack);
-  process.exit(1);
-});
+const isMainModule =
+  process.argv[1] != null &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  main().catch((e) => {
+    console.error(e);
+    if (e instanceof Error && e.stack) console.error(e.stack);
+    process.exit(1);
+  });
+}

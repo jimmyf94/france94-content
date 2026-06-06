@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { getDriveClient } from '@/lib/google-drive-server';
+import { getDriveFileThumbnailLink } from '@fr94/review-folder-thumbnail';
+
+import { warmAssetVideoPosters } from '@/lib/asset-video-poster-cache';
+import { enrichAssetListRow } from '@/lib/enrich-asset-list-row';
 import type { AssetListRow } from '@/lib/asset-library-types';
+import { getDriveClient } from '@/lib/google-drive-server';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -28,6 +32,7 @@ const LIST_COLUMNS = [
   'semantic_summary',
   'visual_summary',
   'tags',
+  'thumbnail_path',
 ].join(',');
 
 const MAX_LIMIT = 100;
@@ -62,16 +67,8 @@ async function fetchThumbnailLinks(
 
   const drive = await getDriveClient();
   await mapWithConcurrency(fileIds, DRIVE_THUMB_CONCURRENCY, async (fileId) => {
-    try {
-      const meta = await drive.files.get({
-        fileId,
-        fields: 'id,thumbnailLink',
-        supportsAllDrives: true,
-      });
-      out.set(fileId, meta.data.thumbnailLink ?? null);
-    } catch {
-      out.set(fileId, null);
-    }
+    const link = await getDriveFileThumbnailLink(drive, fileId);
+    out.set(fileId, link);
   });
   return out;
 }
@@ -146,23 +143,27 @@ export async function GET(req: NextRequest) {
   }
 
   const rows = (data ?? []) as unknown as Record<string, unknown>[];
-  const fileIds = rows
+  const needsDriveThumb = rows.filter((r) => !String(r.thumbnail_path ?? '').trim());
+  const fileIds = needsDriveThumb
     .map((r) => String(r.drive_file_id ?? '').trim())
     .filter(Boolean);
 
   let thumbs = new Map<string, string | null>();
-  try {
-    thumbs = await fetchThumbnailLinks(fileIds);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn('[content-assets list thumbs]', msg);
+  if (fileIds.length > 0) {
+    try {
+      thumbs = await fetchThumbnailLinks(fileIds);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('[content-assets list thumbs]', msg);
+    }
   }
 
   const items: AssetListRow[] = rows.map((r) => {
     const fid = String(r.drive_file_id ?? '').trim();
-    return {
+    const base = {
       id: String(r.id),
       drive_file_id: fid,
+      thumbnail_path: (r.thumbnail_path as string | null) ?? null,
       drive_web_view_link: (r.drive_web_view_link as string | null) ?? null,
       original_filename: (r.original_filename as string | null) ?? null,
       current_filename: (r.current_filename as string | null) ?? null,
@@ -178,9 +179,16 @@ export async function GET(req: NextRequest) {
       last_used_at: (r.last_used_at as string | null) ?? null,
       last_suggested_at: (r.last_suggested_at as string | null) ?? null,
       processed_at: (r.processed_at as string | null) ?? null,
-      thumbnail_link: thumbs.get(fid) ?? null,
     };
+    return enrichAssetListRow(base, thumbs.get(fid) ?? null);
   });
+
+  try {
+    const drive = await getDriveClient();
+    warmAssetVideoPosters(drive, items);
+  } catch {
+    /* best-effort warm */
+  }
 
   const next_offset = rows.length < limit ? null : offset + limit;
 

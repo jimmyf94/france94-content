@@ -95,6 +95,23 @@ export async function syncCandidateReadyToPublish(
   if (error) throw new Error(error.message);
 }
 
+export async function syncCandidatePosted(
+  supabase: SupabaseClient,
+  candidateId: string,
+  jobId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('post_candidates')
+    .update({
+      status: 'posted',
+      publishing_job_id: jobId,
+      updated_at: now,
+    })
+    .eq('id', candidateId);
+  if (error) throw new Error(error.message);
+}
+
 function statusUpper(raw: unknown): string {
   return String(raw ?? '').toUpperCase();
 }

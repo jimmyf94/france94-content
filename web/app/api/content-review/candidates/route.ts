@@ -69,6 +69,11 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    const includeBlocked = sp.get('include_blocked') === 'true';
+    if (!includeBlocked) {
+      q = q.or('collision_risk.is.null,collision_risk.neq.blocked');
+    }
+
     q = q
       .order('created_at', { ascending: false })
       .order('priority_score', { ascending: false, nullsFirst: false });

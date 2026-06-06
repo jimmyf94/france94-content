@@ -6,11 +6,26 @@ import { readJsonResponse } from '@/lib/read-json-response';
 
 import type { ReviewDriveFile } from './types';
 
+function prefetchVideoPosters(files: ReviewDriveFile[]) {
+  if (typeof Image === 'undefined') return;
+  for (const f of files) {
+    if (!f.posterUrl || !f.mimeType.startsWith('video/')) continue;
+    const img = new Image();
+    img.src = f.posterUrl;
+  }
+}
+
+/** Bump when ReviewDriveFile shape or enrichment changes (e.g. posterUrl on all videos). */
+const MEDIA_CACHE_VERSION = 2;
 const cache = new Map<string, ReviewDriveFile[]>();
+
+function cacheKey(candidateId: string) {
+  return `${MEDIA_CACHE_VERSION}:${candidateId}`;
+}
 
 /** Drop cached folder listing so the next fetch picks up Drive changes. */
 export function invalidateCandidateMediaCache(candidateId: string) {
-  cache.delete(candidateId);
+  cache.delete(cacheKey(candidateId));
 }
 
 /**
@@ -32,7 +47,8 @@ export function useCandidateMedia(candidateId: string | null, reloadNonce = 0) {
       return;
     }
 
-    const cached = cache.get(candidateId);
+    const key = cacheKey(candidateId);
+    const cached = cache.get(key);
     if (reloadNonce === 0 && cached) {
       setFiles(cached);
       setLoading(false);
@@ -53,7 +69,8 @@ export function useCandidateMedia(candidateId: string | null, reloadNonce = 0) {
         if (!res.ok) throw new Error(json.error || res.statusText);
         const list = json.files ?? [];
         if (gen !== fetchGen.current) return;
-        cache.set(candidateId, list);
+        cache.set(key, list);
+        prefetchVideoPosters(list);
         setFiles(list);
         setLoading(false);
       } catch (e) {
@@ -66,3 +83,15 @@ export function useCandidateMedia(candidateId: string | null, reloadNonce = 0) {
 
   return { files, loading, error };
 }
+
+export type CandidateMediaState = {
+  files: ReviewDriveFile[];
+  loading: boolean;
+  error: string | null;
+};
+
+export const EMPTY_CANDIDATE_MEDIA: CandidateMediaState = {
+  files: [],
+  loading: false,
+  error: null,
+};

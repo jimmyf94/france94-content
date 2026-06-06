@@ -36,8 +36,21 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   try {
+    const { data: fullJob } = await supabase
+      .from('publishing_jobs')
+      .select('prepared_media, instagram_creation_id')
+      .eq('id', id)
+      .maybeSingle();
+    const hasPreparedMedia =
+      Array.isArray((fullJob as { prepared_media?: unknown } | null)?.prepared_media) &&
+      ((fullJob as { prepared_media?: unknown[] }).prepared_media?.length ?? 0) > 0;
+    const hasContainers = Boolean(
+      (fullJob as { instagram_creation_id?: string | null } | null)?.instagram_creation_id,
+    );
+    const nextStatus = hasPreparedMedia || hasContainers ? 'ready_to_publish' : 'draft';
+
     await updatePublishingJob(supabase, id, {
-      status: 'ready_to_publish',
+      status: nextStatus,
       scheduled_publish_at: null,
     });
     const { data: updated, error: uErr } = await supabase

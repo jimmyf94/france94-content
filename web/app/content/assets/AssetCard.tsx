@@ -2,6 +2,7 @@
 
 import type { AssetListRow } from '@/lib/asset-library-types';
 
+import { AssetMediaThumb } from './AssetMediaThumb';
 import { EligibilityBadge } from './EligibilityBadge';
 
 function displayName(row: AssetListRow): string {
@@ -29,7 +30,6 @@ export function AssetCard({
   onOpenDrive: () => void;
 }) {
   const isVideo = (row.mime_type ?? row.media_type ?? '').toLowerCase().startsWith('video');
-  const thumb = row.thumbnail_link;
 
   return (
     <article className="flex flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)]">
@@ -38,14 +38,12 @@ export function AssetCard({
         className="relative block aspect-video w-full bg-[var(--bg)] text-left"
         onClick={onOpenDetail}
       >
-        {thumb ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={thumb} alt="" className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex h-full items-center justify-center text-xs text-[var(--muted)]">
-            {isVideo ? 'Video (open for preview)' : 'No thumbnail'}
-          </div>
-        )}
+        <AssetMediaThumb
+          thumbnail_link={row.thumbnail_link}
+          poster_url={row.poster_url}
+          still_url={row.still_url}
+          isVideo={isVideo}
+        />
         {isVideo ? (
           <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] text-white">
             VIDEO

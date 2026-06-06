@@ -5,7 +5,7 @@ import {
   mediaPublish,
   requireInstagramEnv,
 } from './instagram-graph.js';
-import { updatePublishingJob } from './publishing-state.js';
+import { syncCandidatePosted, updatePublishingJob } from './publishing-state.js';
 
 type JobRow = Record<string, unknown>;
 
@@ -108,6 +108,11 @@ export async function publishPublishingJob(
       instagram_permalink: permalink,
       graph_api_raw: graphRaw,
     });
+
+    const candidateId = r.post_candidate_id;
+    if (typeof candidateId === 'string' && candidateId.trim()) {
+      await syncCandidatePosted(supabase, candidateId, jobId);
+    }
 
     return { mediaId: firstMediaId, permalink };
   } catch (e) {

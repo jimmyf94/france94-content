@@ -29,6 +29,10 @@ export type AssetListRow = {
   last_suggested_at: string | null;
   processed_at: string | null;
   thumbnail_link: string | null;
+  /** Same-origin ffmpeg poster when Drive has no video thumb. */
+  poster_url?: string | null;
+  /** Same-origin resized JPEG when Drive has no image thumb. */
+  still_url?: string | null;
 };
 
 export type AssetUsageEventDto = {

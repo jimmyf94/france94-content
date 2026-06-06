@@ -26,6 +26,7 @@ export { publishPublishingJob } from './publish.js';
 export {
   parsePreparedMedia,
   refreshPublishingJobFromGraph,
+  syncCandidatePosted,
   syncCandidateReadyToPublish,
   updatePublishingJob,
 } from './publishing-state.js';

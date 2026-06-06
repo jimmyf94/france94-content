@@ -21,6 +21,14 @@ export type LlmCallLogRow = {
   metadata?: Record<string, unknown>;
 };
 
+/** Optional entity linkage stored in llm_call_logs.metadata for per-candidate pipeline views. */
+export type LlmCallEntityTag = {
+  post_candidate_id?: string;
+  content_asset_id?: string;
+  prompt_keys?: string[];
+  pipeline_step?: string;
+};
+
 export async function logLlmCall(
   supabase: SupabaseClient | null,
   row: LlmCallLogRow,

@@ -3,6 +3,16 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
+import {
+  buildPromptKeysByGroup,
+  PIPELINE_STEPS,
+  PROMPT_GROUP_LABEL,
+  PROMPT_GROUP_ORDER,
+  PROMPT_META_BY_KEY,
+  type PromptGroupKey,
+  type StablePromptKey,
+} from '@fr94/ai/prompts/pipeline-map-data.js';
+
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { PipelineSection } from './PipelineSection';
@@ -16,7 +26,8 @@ type Fr94RouteOperation =
   | 'caption_rewrite_basic'
   | 'caption_rewrite_premium'
   | 'ranking'
-  | 'final_editorial_pass';
+  | 'final_editorial_pass'
+  | 'collision_check';
 
 type EffectiveRoute = {
   model: string;
@@ -27,10 +38,25 @@ type EffectiveRoute = {
   thinkingLevel: string | null;
 };
 
+type RouteTelemetry = {
+  days: number;
+  callCount: number;
+  failedCount: number;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastErrorMessage: string | null;
+  latencyP50Ms: number | null;
+  latencyP95Ms: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number | null;
+};
+
 type RoutePayload = {
   operation: Fr94RouteOperation;
   effective: EffectiveRoute;
   modelLockedByEnv: boolean;
+  telemetry: RouteTelemetry;
   dbRow: {
     model: string;
     temperature: number;
@@ -44,6 +70,8 @@ type RoutePayload = {
 
 type SettingsResponse = {
   routes: RoutePayload[];
+  telemetryRpcError?: string | null;
+  telemetryDays?: number;
   runtimeHints: {
     fr94PromptVersion: string;
     geminiExplicitCaching: boolean;
@@ -63,8 +91,10 @@ type UsagePoint = {
 type ModelDailyRow = {
   day: string;
   model: string;
+  inputTokens: number;
   outputTokens: number;
   callCount: number;
+  estimatedCostUsd: number | null;
 };
 
 type OperationDailyRow = {
@@ -88,6 +118,14 @@ type UsageResponse = {
     failedCount: number;
   };
   runtimeHints: SettingsResponse['runtimeHints'];
+  cost?: {
+    estimatedTotalUsd: number | null;
+    estimatedDailyUsd: number | null;
+    estimatedWeeklyUsd: number | null;
+    pricedModelCount: number;
+    unpricedModelCount: number;
+    note: string;
+  };
 };
 
 const ROUTE_META: Record<Fr94RouteOperation, { title: string; hint: string }> = {
@@ -127,6 +165,10 @@ const ROUTE_META: Record<Fr94RouteOperation, { title: string; hint: string }> = 
     title: 'Final editorial pass',
     hint: 'Reserved for final editorial.',
   },
+  collision_check: {
+    title: 'Content collision check',
+    hint: 'Per-candidate judge after planner insert (generate-post-candidates).',
+  },
 };
 
 /** Friendly labels for `operation` in llm_call_logs charts */
@@ -140,10 +182,118 @@ const OPERATION_CHART_LABELS: Record<string, string> = {
   caption_rewrite_premium: 'Caption rewrite (premium)',
   ranking: 'Ranking',
   final_editorial_pass: 'Editorial pass',
+  collision_check: 'Collision check',
 };
 
 function operationChartLabel(op: string): string {
   return OPERATION_CHART_LABELS[op] ?? op.replace(/_/g, ' ');
+}
+
+function formatTelemetryWhen(iso: string | null): string {
+  if (!iso) return '—';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const diffMs = Date.now() - t;
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 14) return `${days}d ago`;
+  return new Date(iso).toLocaleString();
+}
+
+function formatUsd(amount: number | null | undefined): string {
+  if (amount == null || !Number.isFinite(amount)) return '—';
+  if (amount < 0.01 && amount > 0) return '<$0.01';
+  if (amount < 1) return `$${amount.toFixed(3)}`;
+  return `$${amount.toFixed(2)}`;
+}
+
+function RouteTelemetryPanel({
+  telemetry,
+  telemetryRpcError,
+  model,
+}: {
+  telemetry: RouteTelemetry;
+  telemetryRpcError: string | null;
+  model: string;
+}) {
+  const { days, callCount, failedCount, lastSuccessAt, lastErrorAt, lastErrorMessage } = telemetry;
+  const hasCalls = callCount > 0;
+
+  return (
+    <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--muted)]">
+        Last {days} days · llm_call_logs
+      </div>
+      {telemetryRpcError ? (
+        <p className="mt-1 text-[10px] text-[var(--warn)]">
+          Telemetry unavailable — apply migration{' '}
+          <code className="text-[9px]">20260603120000_llm_route_telemetry</code>: {telemetryRpcError}
+        </p>
+      ) : null}
+      <dl className="mt-2 grid gap-2 text-[11px] sm:grid-cols-2">
+        <div>
+          <dt className="text-[var(--muted)]">Calls</dt>
+          <dd className="tabular-nums text-[var(--text)]">
+            {hasCalls ? callCount.toLocaleString() : '0'}
+            {failedCount > 0 ? (
+              <span className="text-[var(--warn)]"> ({failedCount} failed)</span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--muted)]">Est. cost ({model})</dt>
+          <dd className="tabular-nums text-[var(--text)]">
+            {formatUsd(telemetry.estimatedCostUsd)}
+            {telemetry.estimatedCostUsd == null && hasCalls ? (
+              <span className="text-[var(--muted)]"> (unknown model rate)</span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--muted)]">Last success</dt>
+          <dd className="text-[var(--text)]" title={lastSuccessAt ?? undefined}>
+            {formatTelemetryWhen(lastSuccessAt)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--muted)]">Last error</dt>
+          <dd className="text-[var(--text)]" title={lastErrorAt ?? lastErrorMessage ?? undefined}>
+            {formatTelemetryWhen(lastErrorAt)}
+            {lastErrorMessage ? (
+              <span className="mt-0.5 block truncate text-[10px] text-[var(--warn)]" title={lastErrorMessage}>
+                {lastErrorMessage}
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--muted)]">Latency p50</dt>
+          <dd className="tabular-nums text-[var(--text)]">
+            {telemetry.latencyP50Ms != null ? `${Math.round(telemetry.latencyP50Ms)} ms` : '—'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--muted)]">Latency p95</dt>
+          <dd className="tabular-nums text-[var(--text)]">
+            {telemetry.latencyP95Ms != null ? `${Math.round(telemetry.latencyP95Ms)} ms` : '—'}
+          </dd>
+        </div>
+        <div className="sm:col-span-2">
+          <dt className="text-[var(--muted)]">Tokens in / out</dt>
+          <dd className="tabular-nums text-[var(--text)]">
+            {telemetry.inputTokens.toLocaleString()} / {telemetry.outputTokens.toLocaleString()}
+          </dd>
+        </div>
+      </dl>
+      {!hasCalls && !telemetryRpcError ? (
+        <p className="mt-2 text-[10px] text-[var(--muted)]">No logged calls for this route in the window.</p>
+      ) : null}
+    </div>
+  );
 }
 
 const THINKING_OPTIONS: { value: string; label: string }[] = [
@@ -154,13 +304,6 @@ const THINKING_OPTIONS: { value: string; label: string }[] = [
   { value: 'MEDIUM', label: 'Medium' },
   { value: 'HIGH', label: 'High' },
 ];
-
-type StablePromptKey =
-  | 'direct_media_analysis'
-  | 'video_sampled_analysis'
-  | 'audio_transcription'
-  | 'post_planner'
-  | 'candidate_regeneration';
 
 type PromptRow = {
   key: StablePromptKey;
@@ -176,37 +319,6 @@ type PromptsResponse = {
   prompts: PromptRow[];
 };
 
-const PROMPT_META: Record<StablePromptKey, { title: string; hint: string }> = {
-  direct_media_analysis: {
-    title: 'Direct media analysis',
-    hint: 'Image (and custom) analysis worker. Custom params.prompt overrides DB + file.',
-  },
-  video_sampled_analysis: {
-    title: 'Video sampled analysis',
-    hint: 'Frame + metadata block in analyze worker.',
-  },
-  audio_transcription: {
-    title: 'Audio transcription',
-    hint: 'WAV transcription before video frame analysis.',
-  },
-  post_planner: {
-    title: 'Post planner',
-    hint: 'generate-post-candidates batch planner.',
-  },
-  candidate_regeneration: {
-    title: 'Candidate regeneration',
-    hint: 'Review dashboard rewrite / regenerate.',
-  },
-};
-
-const STABLE_PROMPT_ORDER: StablePromptKey[] = [
-  'direct_media_analysis',
-  'video_sampled_analysis',
-  'audio_transcription',
-  'post_planner',
-  'candidate_regeneration',
-];
-
 const ROUTE_ORDER: Fr94RouteOperation[] = [
   'asset_analysis_image',
   'asset_analysis_video_sampled',
@@ -217,6 +329,7 @@ const ROUTE_ORDER: Fr94RouteOperation[] = [
   'caption_rewrite_premium',
   'ranking',
   'final_editorial_pass',
+  'collision_check',
 ];
 
 function estimateTokensApprox(charCount: number): number {
@@ -452,7 +565,31 @@ function UsageSection({
             {usage.totals.failedCount > 0 ? (
               <span className="text-[var(--warn)]">{usage.totals.failedCount} failed</span>
             ) : null}
+            {usage.cost ? (
+              <>
+                <span>
+                  Est. spend ({usage.days}d):{' '}
+                  <span className="text-[var(--text)]">{formatUsd(usage.cost.estimatedTotalUsd)}</span>
+                </span>
+                <span>
+                  ~daily:{' '}
+                  <span className="text-[var(--text)]">{formatUsd(usage.cost.estimatedDailyUsd)}</span>
+                </span>
+                <span>
+                  ~weekly:{' '}
+                  <span className="text-[var(--text)]">{formatUsd(usage.cost.estimatedWeeklyUsd)}</span>
+                </span>
+              </>
+            ) : null}
           </div>
+          {usage.cost?.unpricedModelCount ? (
+            <p className="mt-1 text-[10px] text-[var(--warn)]">
+              {usage.cost.unpricedModelCount} model(s) lack list prices — totals may be understated.
+            </p>
+          ) : null}
+          {usage.cost?.note ? (
+            <p className="mt-1 text-[10px] text-[var(--muted)]">{usage.cost.note}</p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-4 text-[10px] text-[var(--muted)]">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2 w-4 rounded-sm bg-[var(--accent)]" /> Output tokens
@@ -627,13 +764,14 @@ export default function LlmSettingsPage() {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [usageErr, setUsageErr] = useState<string | null>(null);
   const [hints, setHints] = useState<SettingsResponse['runtimeHints'] | null>(null);
+  const [telemetryRpcError, setTelemetryRpcError] = useState<string | null>(null);
   const [promptRows, setPromptRows] = useState<PromptRow[]>([]);
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [promptSaving, setPromptSaving] = useState<Record<string, boolean>>({});
   const [promptErr, setPromptErr] = useState<string | null>(null);
 
   const [tab, setTab] = useState<'pipeline' | 'prompts' | 'models' | 'usage'>('pipeline');
-  const [selectedPromptKey, setSelectedPromptKey] = useState<StablePromptKey>('direct_media_analysis');
+  const [selectedPromptKey, setSelectedPromptKey] = useState<StablePromptKey>('context_user_voice');
   const [promptEditing, setPromptEditing] = useState(false);
 
   const [selectedRoute, setSelectedRoute] = useState<Fr94RouteOperation>('asset_analysis_image');
@@ -662,6 +800,8 @@ export default function LlmSettingsPage() {
     [promptRows, selectedPromptKey],
   );
 
+  const promptKeysByGroup = useMemo(() => buildPromptKeysByGroup(), []);
+
   const selectedRoutePayload = useMemo(
     () => routes.find((r) => r.operation === selectedRoute),
     [routes, selectedRoute],
@@ -675,6 +815,7 @@ export default function LlmSettingsPage() {
       if (!res.ok) throw new Error(json.error || res.statusText);
       setRoutes(json.routes);
       setHints(json.runtimeHints);
+      setTelemetryRpcError(json.telemetryRpcError ?? null);
       const d: Record<string, Draft> = {};
       for (const r of json.routes) {
         d[r.operation] = effectiveToDraft(r.effective);
@@ -1015,6 +1156,53 @@ export default function LlmSettingsPage() {
 
         {tab === 'prompts' && (
           <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
+            <h2 className="text-sm font-semibold text-[var(--text)]">Pipeline map</h2>
+            <p className="mt-1 text-xs text-[var(--muted)]">
+              Each model route and the stable prompt key(s) it reads at runtime. Unwired routes have prompts
+              ready but no caller yet.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {PIPELINE_STEPS.map((step) => (
+                <li
+                  key={step.operation}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-[var(--text)]">{step.title}</span>
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                        step.wired
+                          ? 'border-[var(--good)] text-[var(--good)]'
+                          : 'border-[var(--warn)] text-[var(--warn)]'
+                      }`}
+                    >
+                      {step.wired ? 'wired' : 'not wired'}
+                    </span>
+                    <span className="font-mono text-[10px] text-[var(--muted)]">{step.operation}</span>
+                  </div>
+                  <p className="mt-1 text-[var(--muted)]">{step.hint}</p>
+                  {step.promptKeys.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {step.promptKeys.map((k) => (
+                        <span
+                          key={k}
+                          className="rounded bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text)]"
+                        >
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-[10px] text-[var(--muted)]">No stable prompts assigned yet.</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {tab === 'prompts' && (
+          <section className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
             <p className="text-xs text-[var(--muted)]">
               Stable prompts live in <code className="text-[11px]">llm_stable_prompts</code> when saved; otherwise
               repo files. Select a prompt, review full text, then Edit to change.
@@ -1040,18 +1228,26 @@ export default function LlmSettingsPage() {
                 }}
                 className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-2 text-sm"
               >
-                {STABLE_PROMPT_ORDER.map((k) => (
-                  <option key={k} value={k}>
-                    {PROMPT_META[k].title}
-                  </option>
-                ))}
+                {PROMPT_GROUP_ORDER.map((group) => {
+                  const keys = promptKeysByGroup[group];
+                  if (keys.length === 0) return null;
+                  return (
+                    <optgroup key={group} label={PROMPT_GROUP_LABEL[group]}>
+                      {keys.map((k) => (
+                        <option key={k} value={k}>
+                          {PROMPT_META_BY_KEY[k].title}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </select>
             </label>
 
             {selectedPromptRow && (
               <>
                 <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs">
-                  <p className="text-[var(--muted)]">{PROMPT_META[selectedPromptKey].hint}</p>
+                  <p className="text-[var(--muted)]">{PROMPT_META_BY_KEY[selectedPromptKey].hint}</p>
                   <p className="mt-2 font-mono text-[10px] text-[var(--muted)]">
                     {selectedPromptKey} · file: {selectedPromptRow.fileBasename} ·{' '}
                     {selectedPromptRow.source === 'db' ? 'Database' : 'File default'}
@@ -1168,6 +1364,11 @@ export default function LlmSettingsPage() {
                       DB updated {new Date(selectedRoutePayload.dbRow.updated_at).toLocaleString()}
                     </p>
                   )}
+                  <RouteTelemetryPanel
+                    telemetry={selectedRoutePayload.telemetry}
+                    telemetryRpcError={telemetryRpcError}
+                    model={selectedRoutePayload.effective.model}
+                  />
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">

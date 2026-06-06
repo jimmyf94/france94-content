@@ -18,7 +18,13 @@
       "@/*": ["./*"],
       "@fr94/ai/*": ["../scripts/lib/ai/*"],
       "@fr94/publishing/*": ["../scripts/lib/publishing/*"],
-      "@fr94/asset-usage": ["../scripts/lib/asset-usage"]
+      "@fr94/asset-usage": ["../scripts/lib/asset-usage"],
+      "@fr94/content-ledger": ["../scripts/lib/content-ledger"],
+      "@fr94/candidate-collision": ["../scripts/lib/candidate-collision-check"],
+      "@fr94/review-folder-thumbnail": ["../scripts/lib/review-folder-thumbnail"],
+      "@fr94/drive-media-download": ["../scripts/lib/drive-media-download"],
+      "@fr94/drive-video-poster": ["../scripts/lib/drive-video-poster"],
+      "@fr94/video-preprocess": ["../scripts/lib/video-preprocess"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

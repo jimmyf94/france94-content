@@ -12,6 +12,15 @@ const bodySchema = z.object({
   scheduled_publish_at: z.string().min(1),
 });
 
+const SCHEDULABLE_STATUSES = new Set([
+  'draft',
+  'media_prepared',
+  'containers_created',
+  'processing',
+  'ready_to_publish',
+  'scheduled',
+]);
+
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = assertReviewAuthorized(_req);
   if (denied) return denied;
@@ -56,9 +65,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   const st = String((job as { status?: string }).status ?? '');
-  if (st !== 'ready_to_publish' && st !== 'scheduled') {
+  if (!SCHEDULABLE_STATUSES.has(st)) {
     return NextResponse.json(
-      { error: `Cannot schedule from status "${st}" (need ready_to_publish or scheduled).` },
+      { error: `Cannot schedule from status "${st}".` },
       { status: 409 },
     );
   }
