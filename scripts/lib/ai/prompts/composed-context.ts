@@ -6,7 +6,6 @@ import { resolveRepoRelative } from './resolve-repo-path.js';
 export const STABLE_CONTEXT_KEYS = [
   'context_user_voice',
   'context_mission',
-  'context_content_lanes',
   'context_editorial_rules',
 ] as const;
 
@@ -17,6 +16,7 @@ export const TASK_PROMPT_KEYS = [
   'task_story_sequence',
   'task_reel_caption_overlay',
   'task_collision_check',
+  'task_reel_reasoning',
 ] as const;
 
 export type StableContextKey = (typeof STABLE_CONTEXT_KEYS)[number];
@@ -25,7 +25,6 @@ export type TaskPromptKey = (typeof TASK_PROMPT_KEYS)[number];
 const CONTEXT_FILE_REL: Record<StableContextKey, string> = {
   context_user_voice: path.join('prompts', 'context', 'user_voice.md'),
   context_mission: path.join('prompts', 'context', 'mission.md'),
-  context_content_lanes: path.join('prompts', 'context', 'content_lanes.md'),
   context_editorial_rules: path.join('prompts', 'context', 'editorial_rules.md'),
 };
 
@@ -36,6 +35,7 @@ const TASK_FILE_REL: Record<TaskPromptKey, string> = {
   task_story_sequence: path.join('prompts', 'tasks', 'story_sequence.md'),
   task_reel_caption_overlay: path.join('prompts', 'tasks', 'reel_caption_overlay.md'),
   task_collision_check: path.join('prompts', 'tasks', 'collision_check.md'),
+  task_reel_reasoning: path.join('prompts', 'tasks', 'reel_reasoning.md'),
 };
 
 function envOverridePath(key: string): string | null {
@@ -81,7 +81,6 @@ export function loadTaskPromptFromFile(key: TaskPromptKey): string {
   );
 }
 
-/** Stable separator between composed context/task sections. */
 export const STABLE_SECTION_SEPARATOR = '\n\n---\n\n';
 
 export function composeStableSystemInstruction(parts: string[]): string {

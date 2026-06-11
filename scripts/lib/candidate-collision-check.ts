@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { GoogleGenAI, createPartFromText } from '@google/genai';
+import { createPartFromText } from '@google/genai';
 import { z } from 'zod';
 
 import {
@@ -7,14 +7,19 @@ import {
   type ContentLedgerRow,
   toCommittedPostForPrompt,
 } from './content-ledger.js';
-import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './ai/gemini-client.js';
+import {
+  callGeminiWithLogging,
+  createGeminiClient,
+  getResolvedModelRoute,
+  responseToJson,
+} from './ai/gemini-client.js';
 import { buildCollisionCheckDynamicText } from './ai/prompts/collision-check.js';
 import { loadComposedStableSystemInstruction, STABLE_CONTEXT_KEYS } from './ai/resolve-stable-prompt.js';
 import { getFr94PromptVersion } from './ai/prompt-version.js';
 
 const collisionKindEnum = z.enum([
   'asset_reuse',
-  'lane',
+  'series',
   'hook',
   'caption',
   'visual_subject',
@@ -77,7 +82,7 @@ export function runAssetOverlapPrefilter(
     const committedAssets = asStringArray(row.source_asset_ids);
     if (committedAssets.length === 0) continue;
 
-    const label = `${row.post_type}${row.selected_lane ? ` · ${row.selected_lane}` : ''}${row.committed_at ? ` · ${row.committed_at.slice(0, 10)}` : ''}`;
+    const label = `${row.post_type}${row.selected_series ? ` · ${row.selected_series}` : ''}${row.committed_at ? ` · ${row.committed_at.slice(0, 10)}` : ''}`;
 
     if (primary && row.primary_asset_id === primary) {
       return {
@@ -134,7 +139,7 @@ export async function evaluateCandidateCollision(
   const { data: row, error } = await supabase
     .from('post_candidates')
     .select(
-      'id,post_type,title,hook,concept_summary,caption_fr,selected_lane,narrative_function,title_overlay,source_asset_ids',
+      'id,post_type,title,hook,concept_summary,caption_fr,selected_series,narrative_function,title_overlay,source_asset_ids',
     )
     .eq('id', candidateId)
     .maybeSingle();
@@ -162,7 +167,7 @@ export async function evaluateCandidateCollision(
   }
 
   const apiKey = requireEnv('GEMINI_API_KEY');
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = createGeminiClient(apiKey);
   const composed = await loadComposedStableSystemInstruction(supabase, 'task_collision_check');
   const committedForPrompt = recentCommitted.map(toCommittedPostForPrompt);
   const dynamicText = buildCollisionCheckDynamicText({
@@ -173,7 +178,7 @@ export async function evaluateCandidateCollision(
       hook: (row as { hook?: string | null }).hook ?? null,
       concept_summary: (row as { concept_summary?: string | null }).concept_summary ?? null,
       caption_fr: (row as { caption_fr?: string | null }).caption_fr ?? null,
-      selected_lane: (row as { selected_lane?: string | null }).selected_lane ?? null,
+      selected_series: (row as { selected_series?: string | null }).selected_series ?? null,
       narrative_function: (row as { narrative_function?: string | null }).narrative_function ?? null,
       title_overlay: (row as { title_overlay?: string | null }).title_overlay ?? null,
       source_asset_ids,
@@ -263,18 +268,23 @@ async function persistCollisionResult(
   if (error) throw new Error(`persistCollisionResult: ${error.message}`);
 }
 
-export function extractLaneFieldsFromLlmRaw(llmRaw: unknown): {
-  selected_lane: string | null;
+export function extractSeriesFieldsFromLlmRaw(llmRaw: unknown): {
+  selected_series: string | null;
   narrative_function: string | null;
 } {
   if (!llmRaw || typeof llmRaw !== 'object') {
-    return { selected_lane: null, narrative_function: null };
+    return { selected_series: null, narrative_function: null };
   }
   const o = llmRaw as Record<string, unknown>;
-  const lane = typeof o.selected_lane === 'string' ? o.selected_lane.trim() : '';
+  const series =
+    typeof o.selected_series === 'string'
+      ? o.selected_series.trim()
+      : typeof o.selected_lane === 'string'
+        ? o.selected_lane.trim()
+        : '';
   const nf = typeof o.narrative_function === 'string' ? o.narrative_function.trim() : '';
   return {
-    selected_lane: lane || null,
+    selected_series: series || null,
     narrative_function: nf || null,
   };
 }

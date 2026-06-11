@@ -23,7 +23,6 @@ export type ModelRouteDefaults = {
   maxOutputTokens: number;
   useCache: boolean;
   requireJson: boolean;
-  /** `null` disables Gemini thinking; otherwise passed as `thinkingConfig.thinkingLevel`. */
   thinkingLevel: ThinkingLevel | null;
 };
 
@@ -52,7 +51,8 @@ const DEFAULT_ROUTES: Record<Fr94ModelRouteKey, ModelRouteDefaults> = {
   asset_analysis_video_full: {
     model: 'gemini-3.1-pro-preview',
     temperature: 0.2,
-    maxOutputTokens: 1800,
+    // Clip segmentation JSON is large (many clips × rich per-clip metadata).
+    maxOutputTokens: 8192,
     useCache: true,
     requireJson: true,
     thinkingLevel: null,
@@ -121,16 +121,11 @@ function envModelOverride(operation: Fr94ModelRouteKey): string | undefined {
   return v && v.length > 0 ? v : undefined;
 }
 
-/** Standard-tier USD per 1M tokens (Google Gemini API, June 2026). */
 export type ModelPricingUsdPer1M = {
   input: number;
   output: number;
 };
 
-/**
- * Static list prices for cost estimates in settings UI.
- * Unknown models return null from {@link estimateLlmCostUsd}.
- */
 export const GEMINI_MODEL_PRICING_USD_PER_1M: Record<string, ModelPricingUsdPer1M> = {
   'gemini-3.1-flash-lite-preview': { input: 0.25, output: 1.5 },
   'gemini-3.1-pro-preview': { input: 2.0, output: 12.0 },
@@ -153,7 +148,6 @@ export function resolveModelPricingUsdPer1M(
   return null;
 }
 
-/** Estimated USD for token usage at list price; null when model is unknown. */
 export function estimateLlmCostUsd(
   model: string | null | undefined,
   inputTokens: number,

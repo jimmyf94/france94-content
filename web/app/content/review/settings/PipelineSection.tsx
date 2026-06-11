@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
+import {
+  dispatchPipelineRun,
+  isPipelineRunBusy,
+  type PipelineRunPayload,
+} from '@/lib/pipeline-run-client';
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { PostTypeBadge } from '../PostTypeBadge';
@@ -33,17 +38,8 @@ const INTERVAL_OPTIONS: { label: string; minutes: number }[] = [
   { label: '7 days', minutes: 10080 },
 ];
 
-type PipelinePayload = {
-  auto_ingest_enabled: boolean;
-  auto_pause_threshold: number;
-  auto_ingest_interval_minutes: number;
+type PipelinePayload = PipelineRunPayload & {
   enabled_post_types: PipelinePostType[];
-  needs_review_count: number;
-  last_run_started_at: string | null;
-  last_run_finished_at: string | null;
-  last_run_status: string | null;
-  last_run_summary: Record<string, unknown> | null;
-  updated_at: string;
 };
 
 function formatRelative(iso: string | null): string {
@@ -71,10 +67,6 @@ function formatIntervalLabel(minutes: number): string {
     return hrs === 1 ? '1 hour' : `${hrs} hours`;
   }
   return `${minutes} min`;
-}
-
-function isRunBusy(status: string | null): boolean {
-  return status === 'running' || status === 'dispatching';
 }
 
 function SettingsCard({
@@ -185,15 +177,8 @@ export function PipelineSection({
       setDispatching(stage);
       setError(null);
       try {
-        const res = await fetch('/api/content-review/pipeline/run', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stage }),
-        });
-        const json = await readJsonResponse<PipelinePayload & { error?: string }>(res);
-        if (!res.ok) throw new Error(json.error || res.statusText);
-        setData(json);
+        const json = await dispatchPipelineRun(stage);
+        setData(json as PipelinePayload);
         onFeedback({
           kind: 'good',
           msg:
@@ -224,7 +209,7 @@ export function PipelineSection({
   );
 
   const atThreshold = data != null && data.needs_review_count >= data.auto_pause_threshold;
-  const runBusy = isRunBusy(data?.last_run_status ?? null) || dispatching != null;
+  const runBusy = isPipelineRunBusy(data?.last_run_status ?? null) || dispatching != null;
 
   if (loading) {
     return <p className="text-sm text-[var(--muted)]">Loading pipeline settings…</p>;

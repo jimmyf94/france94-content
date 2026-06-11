@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   loadAudioTranscriptionStablePrompt,
   loadDirectMediaAnalysisStablePrompt,
+  loadVideoFullAnalysisStablePrompt,
   loadVideoSampledAnalysisStablePrompt,
 } from './prompts/asset-analysis.js';
 import {
@@ -19,6 +20,7 @@ import {
 export const ANALYSIS_STABLE_PROMPT_KEYS = [
   'direct_media_analysis',
   'video_sampled_analysis',
+  'video_full_analysis',
   'audio_transcription',
 ] as const;
 
@@ -51,6 +53,8 @@ function loadFromFile(key: StablePromptKey): string {
       return loadDirectMediaAnalysisStablePrompt();
     case 'video_sampled_analysis':
       return loadVideoSampledAnalysisStablePrompt();
+    case 'video_full_analysis':
+      return loadVideoFullAnalysisStablePrompt();
     case 'audio_transcription':
       return loadAudioTranscriptionStablePrompt();
     default:
@@ -96,7 +100,7 @@ export async function loadResolvedStablePrompt(
 }
 
 /**
- * Compose stable context (user_voice + mission + content_lanes + editorial_rules)
+ * Compose stable context (user_voice + mission + editorial_rules)
  * plus a task prompt into a single Gemini `systemInstruction`. Each piece is
  * loaded with DB-override behavior via `loadResolvedStablePrompt`.
  */

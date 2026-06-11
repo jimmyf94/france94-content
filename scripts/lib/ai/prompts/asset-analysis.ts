@@ -5,6 +5,7 @@ import { resolveRepoRelative } from './resolve-repo-path.js';
 
 const DEFAULT_ANALYSIS_REL = path.join('scripts', 'prompts', 'france94-media-analysis.txt');
 const DEFAULT_VIDEO_SAMPLED_REL = path.join('scripts', 'prompts', 'france94-video-sampled-analysis.txt');
+const DEFAULT_VIDEO_FULL_REL = path.join('scripts', 'prompts', 'france94-video-full-analysis.txt');
 const DEFAULT_AUDIO_TRANSCRIPTION_REL = path.join(
   'scripts',
   'prompts',
@@ -25,6 +26,14 @@ export function resolveVideoSampledPromptPath(): string {
     return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
   }
   return resolveRepoRelative(DEFAULT_VIDEO_SAMPLED_REL);
+}
+
+export function resolveVideoFullPromptPath(): string {
+  const fromEnv = process.env.VIDEO_FULL_PROMPT_PATH?.trim();
+  if (fromEnv) {
+    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(process.cwd(), fromEnv);
+  }
+  return resolveRepoRelative(DEFAULT_VIDEO_FULL_REL);
 }
 
 export function resolveAudioTranscriptionPromptPath(): string {
@@ -62,6 +71,14 @@ export function loadVideoSampledAnalysisStablePrompt(): string {
   return readPromptUtf8(
     p,
     'Set VIDEO_SAMPLED_PROMPT_PATH or add scripts/prompts/france94-video-sampled-analysis.txt.',
+  );
+}
+
+export function loadVideoFullAnalysisStablePrompt(): string {
+  const p = resolveVideoFullPromptPath();
+  return readPromptUtf8(
+    p,
+    'Set VIDEO_FULL_PROMPT_PATH or add scripts/prompts/france94-video-full-analysis.txt.',
   );
 }
 

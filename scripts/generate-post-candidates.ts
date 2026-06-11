@@ -5,14 +5,20 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import { GoogleGenAI, createPartFromText } from '@google/genai';
+import { createPartFromText } from '@google/genai';
 import type { drive_v3 } from 'googleapis';
 import { z } from 'zod';
 
 import { getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { sanitizeFilenamePart } from './process-analyzed-assets.js';
-import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import {
+  callGeminiWithLogging,
+  createGeminiClient,
+  formatGeminiFetchError,
+  getResolvedModelRoute,
+  responseToJson,
+} from './lib/ai/gemini-client.js';
 import { parseGeminiJsonObject } from './lib/ai/parse-gemini-json.js';
 import { loadComposedStableSystemInstruction, STABLE_CONTEXT_KEYS } from './lib/ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './lib/ai/prompt-version.js';
@@ -28,6 +34,23 @@ import {
 import { evaluateCandidateCollision } from './lib/candidate-collision-check.js';
 import { loadRecentLedgerContext, toCommittedPostForPrompt } from './lib/content-ledger.js';
 import { getFirstReviewFolderThumbnailLink } from './lib/review-folder-thumbnail.js';
+import {
+  loadComposedSystemInstructionWithSeries,
+  type SeriesRow,
+} from './lib/content-series.js';
+import { rankAndCapPlannerAssets } from './lib/planner-asset-ranking.js';
+import {
+  planGenerationTargetsWithLLM,
+  selectTopTargets,
+  toFitScoringAsset,
+  type ScoredTarget,
+} from './lib/ai/asset-series-fit.js';
+import { loadReadyClipsForReels } from './lib/content-clips.js';
+import {
+  assembleReelFromClips,
+  enqueueReelRenderJob,
+  insertReelCandidate,
+} from './lib/reel-assembly.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -62,13 +85,9 @@ const llmCandidateSchema = z.object({
   reel_instructions: z.any().optional(),
   carousel_slides: z.any().optional(),
   static_post_instructions: z.any().optional(),
-  // Lane metadata returned by the composed prompt; persisted only inside
-  // `llm_raw` for now (no `post_candidates` schema change). All optional so
-  // legacy planner outputs still validate.
-  selected_lane: z.string().optional(),
+  selected_series: z.string().optional(),
   narrative_function: z.string().optional(),
-  secondary_flavor: z.string().optional(),
-  lane_reasoning: z.string().optional(),
+  series_reasoning: z.string().optional(),
   target_audience: z.string().optional(),
   asset_fit_score: z.number().min(0).max(10).optional(),
   caption_strategy: z.string().optional(),
@@ -145,6 +164,11 @@ export type ValidatedPostCandidate = z.infer<typeof llmCandidateSchema> & {
   source_drive_file_ids: string[];
 };
 
+/** Internal: per-pair generation attaches its own raw LLM response. */
+export type ValidatedPostCandidateWithRaw = ValidatedPostCandidate & {
+  _llmRaw?: Record<string, unknown>;
+};
+
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v?.trim()) {
@@ -161,6 +185,41 @@ function envInt(name: string, defaultValue: number): number {
     throw new Error(`Invalid integer for ${name}: ${raw}`);
   }
   return n;
+}
+
+/** Candidates requested per LLM planner call (capped 1–5). */
+function plannerLlmTarget(): number {
+  const raw = process.env.POST_CANDIDATE_LLM_TARGET?.trim();
+  const fromEnv = raw ? Number.parseInt(raw, 10) : NaN;
+  const fallback = envInt('POST_CANDIDATE_DAILY_TARGET', 4);
+  const n = Number.isFinite(fromEnv) && fromEnv >= 1 ? fromEnv : fallback;
+  return Math.min(Math.max(n, 1), 5);
+}
+
+function plannerMaxAssets(): number {
+  return envInt('POST_CANDIDATE_PLANNER_MAX_ASSETS', 15);
+}
+
+/** Top generation targets per run (clamped 2–4). */
+function plannerTopPairs(): number {
+  const raw = process.env.POST_CANDIDATE_TOP_PAIRS?.trim();
+  const fromEnv = raw ? Number.parseInt(raw, 10) : NaN;
+  const n = Number.isFinite(fromEnv) && fromEnv >= 1 ? fromEnv : 3;
+  return Math.min(Math.max(n, 2), 4);
+}
+
+function plannerCarouselMaxAssets(): number {
+  const raw = process.env.POST_CANDIDATE_CAROUSEL_MAX_ASSETS?.trim();
+  const fromEnv = raw ? Number.parseInt(raw, 10) : NaN;
+  const n = Number.isFinite(fromEnv) && fromEnv >= 1 ? fromEnv : 6;
+  return Math.min(Math.max(n, 3), 10);
+}
+
+function plannerStoryMaxAssets(): number {
+  const raw = process.env.POST_CANDIDATE_STORY_MAX_ASSETS?.trim();
+  const fromEnv = raw ? Number.parseInt(raw, 10) : NaN;
+  const n = Number.isFinite(fromEnv) && fromEnv >= 1 ? fromEnv : 5;
+  return Math.min(Math.max(n, 2), 7);
 }
 
 function utcDateString(d = new Date()): string {
@@ -722,55 +781,54 @@ function extractTitleOverlayFromValidated(c: ValidatedPostCandidate): string | n
   return null;
 }
 
-export async function generatePostCandidatesWithLLM(params: {
-  summaries: AssetSummaryForLLM[];
-  dailyTarget: number;
-  batchDays: number;
-  enabledPostTypes: string[];
+async function loadPlannerStableInstruction(supabase: SupabaseClient | null): Promise<{
+  stableSystemInstruction: string;
+  activeSeries: SeriesRow[];
+  composed: Awaited<ReturnType<typeof loadComposedStableSystemInstruction>>;
+}> {
+  const composed = await loadComposedStableSystemInstruction(supabase, 'task_generate_candidate');
+  const withSeries = await loadComposedSystemInstructionWithSeries(supabase, composed.text);
+  return {
+    stableSystemInstruction: withSeries.instruction,
+    activeSeries: withSeries.activeSeries,
+    composed,
+  };
+}
+
+type PlannerCallParams = {
+  ai: ReturnType<typeof createGeminiClient>;
   supabase: SupabaseClient | null;
-  avoidRecentRejections?: RejectedFeedbackItem[];
-  committedRecentPosts?: ReturnType<typeof toCommittedPostForPrompt>[];
-}): Promise<{
+  route: Awaited<ReturnType<typeof getResolvedModelRoute>>;
+  promptVersion: string;
+  stableSystemInstruction: string;
+  dynamicText: string;
+  summaries: AssetSummaryForLLM[];
+  enabledPostTypes: string[];
+};
+
+async function runSinglePlannerCall(params: PlannerCallParams): Promise<{
   candidates: ValidatedPostCandidate[];
   llmRaw: Record<string, unknown>;
   model: string;
   rawReturnedCount: number;
   validationErrors: string[];
 }> {
-  const apiKey = requireEnv('GEMINI_API_KEY');
-  const ai = new GoogleGenAI({ apiKey });
-  const composed = await loadComposedStableSystemInstruction(
-    params.supabase,
-    'task_generate_candidate',
-  );
-  const stableSystemInstruction = composed.text;
-  const dynamicText = buildPostPlannerDynamicText({
-    summaries: params.summaries as unknown[],
-    dailyTarget: params.dailyTarget,
-    batchDays: params.batchDays,
-    enabledPostTypes: params.enabledPostTypes,
-    avoidRecentRejections: params.avoidRecentRejections,
-    committedRecentPosts: params.committedRecentPosts,
-  });
-  const promptVersion = getFr94PromptVersion();
-  const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
-
   const plannerCall = {
-    ai,
+    ai: params.ai,
     supabase: params.supabase,
-    route,
-    promptVersion,
-    cacheKey: cacheKeyCandidateGeneration(promptVersion, stableSystemInstruction),
-    stableSystemInstruction,
+    route: params.route,
+    promptVersion: params.promptVersion,
+    cacheKey: cacheKeyCandidateGeneration(params.promptVersion, params.stableSystemInstruction),
+    stableSystemInstruction: params.stableSystemInstruction,
     entity: {
       prompt_keys: [...STABLE_CONTEXT_KEYS, 'task_generate_candidate'],
       pipeline_step: 'candidate_generation',
     },
     getContentsImplicit: () => [
-      createPartFromText(stableSystemInstruction),
-      createPartFromText(dynamicText),
+      createPartFromText(params.stableSystemInstruction),
+      createPartFromText(params.dynamicText),
     ],
-    getContentsExplicit: () => [createPartFromText(dynamicText)],
+    getContentsExplicit: () => [createPartFromText(params.dynamicText)],
   };
 
   const maxAttempts = 2;
@@ -785,6 +843,7 @@ export async function generatePostCandidatesWithLLM(params: {
   let rawReturnedCount = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(`[planner] LLM attempt ${attempt}/${maxAttempts}`);
     const { response, modelUsed } = await callGeminiWithLogging(plannerCall);
     const text = response.text?.trim() ?? '';
     if (!text) {
@@ -837,7 +896,6 @@ export async function generatePostCandidatesWithLLM(params: {
   }
 
   const { response, modelUsed, text } = plannerResult;
-
   const llmRaw: Record<string, unknown> = {
     ...responseToJson(response),
     text,
@@ -850,6 +908,312 @@ export async function generatePostCandidatesWithLLM(params: {
     model: modelUsed,
     rawReturnedCount,
     validationErrors: errors,
+  };
+}
+
+async function runPlannerForTarget(params: {
+  ai: ReturnType<typeof createGeminiClient>;
+  supabase: SupabaseClient | null;
+  route: Awaited<ReturnType<typeof getResolvedModelRoute>>;
+  promptVersion: string;
+  stableSystemInstruction: string;
+  assets: AssetSummaryForLLM[];
+  seriesSlug: string;
+  postTypeHint: string;
+  batchDays: number;
+  enabledPostTypes: string[];
+  avoidRecentRejections?: RejectedFeedbackItem[];
+  committedRecentPosts?: ReturnType<typeof toCommittedPostForPrompt>[];
+}): Promise<{
+  candidates: ValidatedPostCandidateWithRaw[];
+  validationErrors: string[];
+  rawReturnedCount: number;
+  model: string;
+}> {
+  const dynamicText = buildPostPlannerDynamicText({
+    summaries: params.assets as unknown[],
+    dailyTarget: 1,
+    batchDays: params.batchDays,
+    enabledPostTypes: params.enabledPostTypes,
+    forceSeriesSlug: params.seriesSlug,
+    postTypeHint: params.postTypeHint,
+    avoidRecentRejections: params.avoidRecentRejections,
+    committedRecentPosts: params.committedRecentPosts,
+  });
+
+  console.log(
+    `[planner] target series=${params.seriesSlug} type=${params.postTypeHint} assets=${params.assets.length} dynamic_chars=${dynamicText.length}`,
+  );
+
+  const result = await runSinglePlannerCall({
+    ai: params.ai,
+    supabase: params.supabase,
+    route: params.route,
+    promptVersion: params.promptVersion,
+    stableSystemInstruction: params.stableSystemInstruction,
+    dynamicText,
+    summaries: params.assets,
+    enabledPostTypes: params.enabledPostTypes,
+  });
+
+  const withRaw: ValidatedPostCandidateWithRaw[] = result.candidates.map((c) => ({
+    ...c,
+    _llmRaw: result.llmRaw,
+  }));
+
+  return {
+    candidates: withRaw,
+    validationErrors: result.validationErrors,
+    rawReturnedCount: result.rawReturnedCount,
+    model: result.model,
+  };
+}
+
+export async function generatePostCandidatesWithLLM(params: {
+  summaries: AssetSummaryForLLM[];
+  dailyTarget: number;
+  topPairs?: number;
+  batchDays: number;
+  enabledPostTypes: string[];
+  supabase: SupabaseClient | null;
+  avoidRecentRejections?: RejectedFeedbackItem[];
+  committedRecentPosts?: ReturnType<typeof toCommittedPostForPrompt>[];
+}): Promise<{
+  candidates: ValidatedPostCandidateWithRaw[];
+  llmRaw: Record<string, unknown>;
+  model: string;
+  rawReturnedCount: number;
+  validationErrors: string[];
+  activeSeries: SeriesRow[];
+}> {
+  const apiKey = requireEnv('GEMINI_API_KEY');
+  const ai = createGeminiClient(apiKey);
+  const { stableSystemInstruction, activeSeries } = await loadPlannerStableInstruction(
+    params.supabase,
+  );
+  const promptVersion = getFr94PromptVersion();
+  const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
+  const topPairs = params.topPairs ?? plannerTopPairs();
+
+  console.log(
+    `[planner] model=${route.model} assets=${params.summaries.length} llm_target=${params.dailyTarget} ` +
+      `top_pairs=${topPairs} active_series=${activeSeries.length} stable_chars=${stableSystemInstruction.length} ` +
+      `prompt_version=${promptVersion}`,
+  );
+  if (activeSeries.length > 0) {
+    console.log(
+      `[planner] series: ${activeSeries.map((s) => `${s.slug}(w=${s.weight})`).join(', ')}`,
+    );
+  } else {
+    console.warn('[planner] no active content_series rows — generation will run without series bias');
+  }
+
+  const useTargetMode = activeSeries.length > 0;
+
+  if (!useTargetMode) {
+    console.log('[planner] mode=single (no active series)');
+    const dynamicText = buildPostPlannerDynamicText({
+      summaries: params.summaries as unknown[],
+      dailyTarget: params.dailyTarget,
+      batchDays: params.batchDays,
+      enabledPostTypes: params.enabledPostTypes,
+      avoidRecentRejections: params.avoidRecentRejections,
+      committedRecentPosts: params.committedRecentPosts,
+    });
+    if (dynamicText.length > 40_000) {
+      console.warn(
+        `[planner] large dynamic payload (${dynamicText.length} chars, ${params.summaries.length} assets) — ` +
+          'reduce POST_CANDIDATE_PLANNER_MAX_ASSETS or POST_CANDIDATE_LLM_TARGET if timeouts persist',
+      );
+    }
+    const result = await runSinglePlannerCall({
+      ai,
+      supabase: params.supabase,
+      route,
+      promptVersion,
+      stableSystemInstruction,
+      dynamicText,
+      summaries: params.summaries,
+      enabledPostTypes: params.enabledPostTypes,
+    });
+    return {
+      candidates: result.candidates,
+      llmRaw: { mode: 'single', ...result.llmRaw },
+      model: result.model,
+      rawReturnedCount: result.rawReturnedCount,
+      validationErrors: result.validationErrors,
+      activeSeries,
+    };
+  }
+
+  let selectedTargets: ScoredTarget[] = [];
+  let targetsPlannedCount = 0;
+  const bundleOpts = {
+    carouselMax: plannerCarouselMaxAssets(),
+    storyMax: plannerStoryMaxAssets(),
+  };
+
+  try {
+    const fitAssets = params.summaries.map(toFitScoringAsset);
+    const assetsById = new Map(fitAssets.map((a) => [a.id, a]));
+    const planned = await planGenerationTargetsWithLLM({
+      ai,
+      supabase: params.supabase,
+      promptVersion,
+      assets: fitAssets,
+      series: activeSeries,
+      enabledPostTypes: params.enabledPostTypes,
+    });
+    targetsPlannedCount = planned.length;
+    selectedTargets = selectTopTargets(
+      planned,
+      activeSeries,
+      assetsById,
+      topPairs,
+      bundleOpts,
+    );
+    console.log(
+      `[planner] targets: planned=${targetsPlannedCount} selected=${selectedTargets.length} ` +
+        selectedTargets
+          .map(
+            (t) =>
+              `${t.seriesSlug}:${t.postTypeHint}[${t.assetIds.length}](fit=${t.fitScore})`,
+          )
+          .join(', '),
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[planner] asset_series_targets failed (${msg}); falling back to single call`);
+  }
+
+  if (selectedTargets.length === 0) {
+    console.log('[planner] mode=single (target planning yielded no targets)');
+    const dynamicText = buildPostPlannerDynamicText({
+      summaries: params.summaries as unknown[],
+      dailyTarget: params.dailyTarget,
+      batchDays: params.batchDays,
+      enabledPostTypes: params.enabledPostTypes,
+      avoidRecentRejections: params.avoidRecentRejections,
+      committedRecentPosts: params.committedRecentPosts,
+    });
+    const result = await runSinglePlannerCall({
+      ai,
+      supabase: params.supabase,
+      route,
+      promptVersion,
+      stableSystemInstruction,
+      dynamicText,
+      summaries: params.summaries,
+      enabledPostTypes: params.enabledPostTypes,
+    });
+    return {
+      candidates: result.candidates,
+      llmRaw: { mode: 'single_fallback', targets_planned: targetsPlannedCount, ...result.llmRaw },
+      model: result.model,
+      rawReturnedCount: result.rawReturnedCount,
+      validationErrors: result.validationErrors,
+      activeSeries,
+    };
+  }
+
+  console.log(`[planner] mode=targets (${selectedTargets.length} parallel generation calls)`);
+  const assetById = new Map(params.summaries.map((a) => [a.id, a]));
+
+  const targetResults = await Promise.all(
+    selectedTargets.map(async (target) => {
+      const assets = target.assetIds
+        .map((id) => assetById.get(id))
+        .filter((a): a is AssetSummaryForLLM => a != null);
+      if (assets.length === 0) {
+        return {
+          target,
+          candidates: [] as ValidatedPostCandidateWithRaw[],
+          validationErrors: [`missing assets for target ${target.seriesSlug}`],
+          rawReturnedCount: 0,
+          model: route.model,
+          raw: null as Record<string, unknown> | null,
+        };
+      }
+      try {
+        const result = await runPlannerForTarget({
+          ai,
+          supabase: params.supabase,
+          route,
+          promptVersion,
+          stableSystemInstruction,
+          assets,
+          seriesSlug: target.seriesSlug,
+          postTypeHint: target.postTypeHint,
+          batchDays: params.batchDays,
+          enabledPostTypes: params.enabledPostTypes,
+          avoidRecentRejections: params.avoidRecentRejections,
+          committedRecentPosts: params.committedRecentPosts,
+        });
+        return {
+          target,
+          candidates: result.candidates,
+          validationErrors: result.validationErrors,
+          rawReturnedCount: result.rawReturnedCount,
+          model: result.model,
+          raw: result.candidates[0]?._llmRaw ?? null,
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(
+          `[planner] target failed series=${target.seriesSlug} type=${target.postTypeHint}: ${msg}`,
+        );
+        return {
+          target,
+          candidates: [] as ValidatedPostCandidateWithRaw[],
+          validationErrors: [
+            `target ${target.seriesSlug}/${target.postTypeHint}: ${msg}`,
+          ],
+          rawReturnedCount: 0,
+          model: route.model,
+          raw: null,
+        };
+      }
+    }),
+  );
+
+  const allCandidates: ValidatedPostCandidateWithRaw[] = [];
+  const allErrors: string[] = [];
+  let rawReturnedCount = 0;
+  const generationRaws: Array<{
+    series_slug: string;
+    post_type_hint: string;
+    asset_ids: string[];
+    raw: Record<string, unknown> | null;
+  }> = [];
+
+  for (const tr of targetResults) {
+    allCandidates.push(...tr.candidates);
+    allErrors.push(...tr.validationErrors);
+    rawReturnedCount += tr.rawReturnedCount;
+    generationRaws.push({
+      series_slug: tr.target.seriesSlug,
+      post_type_hint: tr.target.postTypeHint,
+      asset_ids: tr.target.assetIds,
+      raw: tr.raw,
+    });
+  }
+
+  const modelsUsed = [...new Set(targetResults.map((r) => r.model))];
+  const llmRaw: Record<string, unknown> = {
+    mode: 'targets',
+    targets: selectedTargets,
+    targets_planned: targetsPlannedCount,
+    generation: generationRaws,
+    validation_errors: allErrors.length ? allErrors : undefined,
+  };
+
+  return {
+    candidates: allCandidates,
+    llmRaw,
+    model: modelsUsed.join(','),
+    rawReturnedCount,
+    validationErrors: allErrors,
+    activeSeries,
   };
 }
 
@@ -961,7 +1325,7 @@ export async function insertPostCandidate(
     sponsor_safety_score: params.c.sponsor_safety_score,
     effort_score: params.c.effort_score,
     status: 'needs_review',
-    selected_lane: params.c.selected_lane?.trim() || null,
+    selected_series: params.c.selected_series?.trim() || null,
     narrative_function: params.c.narrative_function?.trim() || null,
     title_overlay: extractTitleOverlayFromValidated(params.c),
     llm_model: params.llmModel,
@@ -1006,7 +1370,9 @@ export async function updatePostCandidateReviewFolder(
 export async function generatePostCandidates(): Promise<void> {
   const batchDays = envInt('POST_CANDIDATE_BATCH_DAYS', 14);
   const maxAssets = envInt('POST_CANDIDATE_MAX_ASSETS', 80);
-  const dailyTarget = envInt('POST_CANDIDATE_DAILY_TARGET', 5);
+  const llmTarget = plannerLlmTarget();
+  const plannerCap = plannerMaxAssets();
+  const topPairs = plannerTopPairs();
   const reviewParentId = requireEnv('GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID');
 
   const supabase = getSupabaseClient();
@@ -1016,41 +1382,151 @@ export async function generatePostCandidates(): Promise<void> {
   const assets = await getCandidateSourceAssets(supabase, { batchDays, maxAssets });
   console.log(`source assets (processed, last ${batchDays}d, max ${maxAssets}): ${assets.length}`);
 
-  if (assets.length === 0) {
-    console.log('summary: no assets to plan; exiting');
-    return;
+  const recentLedger = await loadRecentLedgerContext(supabase);
+  const committedRecentPosts = recentLedger.map(toCommittedPostForPrompt);
+  console.log(`content ledger: ${committedRecentPosts.length} committed posts in context`);
+
+  // --- Clip-based reel path (inverted model): retrieval + assembly from content_clips ---
+  let clipReelActive = false;
+  let reelInserted = 0;
+  if (enabledPostTypes.includes('reel')) {
+    try {
+      const probe = await loadReadyClipsForReels(supabase, { limit: 1 });
+      clipReelActive = probe.length > 0;
+    } catch (e) {
+      console.warn('[reel-clips] probe failed; falling back to legacy reel planning', e);
+    }
   }
 
-  const summaries = assets
-    .map((a) => buildAssetSummaryForLLM(a))
-    .sort((a, b) => {
-      if (a.is_fresh_for_story === b.is_fresh_for_story) return 0;
-      return a.is_fresh_for_story ? -1 : 1;
-    });
+  if (clipReelActive) {
+    try {
+      const reelRecent = recentLedger
+        .filter((r) => r.post_type === 'reel')
+        .map(toCommittedPostForPrompt);
+      const ai = createGeminiClient(requireEnv('GEMINI_API_KEY'));
+      const res = await assembleReelFromClips({ supabase, ai, recentCommitted: reelRecent });
+
+      if (!res.ok) {
+        console.log(`[reel-clips] skipped: ${res.skipped}`);
+      } else {
+        const ins = await insertReelCandidate(supabase, {
+          reel: res.reel,
+          candidateDate: utcDateString(),
+        });
+        if (ins.error) {
+          console.warn(`[reel-clips] insert failed: ${ins.error}`);
+        } else {
+          reelInserted += 1;
+          console.log(
+            `[reel-clips] candidate=${ins.id} series=${res.reel.selected_series} clips=${res.reel.selected_clip_ids.length} duration=${res.reel.spec.total_duration_sec}s hook="${res.reel.hook}"`,
+          );
+
+          for (const aid of res.reel.source_asset_ids) {
+            try {
+              await recordAssetUsageEvent(supabase, {
+                contentAssetId: aid,
+                postCandidateId: ins.id,
+                publishingJobId: null,
+                usageStage: 'suggested',
+                usageType: mapPostTypeToUsageType('reel'),
+                ledgerPostType: 'reel',
+                usageRole: 'primary',
+                lockStrength: 'soft',
+                notes: 'Included in clip-based reel candidate',
+              });
+              await updateAssetUsageSummary(supabase, aid);
+            } catch (e) {
+              console.warn(`[reel-clips usage event]\tasset=${aid}\tcandidate=${ins.id}`, e);
+            }
+          }
+
+          try {
+            await refreshCandidateAssetConflicts(supabase, ins.id);
+          } catch (e) {
+            console.warn(`[reel-clips asset conflicts]\t${ins.id}`, e);
+          }
+
+          try {
+            const collision = await evaluateCandidateCollision(supabase, ins.id, recentLedger);
+            console.log(`[reel-clips collision]\trisk=${collision.risk}`);
+          } catch (e) {
+            console.warn(`[reel-clips collision check]\t${ins.id}`, e);
+          }
+
+          const renderRes = await enqueueReelRenderJob(supabase, {
+            candidateId: ins.id,
+            reel: res.reel,
+          });
+          if (renderRes.error) {
+            console.warn(`[reel-clips] render enqueue failed: ${renderRes.error}`);
+          } else {
+            console.log(`[reel-clips] render job queued for ${ins.id}`);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[reel-clips] generation failed (non-fatal)', e);
+    }
+  }
+
+  // Legacy planner keeps non-reel types; reels stay legacy only while no clips exist.
+  const plannerPostTypes = clipReelActive
+    ? enabledPostTypes.filter((t) => t !== 'reel')
+    : enabledPostTypes;
+
+  if (assets.length === 0) {
+    console.log(`summary: no assets to plan; reel_clip_candidates=${reelInserted}`);
+    return;
+  }
+  if (plannerPostTypes.length === 0) {
+    console.log(`summary: no planner post types enabled; reel_clip_candidates=${reelInserted}`);
+    return;
+  }
 
   const rejectedRows = await fetchRecentRejectedCandidates(supabase);
   const avoidRecentRejections = buildRejectedFeedbackForPrompt(rejectedRows);
   const rejectedIndex = buildRejectedIndex(rejectedRows);
   console.log(`rejected feedback: ${avoidRecentRejections.length} recent rejections loaded`);
 
-  let recentLedger = await loadRecentLedgerContext(supabase);
-  const committedRecentPosts = recentLedger.map(toCommittedPostForPrompt);
-  console.log(`content ledger: ${committedRecentPosts.length} committed posts in context`);
+  const allSummaries = assets.map((a) => buildAssetSummaryForLLM(a));
+  const committedAssetIds = new Set(
+    committedRecentPosts
+      .map((p) => p.primary_asset_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0),
+  );
+  const rejectedAssetIds = new Set(rejectedRows.flatMap((r) => r.source_asset_ids));
+  const ranked = rankAndCapPlannerAssets(
+    allSummaries,
+    { committedAssetIds, rejectedAssetIds },
+    plannerCap,
+  );
+  console.log(
+    `planner assets: pool=${ranked.totalPool} eligible=${ranked.eligibleCount} sent_to_llm=${ranked.selected.length} (cap=${plannerCap})`,
+  );
+
+  if (ranked.selected.length === 0) {
+    console.log('summary: no eligible assets for planner after ranking; exiting');
+    return;
+  }
 
   let llmResult: Awaited<ReturnType<typeof generatePostCandidatesWithLLM>>;
   try {
     llmResult = await generatePostCandidatesWithLLM({
-      summaries,
-      dailyTarget,
+      summaries: ranked.selected,
+      dailyTarget: llmTarget,
+      topPairs,
       batchDays,
-      enabledPostTypes,
+      enabledPostTypes: plannerPostTypes,
       supabase,
       avoidRecentRejections,
       committedRecentPosts,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = formatGeminiFetchError(e);
     console.error(`LLM planner failed: ${msg}`);
+    console.error(
+      '[planner] hint: transient timeouts may clear on retry; set FR94_GEMINI_HTTP_TIMEOUT_MS (default 600000) if needed',
+    );
     throw e;
   }
 
@@ -1096,9 +1572,12 @@ export async function generatePostCandidates(): Promise<void> {
     const insertRes = await insertPostCandidate(supabase, {
       id,
       candidateDate,
-      c,
+      c: (() => {
+        const { _llmRaw: _, ...rest } = c;
+        return rest;
+      })(),
       llmModel: llmResult.model,
-      llmRaw: llmResult.llmRaw,
+      llmRaw: c._llmRaw ?? llmResult.llmRaw,
     });
 
     if (insertRes.error) {
@@ -1188,9 +1667,10 @@ export async function generatePostCandidates(): Promise<void> {
   console.log(
     [
       'summary:',
-      `assets_sent=${summaries.length}`,
+      `assets_sent=${ranked.selected.length}`,
       `candidates_valid=${llmResult.candidates.length}`,
       `inserted=${inserted}`,
+      `reel_clip_candidates=${reelInserted}`,
       `folders_created=${foldersCreated}`,
       `assets_copied=${assetsCopied}`,
       `skipped_dedupe=${skippedDedupe}`,

@@ -1,9 +1,10 @@
-import { GoogleGenAI, createPartFromText } from '@google/genai';
+import { createPartFromText } from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
 import {
   callGeminiWithLogging,
+  createGeminiClient,
   getResolvedModelRoute,
   loadComposedStableSystemInstruction,
   responseToJson,
@@ -11,6 +12,10 @@ import {
 } from '@fr94/ai/gemini-client.js';
 import { cacheKeyCandidateRegeneration, getFr94PromptVersion } from '@fr94/ai/prompt-version.js';
 import { buildCandidateRegenerationDynamicPayload } from '@fr94/ai/prompts/candidate-regeneration.js';
+import {
+  loadComposedSystemInstructionWithSeries,
+  type SeriesRow,
+} from '@fr94/content-series';
 
 const postTypeEnum = z.enum([
   'reel',
@@ -41,10 +46,8 @@ const rewriteOutputSchema = z.object({
   reel_instructions: z.any().optional(),
   carousel_slides: z.any().optional(),
   static_post_instructions: z.any().optional(),
-  // Lane metadata from the composed prompt; persisted only via `llm_raw`.
-  selected_lane: z.string().optional(),
-  secondary_flavor: z.string().optional(),
-  lane_reasoning: z.string().optional(),
+  selected_series: z.string().optional(),
+  series_reasoning: z.string().optional(),
   target_audience: z.string().optional(),
   asset_fit_score: z.number().min(0).max(10).optional(),
   caption_strategy: z.string().optional(),
@@ -288,6 +291,7 @@ export type RegenerateLLMResult = {
   llmRaw: Record<string, unknown>;
   model: string;
   strippedAssetRefs: number;
+  activeSeries: SeriesRow[];
 };
 
 export async function regenerateCandidateWithLLM(params: {
@@ -307,7 +311,12 @@ export async function regenerateCandidateWithLLM(params: {
     params.supabase ?? null,
     'task_regenerate_with_notes',
   );
-  const stable = composed.text;
+  const withSeries = await loadComposedSystemInstructionWithSeries(
+    params.supabase ?? null,
+    composed.text,
+  );
+  const stable = withSeries.instruction;
+  const activeSeries = withSeries.activeSeries;
   const reviewerNotes = params.reviewerNotes.trim() || '(no explicit reviewer notes)';
   const dynamicText = buildCandidateRegenerationDynamicPayload({
     reviewerNotes,
@@ -315,7 +324,7 @@ export async function regenerateCandidateWithLLM(params: {
     assetSummaries: params.assetSummaries,
   });
 
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = createGeminiClient(apiKey);
   const promptVersion = getFr94PromptVersion();
   const { response, modelUsed } = await callGeminiWithLogging({
     ai,
@@ -361,5 +370,6 @@ export async function regenerateCandidateWithLLM(params: {
     llmRaw,
     model: modelUsed,
     strippedAssetRefs: stripped.strippedCount,
+    activeSeries,
   };
 }

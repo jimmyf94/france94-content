@@ -12,6 +12,7 @@ const MAX_SEGMENT_SEC = 15;
 const MAX_TOTAL_SEC = 60;
 const TARGET_W = 1080;
 const TARGET_H = 1920;
+const AUDIO_RATE = 48000;
 
 function ffmpegBin(): string {
   const p =
@@ -60,22 +61,64 @@ async function runFfmpeg(args: string[], cwd?: string): Promise<string> {
   });
 }
 
-type ClipSpec = { startSec: number; endSec: number | null };
+type SegmentSpec = {
+  /** Index into sourceVideos. */
+  sourceIndex: number;
+  startSec: number;
+  endSec: number | null;
+};
 
-function parseInstructions(raw: unknown): {
-  clips: ClipSpec[];
+type ParsedInstructions = {
+  segments: SegmentSpec[] | null;
   overlayLines: string[];
   includeOutro: boolean;
-} {
-  const clips: ClipSpec[] = [];
+  /** Overlay persists for the whole reel (clips-v1) vs first 3s (legacy). */
+  persistentOverlay: boolean;
+};
+
+/**
+ * Supports two shapes:
+ * - clips-v1 (reel_specification from clip-based assembly): clips reference
+ *   asset_id + start_sec/end_sec; mapped to source buffers via sourceAssetIds.
+ * - legacy: clips are positional {start,end} per source; overlay_text/structure.
+ */
+function parseInstructions(raw: unknown, sourceAssetIds: string[]): ParsedInstructions {
   const overlayLines: string[] = [];
   let includeOutro = true;
+  let persistentOverlay = false;
+  let segments: SegmentSpec[] | null = null;
 
   if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
     const o = raw as Record<string, unknown>;
 
+    if (o.version === 'clips-v1' && Array.isArray(o.clips)) {
+      segments = [];
+      for (const x of o.clips) {
+        if (x == null || typeof x !== 'object') continue;
+        const row = x as Record<string, unknown>;
+        const assetId = typeof row.asset_id === 'string' ? row.asset_id : '';
+        const sourceIndex = sourceAssetIds.indexOf(assetId);
+        if (sourceIndex === -1) continue;
+        const start = Number(row.start_sec);
+        const end = Number(row.end_sec);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+        segments.push({ sourceIndex, startSec: Math.max(0, start), endSec: end });
+      }
+      const ol = o.overlay_lines;
+      if (Array.isArray(ol)) {
+        for (const t of ol) {
+          if (typeof t === 'string' && t.trim()) overlayLines.push(t.trim());
+        }
+      }
+      includeOutro = false;
+      persistentOverlay = true;
+      return { segments, overlayLines, includeOutro, persistentOverlay };
+    }
+
     const c = o.clips;
     if (Array.isArray(c)) {
+      segments = [];
+      let i = 0;
       for (const x of c) {
         if (x == null || typeof x !== 'object') continue;
         const row = x as Record<string, unknown>;
@@ -83,7 +126,8 @@ function parseInstructions(raw: unknown): {
         const end = typeof row.end === 'number' ? row.end : Number(row.end);
         const startSec = Number.isFinite(start) && start >= 0 ? start : 0;
         const endSec = Number.isFinite(end) && end > startSec ? end : null;
-        clips.push({ startSec, endSec });
+        segments.push({ sourceIndex: i, startSec, endSec });
+        i += 1;
       }
     }
 
@@ -106,7 +150,7 @@ function parseInstructions(raw: unknown): {
     if (o.outro_card === false) includeOutro = false;
   }
 
-  return { clips, overlayLines, includeOutro };
+  return { segments, overlayLines, includeOutro, persistentOverlay };
 }
 
 function scaleCropFilter(): string {
@@ -118,45 +162,100 @@ function escapeDrawtextPath(p: string): string {
 }
 
 /**
- * Deterministic 9:16 reel draft: trim → H.264 1080×1920 → optional text → optional outro → faststart MP4 (no audio v1).
+ * Reel text style: small white text, black outline, centered horizontally,
+ * top third of the 9:16 frame.
+ */
+function overlayFilter(params: {
+  font: string;
+  textFileAbs: string;
+  persistent: boolean;
+}): string {
+  const enable = params.persistent ? '' : `:enable='between(t,0,3)'`;
+  return (
+    `,drawtext=fontfile='${escapeDrawtextPath(params.font)}'` +
+    `:textfile='${escapeDrawtextPath(params.textFileAbs)}':reload=1` +
+    `:fontsize=38:fontcolor=white:borderw=4:bordercolor=black` +
+    `:x=(w-text_w)/2:y=(h/3-text_h)/2:line_spacing=10${enable}`
+  );
+}
+
+const AUDIO_ENC = ['-c:a', 'aac', '-b:a', '128k', '-ar', String(AUDIO_RATE), '-ac', '2'];
+
+/**
+ * Deterministic 9:16 reel draft: trim → H.264 1080×1920 + AAC (original audio,
+ * silent track when source has none) → top-third outlined text → faststart MP4.
  */
 export async function renderReel(params: {
   sourceVideos: Buffer[];
   instructions: unknown;
-}): Promise<{ mp4: Buffer; durationSec: number | null; log: Record<string, unknown> }> {
+  /** content_asset ids aligned with sourceVideos; required to map clips-v1 specs. */
+  sourceAssetIds?: string[];
+}): Promise<{
+  mp4: Buffer;
+  thumbnailJpeg: Buffer | null;
+  durationSec: number | null;
+  log: Record<string, unknown>;
+}> {
   const buffers = params.sourceVideos.slice(0, MAX_SOURCES);
   if (buffers.length === 0) {
     throw new Error('renderReel: no source videos');
   }
 
-  const { clips: clipSpecsRaw, overlayLines, includeOutro } = parseInstructions(params.instructions);
-  const clipSpecs: ClipSpec[] = [];
-  for (let i = 0; i < buffers.length; i++) {
-    clipSpecs.push(clipSpecsRaw[i] ?? { startSec: 0, endSec: null });
+  const sourceAssetIds = (params.sourceAssetIds ?? []).slice(0, MAX_SOURCES);
+  const parsed = parseInstructions(params.instructions, sourceAssetIds);
+  const { overlayLines, includeOutro, persistentOverlay } = parsed;
+
+  let segments: SegmentSpec[];
+  if (parsed.segments != null && parsed.segments.length > 0) {
+    segments = parsed.segments.slice(0, MAX_SOURCES);
+  } else {
+    segments = buffers.map((_, i) => ({ sourceIndex: i, startSec: 0, endSec: null }));
   }
 
   const font = pickFontFile();
   const log: Record<string, unknown> = {
     target: `${TARGET_W}x${TARGET_H}`,
-    segments: buffers.length,
+    segments: segments.length,
     font: font ?? 'none',
     overlay_lines: overlayLines.length,
     include_outro: includeOutro,
+    keep_audio: true,
+    text_style: 'top-third-white-outline',
   };
 
   return withTempDir('fr94-reel-', async (dir) => {
+    // Write each unique source once.
+    const srcPaths: string[] = [];
+    const srcProbes: Array<Awaited<ReturnType<typeof probeVideo>>> = [];
+    for (let i = 0; i < buffers.length; i++) {
+      const inPath = path.join(dir, `src_${i}.bin`);
+      fs.writeFileSync(inPath, buffers[i]!);
+      srcPaths.push(inPath);
+      srcProbes.push(await probeVideo(inPath));
+    }
+
+    const textRel = 'overlay.txt';
+    const textAbs = path.join(dir, textRel);
+    const overlay = overlayLines.length > 0 && font
+      ? overlayFilter({ font, textFileAbs: textAbs, persistent: persistentOverlay })
+      : '';
+    if (overlay) {
+      fs.writeFileSync(textAbs, overlayLines.slice(0, 3).join('\n'), 'utf8');
+    }
+
     const segmentPaths: string[] = [];
     let totalUsed = 0;
     const stderrTails: string[] = [];
 
-    for (let i = 0; i < buffers.length; i++) {
-      const inPath = path.join(dir, `src_${i}.bin`);
-      fs.writeFileSync(inPath, buffers[i]!);
-      const probe = await probeVideo(inPath);
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i]!;
+      const inPath = srcPaths[seg.sourceIndex];
+      const probe = srcProbes[seg.sourceIndex];
+      if (!inPath || !probe) continue;
+
       const dur = probe.durationSeconds ?? 0;
-      const spec = clipSpecs[i] ?? { startSec: 0, endSec: null };
-      let start = Math.max(0, spec.startSec);
-      let end = spec.endSec != null && spec.endSec > start ? spec.endSec : null;
+      let start = Math.max(0, seg.startSec);
+      let end = seg.endSec != null && seg.endSec > start ? seg.endSec : null;
       if (dur > 0) {
         start = Math.min(start, Math.max(0, dur - 0.05));
         if (end != null) end = Math.min(end, dur);
@@ -171,31 +270,27 @@ export async function renderReel(params: {
       totalUsed += segLen;
 
       const segOut = path.join(dir, `seg_${i}.mp4`);
-      const vfBase = scaleCropFilter();
+      const vf = scaleCropFilter() + overlay;
+      const hasAudio = probe.hasAudio;
 
-      const textRel = `ol_${i}.txt`;
-      const textAbs = path.join(dir, textRel);
-      const overlay =
-        overlayLines.length > 0 && font ?
-          `,drawtext=fontfile='${escapeDrawtextPath(font)}':textfile='${escapeDrawtextPath(textAbs)}':reload=1:fontsize=42:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=8:x=(w-text_w)/2:y=h-text_h-120:enable='between(t,0,3)'`
-        : '';
-
-      if (overlay) {
-        fs.writeFileSync(textAbs, overlayLines.slice(0, 3).join('\n'), 'utf8');
+      const args = ['-y', '-loglevel', 'error', '-ss', String(start), '-i', inPath];
+      if (!hasAudio) {
+        args.push(
+          '-f',
+          'lavfi',
+          '-i',
+          `anullsrc=channel_layout=stereo:sample_rate=${AUDIO_RATE}`,
+        );
       }
-
-      const args = [
-        '-y',
-        '-loglevel',
-        'error',
-        '-ss',
-        String(start),
-        '-i',
-        inPath,
-        '-t',
-        String(segLen),
+      args.push('-t', String(segLen));
+      if (!hasAudio) {
+        args.push('-map', '0:v', '-map', '1:a');
+      } else {
+        args.push('-map', '0:v', '-map', '0:a:0');
+      }
+      args.push(
         '-vf',
-        vfBase + overlay,
+        vf,
         '-c:v',
         'libx264',
         '-pix_fmt',
@@ -206,11 +301,11 @@ export async function renderReel(params: {
         '23',
         '-r',
         '30',
-        '-an',
+        ...AUDIO_ENC,
         '-movflags',
         '+faststart',
         segOut,
-      ];
+      );
 
       const err = await runFfmpeg(args, dir);
       stderrTails.push(err.trim().slice(-400));
@@ -222,26 +317,13 @@ export async function renderReel(params: {
       throw new Error('No segments produced (duration / trim invalid).');
     }
 
-    let concatList = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-    let concatPath = path.join(dir, 'concat.txt');
+    const concatList = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+    const concatPath = path.join(dir, 'concat.txt');
     fs.writeFileSync(concatPath, concatList, 'utf8');
 
-    let bodyPath = path.join(dir, 'body.mp4');
+    const bodyPath = path.join(dir, 'body.mp4');
     await runFfmpeg(
-      [
-        '-y',
-        '-loglevel',
-        'error',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        concatPath,
-        '-c',
-        'copy',
-        bodyPath,
-      ],
+      ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', bodyPath],
       dir,
     );
 
@@ -251,56 +333,42 @@ export async function renderReel(params: {
       const outroTextPath = path.join(dir, 'outro.txt');
       fs.writeFileSync(outroTextPath, OUTRO_DEFAULT_LINES.join('\n'), 'utf8');
       const outroPath = path.join(dir, 'outro.mp4');
-      if (font) {
-        await runFfmpeg(
-          [
-            '-y',
-            '-loglevel',
-            'error',
-            '-f',
-            'lavfi',
-            '-i',
-            `color=c=black:s=${TARGET_W}x${TARGET_H}:d=2:r=30`,
-            '-vf',
-            `drawtext=fontfile='${escapeDrawtextPath(font)}':textfile='${escapeDrawtextPath(outroTextPath)}':reload=1:fontsize=40:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8:x=(w-text_w)/2:y=(h-text_h)/2`,
-            '-c:v',
-            'libx264',
-            '-pix_fmt',
-            'yuv420p',
-            '-preset',
-            'medium',
-            '-crf',
-            '23',
-            '-an',
-            outroPath,
-          ],
-          dir,
-        );
-      } else {
-        await runFfmpeg(
-          [
-            '-y',
-            '-loglevel',
-            'error',
-            '-f',
-            'lavfi',
-            '-i',
-            `color=c=black:s=${TARGET_W}x${TARGET_H}:d=2:r=30`,
-            '-c:v',
-            'libx264',
-            '-pix_fmt',
-            'yuv420p',
-            '-preset',
-            'medium',
-            '-crf',
-            '23',
-            '-an',
-            outroPath,
-          ],
-          dir,
-        );
-      }
+      const outroDraw = font
+        ? `drawtext=fontfile='${escapeDrawtextPath(font)}':textfile='${escapeDrawtextPath(outroTextPath)}':reload=1:fontsize=40:fontcolor=white:borderw=4:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2`
+        : null;
+      const outroArgs = [
+        '-y',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        `color=c=black:s=${TARGET_W}x${TARGET_H}:d=2:r=30`,
+        '-f',
+        'lavfi',
+        '-i',
+        `anullsrc=channel_layout=stereo:sample_rate=${AUDIO_RATE}`,
+        '-t',
+        '2',
+        ...(outroDraw ? ['-vf', outroDraw] : []),
+        '-map',
+        '0:v',
+        '-map',
+        '1:a',
+        '-c:v',
+        'libx264',
+        '-pix_fmt',
+        'yuv420p',
+        '-preset',
+        'medium',
+        '-crf',
+        '23',
+        ...AUDIO_ENC,
+        outroPath,
+      ];
+      await runFfmpeg(outroArgs, dir);
 
+      const withOutroPath = path.join(dir, 'with_outro.mp4');
       await runFfmpeg(
         [
           '-y',
@@ -311,9 +379,11 @@ export async function renderReel(params: {
           '-i',
           outroPath,
           '-filter_complex',
-          '[0:v][1:v]concat=n=2:v=1:a=0[outv]',
+          '[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]',
           '-map',
           '[outv]',
+          '-map',
+          '[outa]',
           '-c:v',
           'libx264',
           '-pix_fmt',
@@ -322,32 +392,19 @@ export async function renderReel(params: {
           'medium',
           '-crf',
           '23',
-          '-an',
+          ...AUDIO_ENC,
           '-movflags',
           '+faststart',
-          path.join(dir, 'with_outro.mp4'),
+          withOutroPath,
         ],
         dir,
       );
-      finalPath = path.join(dir, 'with_outro.mp4');
-    } else {
-      finalPath = bodyPath;
+      finalPath = withOutroPath;
     }
 
     const outMp4 = path.join(dir, 'out_faststart.mp4');
     await runFfmpeg(
-      [
-        '-y',
-        '-loglevel',
-        'error',
-        '-i',
-        finalPath,
-        '-c',
-        'copy',
-        '-movflags',
-        '+faststart',
-        outMp4,
-      ],
+      ['-y', '-loglevel', 'error', '-i', finalPath, '-c', 'copy', '-movflags', '+faststart', outMp4],
       dir,
     );
 
@@ -355,9 +412,23 @@ export async function renderReel(params: {
     const probeOut = await probeVideo(outMp4);
     log.stderr_tails = stderrTails;
     log.duration_seconds = probeOut.durationSeconds;
+    log.has_audio = probeOut.hasAudio;
+
+    let thumbnailJpeg: Buffer | null = null;
+    try {
+      const thumbPath = path.join(dir, 'thumb.jpg');
+      await runFfmpeg(
+        ['-y', '-loglevel', 'error', '-ss', '0.5', '-i', outMp4, '-frames:v', '1', '-q:v', '3', thumbPath],
+        dir,
+      );
+      if (fs.existsSync(thumbPath)) thumbnailJpeg = fs.readFileSync(thumbPath);
+    } catch {
+      log.thumbnail_error = true;
+    }
 
     return {
       mp4,
+      thumbnailJpeg,
       durationSec: probeOut.durationSeconds,
       log,
     };

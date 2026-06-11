@@ -171,6 +171,26 @@ async function createDraftJob(
   return data.id;
 }
 
+/** Rendered reel output (already in the public bucket) for a candidate, if any. */
+async function findProducedReelRender(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<{ url: string; durationSeconds: number | null } | null> {
+  const { data, error } = await supabase
+    .from('production_jobs')
+    .select('output_video_url, render_log, status')
+    .eq('post_candidate_id', candidateId)
+    .eq('production_type', 'reel')
+    .eq('status', 'produced')
+    .maybeSingle();
+  if (error || !data) return null;
+  const url = typeof data.output_video_url === 'string' ? data.output_video_url.trim() : '';
+  if (!url) return null;
+  const log = (data.render_log ?? {}) as Record<string, unknown>;
+  const dur = Number(log.duration_seconds);
+  return { url, durationSeconds: Number.isFinite(dur) ? dur : null };
+}
+
 async function prepareMediaForJob(params: {
   supabase: SupabaseClient;
   drive: drive_v3.Drive;
@@ -184,6 +204,32 @@ async function prepareMediaForJob(params: {
   const bucket = requireEnv('PUBLIC_MEDIA_BUCKET_NAME');
   const publicBase = requireEnv('PUBLIC_MEDIA_BASE_URL');
   const maxBytes = maxPublishingFileBytes();
+
+  // Reels with a produced render publish the rendered MP4, not raw Drive sources.
+  const reelRender = await findProducedReelRender(supabase, candidateId);
+  if (reelRender) {
+    pubLog('using rendered reel output', { jobId, candidateId, url: reelRender.url });
+    const prepared: PreparedMediaItem[] = [
+      {
+        asset_id: resolved[0]?.asset_id ?? candidateId,
+        drive_file_id: resolved[0]?.drive_file_id ?? '',
+        media_type: 'video',
+        public_url: reelRender.url,
+        width: 1080,
+        height: 1920,
+        duration_seconds: reelRender.durationSeconds,
+        mime_type: 'video/mp4',
+        order: 1,
+      },
+    ];
+    await updatePublishingJob(supabase, jobId, {
+      prepared_media: prepared,
+      public_media_urls: [reelRender.url],
+      status: 'media_prepared',
+    });
+    pubLog('media prep done (rendered reel)', { jobId, urlCount: 1, status: 'media_prepared' });
+    return prepared;
+  }
 
   const prepared: PreparedMediaItem[] = [];
   const urls: string[] = [];

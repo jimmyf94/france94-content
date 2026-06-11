@@ -1,0 +1,100 @@
+You are analyzing a complete raw video asset for France94, including its audio track.
+
+France94 is an endurance and charity project where Jimmy will complete 94 Olympic-distance triathlons in 94 consecutive days, one per mainland French department, to raise money for cancer research.
+
+You see the ENTIRE video. Your job is to do the heavy analysis ONCE, at ingestion, so that reel generation later becomes pure retrieval and assembly. Be generous and concrete in the reusable metadata you produce.
+
+Two levels of output:
+
+1. Asset-level analysis of the whole video (same fields as standard analysis).
+2. Clip segmentation: split the video into meaningful clips/shots, each with rich reusable metadata.
+
+Clip segmentation rules:
+- Segment by meaning: a clip is a continuous stretch that works as one visual beat (one action, one location, one mood).
+- Prefer 2-12 second clips. Merge micro-shots that belong together; split long static stretches only if the content changes.
+- Timestamps are seconds from the start of the video, with one decimal precision.
+- Clips must not overlap. Gaps (dead footage) are allowed and encouraged — skip unusable footage.
+- Only output clips that could plausibly appear in a published reel. If nothing is usable, return an empty clips array.
+
+Per-clip metadata rules:
+- pov_concepts: 2-5 first-person POV lines this clip could carry. Style examples (French, lowercase, dry, slightly absurd, never motivational):
+  - "pov : ta vie est devenue un plan d'entraînement"
+  - "pov : tu as oublié ce que c'est un week-end"
+  - "pov : chaque journée commence avant le lever du soleil"
+  Write POVs in French unless the clip clearly calls for English.
+- hooks: 2-5 short overlay/opener lines (can include non-POV hooks: questions, numbers, contrasts).
+- emotional_tags: lowercase tokens like "solitude", "fatigue", "determination", "calm", "absurdity".
+- tension_tags: conflict/tension angles like "sacrifice-vs-normal-life", "scale-disbelief", "body-vs-plan".
+- visual_tags: concrete visuals like "sunrise", "running", "empty-road", "map", "close-up-face", "rain".
+- discovery_tags: why a stranger might stop scrolling: "relatable-pain", "absurd-scale", "satisfying-motion", "local-france".
+- could_be_used_for: short concrete explanations, e.g. "opening clip for a sacrifice-themed pov reel", "b-roll for a training-volume carousel".
+- supported_reel_formats: subset of ["pov", "before_after", "countdown", "map_reveal", "talking_head", "b_roll", "process", "data_overlay"].
+- fitting_series_slugs: slugs from the active series list provided in the dynamic context. Only include a slug when the clip genuinely fits that series. Empty array if none fit.
+
+Avoid:
+- fake heroism
+- overdramatic language
+- vague motivational phrasing
+- inventing details not present in the video or audio
+
+Return strict JSON with this exact schema:
+
+{
+  "visual_summary": "short description of what happens across the whole video",
+  "transcript": "spoken words if any, otherwise empty string",
+  "semantic_summary": "what this asset is useful for in the France94 content system",
+  "activity": "run | bike | swim | strength | recovery | travel | admin | sponsor | route | personal | other",
+  "content_lane": "story | reel | post | carousel | sponsor | archive",
+  "suggested_title": "short human-readable title",
+  "suggested_filename_core": "lowercase semantic filename core using hyphens only",
+  "tags": ["tag1", "tag2", "tag3"],
+  "nonverbal_cues": ["smile", "laughter", "shiver"],
+  "quality_score": 0,
+  "mission_score": 0,
+  "human_score": 0,
+  "sponsor_safety_score": 0,
+  "publish_recommendation": "publish_now | save_for_later | story_only | archive | needs_human_review",
+  "needs_full_video_review": false,
+  "reason_full_video_review_needed": "",
+  "clips": [
+    {
+      "start_sec": 0.0,
+      "end_sec": 8.5,
+      "visual_summary": "what is visible in this clip",
+      "transcript_excerpt": "spoken words inside this clip, otherwise empty string",
+      "supported_reel_formats": ["pov", "b_roll"],
+      "fitting_series_slugs": ["series-slug"],
+      "pov_concepts": ["pov : ..."],
+      "hooks": ["short hook line"],
+      "emotional_tags": ["solitude"],
+      "tension_tags": ["sacrifice-vs-normal-life"],
+      "visual_tags": ["sunrise", "running"],
+      "discovery_tags": ["relatable-pain"],
+      "could_be_used_for": ["opening clip for a sacrifice-themed pov reel"]
+    }
+  ]
+}
+
+Scoring:
+0 = unusable
+5 = average
+10 = excellent
+
+For suggested_filename_core:
+- lowercase only
+- no accents
+- no spaces
+- hyphens only
+- no date
+- no extension
+- no quality score
+- max 60 characters
+
+For nonverbal_cues:
+- short lowercase tokens, hyphens for multi-word (e.g. "fist-pump")
+- maximum 6 entries
+- empty array if none clearly observed
+
+For needs_full_video_review:
+- you ARE seeing the full video, so this should almost always be false
+- set to true only if the file appears corrupted or truncated

@@ -12,7 +12,7 @@ import {
 } from '@fr94/asset-usage';
 import { getDriveClient } from '@/lib/google-drive-server';
 import {
-  extractLaneFieldsFromLlmRaw,
+  extractSeriesFieldsFromLlmRaw,
   extractTitleOverlayFromCandidate,
 } from '@fr94/candidate-collision';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
@@ -210,22 +210,22 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if (status === 'approved') {
     const { data: laneRow, error: laneErr } = await supabase
       .from('post_candidates')
-      .select('post_type,selected_lane,narrative_function,title_overlay,llm_raw,reel_instructions,static_post_instructions')
+      .select('post_type,selected_series,narrative_function,title_overlay,llm_raw,reel_instructions,static_post_instructions')
       .eq('id', id)
       .maybeSingle();
     if (!laneErr && laneRow) {
       const r = laneRow as {
         post_type?: string | null;
-        selected_lane?: string | null;
+        selected_series?: string | null;
         narrative_function?: string | null;
         title_overlay?: string | null;
         llm_raw?: unknown;
         reel_instructions?: unknown;
         static_post_instructions?: unknown;
       };
-      const fromRaw = extractLaneFieldsFromLlmRaw(r.llm_raw);
-      if (!r.selected_lane?.trim() && fromRaw.selected_lane) {
-        update.selected_lane = fromRaw.selected_lane;
+      const fromRaw = extractSeriesFieldsFromLlmRaw(r.llm_raw);
+      if (!r.selected_series?.trim() && fromRaw.selected_series) {
+        update.selected_series = fromRaw.selected_series;
       }
       if (!r.narrative_function?.trim() && fromRaw.narrative_function) {
         update.narrative_function = fromRaw.narrative_function;
@@ -311,7 +311,19 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
       const sd =
         Array.isArray(c.source_drive_file_ids) ? (c.source_drive_file_ids as string[]) : [];
-      void supabase
+      // Clip-based reels auto-render at generation; don't reset a job that is
+      // already queued/rendering/produced — only (re)queue when missing or failed.
+      const { data: existingJob } = await supabase
+        .from('production_jobs')
+        .select('id,status')
+        .eq('post_candidate_id', c.id)
+        .eq('production_type', 'reel')
+        .maybeSingle();
+      const existingStatus = (existingJob as { status?: string } | null)?.status ?? null;
+      const shouldQueue =
+        existingStatus == null || existingStatus === 'failed' || existingStatus === 'needs_manual_production';
+      if (shouldQueue)
+        void supabase
         .from('production_jobs')
         .upsert(
           {

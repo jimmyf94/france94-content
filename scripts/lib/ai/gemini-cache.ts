@@ -54,6 +54,9 @@ export async function getOrCreatePromptCache(params: {
   }
 
   try {
+    console.log(
+      `[gemini_cache] creating cache_key=${cacheKey.slice(0, 64)} model=${model} stable_chars=${stableSystemInstruction.length} ttl_s=${ttlSeconds}`,
+    );
     const created = await ai.caches.create({
       model,
       config: {

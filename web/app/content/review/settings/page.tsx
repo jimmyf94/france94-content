@@ -139,7 +139,7 @@ const ROUTE_META: Record<Fr94RouteOperation, { title: string; hint: string }> = 
   },
   asset_analysis_video_full: {
     title: 'Asset analysis (video full)',
-    hint: 'Reserved for full-video analysis when wired in the worker.',
+    hint: 'Full-video upload + clip segmentation (content_clips). Use max_output_tokens ≥ 8192.',
   },
   candidate_generation: {
     title: 'Post candidate generation',

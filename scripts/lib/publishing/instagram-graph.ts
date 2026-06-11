@@ -291,6 +291,187 @@ export async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+/** Search hashtag id via ig_hashtag_search (requires instagram_basic permission). */
+export async function igHashtagSearch(igUserId: string, hashtag: string): Promise<string | null> {
+  const tag = hashtag.replace(/^#/, '').trim();
+  if (!tag) return null;
+  const raw = await igGet(
+    `ig_hashtag_search?user_id=${encodeURIComponent(igUserId)}&q=${encodeURIComponent(tag)}`,
+  );
+  const data = raw.data;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const first = data[0] as { id?: string } | undefined;
+  return typeof first?.id === 'string' ? first.id : null;
+}
+
+/** Top media for a hashtag id. */
+export async function getHashtagTopMedia(
+  hashtagId: string,
+  limit = 10,
+): Promise<Record<string, unknown>[]> {
+  const raw = await igGet(
+    `${hashtagId}/top_media?user_id=${encodeURIComponent(requireInstagramEnv().igUserId)}&fields=id,caption,media_type,permalink,timestamp,like_count,comments_count&limit=${limit}`,
+  );
+  const data = raw.data;
+  return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+}
+
+/** Recent media for a hashtag id. */
+export async function getHashtagRecentMedia(
+  hashtagId: string,
+  limit = 10,
+): Promise<Record<string, unknown>[]> {
+  const raw = await igGet(
+    `${hashtagId}/recent_media?user_id=${encodeURIComponent(requireInstagramEnv().igUserId)}&fields=id,caption,media_type,permalink,timestamp,like_count,comments_count&limit=${limit}`,
+  );
+  const data = raw.data;
+  return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
+}
+
+/**
+ * Business discovery for a public username (requires instagram_basic + pages_read_engagement).
+ * Returns null on permission errors — caller should degrade gracefully.
+ */
+export async function getBusinessDiscovery(
+  igUserId: string,
+  username: string,
+  fields = 'id,username,name,biography,media_count,followers_count,media{caption,media_type,permalink,timestamp,like_count,comments_count}',
+): Promise<Record<string, unknown> | null> {
+  const handle = username.replace(/^@/, '').trim();
+  if (!handle) return null;
+  try {
+    const raw = await igGet(
+      `${igUserId}?fields=business_discovery.username(${encodeURIComponent(handle)}){${fields}}`,
+    );
+    const bd = raw.business_discovery;
+    return bd && typeof bd === 'object' ? (bd as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export type InstagramMediaItem = {
+  id: string;
+  caption: string | null;
+  media_type: string | null;
+  media_product_type: string | null;
+  permalink: string | null;
+  timestamp: string | null;
+  thumbnail_url: string | null;
+  media_url: string | null;
+  like_count: number | null;
+  comments_count: number | null;
+};
+
+export type InstagramMediaInsights = {
+  views: number | null;
+  shares: number | null;
+  avgWatchTimeMs: number | null;
+  permissionDenied?: boolean;
+};
+
+function isInsightsPermissionError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /\(Graph code=10\b|#10\)|does not have permission/i.test(err.message);
+}
+
+function isReelsMedia(mediaProductType: string | null, mediaType?: string | null): boolean {
+  if ((mediaProductType ?? '').toUpperCase() === 'REELS') return true;
+  return (mediaType ?? '').toUpperCase() === 'REELS';
+}
+
+async function fetchSingleInsightMetric(mediaId: string, metric: string): Promise<number | null> {
+  const raw = await igGet(`${mediaId}/insights?metric=${metric}&period=lifetime`);
+  const data = raw.data;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const row = data[0] as { values?: { value?: unknown }[] };
+  return parseOptionalNumber(row.values?.[0]?.value);
+}
+
+/** Quick probe: returns false when token lacks instagram_manage_insights. */
+export async function probeInsightsPermission(mediaId: string): Promise<boolean> {
+  try {
+    await igGet(`${mediaId}/insights?metric=views&period=lifetime`);
+    return true;
+  } catch (err) {
+    if (isInsightsPermissionError(err)) return false;
+    throw err;
+  }
+}
+
+/**
+ * Fetch media insights (views, shares, avg watch time for reels).
+ * Returns null metric values on per-metric errors; sets permissionDenied when scope is missing.
+ */
+export async function getMediaInsights(
+  mediaId: string,
+  mediaProductType: string | null,
+  mediaType?: string | null,
+): Promise<InstagramMediaInsights> {
+  const empty: InstagramMediaInsights = { views: null, shares: null, avgWatchTimeMs: null };
+  const isReels = isReelsMedia(mediaProductType, mediaType);
+  const metrics = isReels
+    ? (['views', 'shares', 'ig_reels_avg_watch_time'] as const)
+    : (['views', 'shares'] as const);
+
+  const out = { ...empty };
+  let permissionDenied = false;
+
+  for (const metric of metrics) {
+    try {
+      const n = await fetchSingleInsightMetric(mediaId, metric);
+      if (metric === 'views') out.views = n;
+      else if (metric === 'shares') out.shares = n;
+      else if (metric === 'ig_reels_avg_watch_time') out.avgWatchTimeMs = n;
+    } catch (err) {
+      if (isInsightsPermissionError(err)) {
+        permissionDenied = true;
+        break;
+      }
+    }
+  }
+
+  if (permissionDenied) out.permissionDenied = true;
+  return out;
+}
+
+function parseOptionalNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function parseMediaItem(raw: Record<string, unknown>): InstagramMediaItem {
+  return {
+    id: typeof raw.id === 'string' ? raw.id : String(raw.id ?? ''),
+    caption: typeof raw.caption === 'string' ? raw.caption : null,
+    media_type: typeof raw.media_type === 'string' ? raw.media_type : null,
+    media_product_type:
+      typeof raw.media_product_type === 'string' ? raw.media_product_type : null,
+    permalink: typeof raw.permalink === 'string' ? raw.permalink : null,
+    timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : null,
+    thumbnail_url: typeof raw.thumbnail_url === 'string' ? raw.thumbnail_url : null,
+    media_url: typeof raw.media_url === 'string' ? raw.media_url : null,
+    like_count: parseOptionalNumber(raw.like_count),
+    comments_count: parseOptionalNumber(raw.comments_count),
+  };
+}
+
+/** List recent media for the connected IG business account. */
+export async function getUserMedia(opts?: { limit?: number }): Promise<InstagramMediaItem[]> {
+  const { igUserId } = requireInstagramEnv();
+  const limit = Math.min(50, Math.max(1, opts?.limit ?? 25));
+  const fields =
+    'id,caption,media_type,media_product_type,permalink,timestamp,thumbnail_url,media_url,like_count,comments_count';
+  const raw = await igGet(`${igUserId}/media?fields=${fields}&limit=${limit}`);
+  const data = raw.data;
+  if (!Array.isArray(data)) return [];
+  return data.map((item) => parseMediaItem(item as Record<string, unknown>));
+}
+
 export async function pollContainerUntilTerminal(
   containerId: string,
   opts?: { maxAttempts?: number; initialDelayMs?: number },

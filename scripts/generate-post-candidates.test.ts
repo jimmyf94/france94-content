@@ -165,6 +165,24 @@ test('resolveSourceAssetIds deduplicates while preserving order', () => {
   }
 });
 
+test('validatePostCandidateOutput accepts selected_series metadata', () => {
+  const summaries = [makeSummary()];
+  const { assetById, assetByDriveId } = buildAssetLookupMaps(summaries);
+  const result = validatePostCandidateOutput(
+    makeCandidate({
+      selected_series: 'absurd-mission-life-takeover',
+      series_reasoning: 'Assets show life takeover angle.',
+    }),
+    assetById,
+    new Set(['reel']),
+    assetByDriveId,
+  );
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.data.selected_series, 'absurd-mission-life-takeover');
+  }
+});
+
 test('parsePlannerResponse skips bad candidate and keeps valid ones', () => {
   const summaries = [makeSummary()];
   const parsed = parsePlannerResponse(

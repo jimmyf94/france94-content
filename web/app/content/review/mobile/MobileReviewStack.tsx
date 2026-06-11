@@ -115,11 +115,15 @@ export function MobileReviewStack({
   onRegisterActivateStream,
   firstThumbnailById = {},
   onCandidateUpdated,
+  onVariantCreated,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
   onDelete,
   deleting,
+  onGenerateCandidates,
+  generatingCandidates,
+  generateDisabled,
 }: {
   candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
@@ -149,11 +153,15 @@ export function MobileReviewStack({
   onRegisterActivateStream?: (activate: () => void) => void;
   firstThumbnailById?: Readonly<Record<string, string | null>>;
   onCandidateUpdated?: (c: PostCandidate) => void;
+  onVariantCreated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
   onDelete?: () => void;
   deleting?: boolean;
+  onGenerateCandidates: () => void | Promise<void>;
+  generatingCandidates?: boolean;
+  generateDisabled?: boolean;
 }) {
   // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
   const sheetTab: MobileDetailSheetTab =
@@ -190,6 +198,14 @@ export function MobileReviewStack({
           FR94 Review
         </span>
         <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            disabled={generatingCandidates || generateDisabled}
+            onClick={() => void onGenerateCandidates()}
+            className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-2 py-1.5 text-[11px] font-medium text-white disabled:opacity-50"
+          >
+            {generatingCandidates ? 'Generating…' : 'Generate'}
+          </button>
           <Link
             href="/content/publishing"
             className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
@@ -240,6 +256,7 @@ export function MobileReviewStack({
           media={media}
           onRegisterActivateStream={onRegisterActivateStream}
           onCandidateUpdated={onCandidateUpdated}
+          onVariantCreated={onVariantCreated}
           onRemoveReviewAsset={onRemoveReviewAsset}
           onRegenerate={onRegenerate}
           regenerating={regenerating}
@@ -340,6 +357,7 @@ function MobileCandidateView({
   media,
   onRegisterActivateStream,
   onCandidateUpdated,
+  onVariantCreated,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
@@ -361,6 +379,7 @@ function MobileCandidateView({
   media: CandidateMediaState;
   onRegisterActivateStream?: (activate: () => void) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
+  onVariantCreated?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
@@ -453,7 +472,9 @@ function MobileCandidateView({
           reviewDriveFolderUrl={candidate.review_drive_folder_url}
           onRefreshQueue={onRefreshQueue}
         />
-        {candidate.post_type === 'reel' && <ProductionJobCard candidate={candidate} />}
+        {candidate.post_type === 'reel' && (
+          <ProductionJobCard candidate={candidate} onVariantCreated={onVariantCreated} />
+        )}
         {candidate.hook && (
           <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
         )}

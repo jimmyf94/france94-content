@@ -1,5 +1,11 @@
-import type { ContentListUnion, GenerateContentConfig, GenerateContentResponse, GoogleGenAI } from '@google/genai';
+import {
+  GoogleGenAI,
+  type ContentListUnion,
+  type GenerateContentConfig,
+  type GenerateContentResponse,
+} from '@google/genai';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 import { getOrCreatePromptCache } from './gemini-cache.js';
 import { logLlmCall, type LlmCallEntityTag } from './llm-logging.js';
@@ -47,11 +53,75 @@ export type {
 /** After 2 retries on 503, used when primary is Gemini 3.1 Pro (preview) and still overloaded. */
 export const GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL = 'gemini-2.5-pro';
 
-/** Initial attempt plus 2 retries on high-demand 503. */
+/** Initial attempt plus 2 retries on high-demand 503 / transient fetch errors. */
 const HIGH_DEMAND_503_MAX_ATTEMPTS = 3;
+
+const DEFAULT_GEMINI_HTTP_TIMEOUT_MS = 600_000;
+
+function geminiHttpTimeoutMs(): number {
+  const raw = process.env.FR94_GEMINI_HTTP_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_GEMINI_HTTP_TIMEOUT_MS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_GEMINI_HTTP_TIMEOUT_MS;
+}
+
+let fetchPatchTimeoutMs = 0;
+let nativeFetch: typeof globalThis.fetch | null = null;
+
+function resolveFetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+/**
+ * Node fetch defaults to ~300s Undici headers timeout. Route all Gemini traffic
+ * (generate calls and resumable uploads) through one undici stack so uploads
+ * with manual Content-Length headers do not cross Node's native fetch + a
+ * standalone undici Agent (which throws UND_ERR_INVALID_ARG on Node 25).
+ */
+function ensureGeminiFetchPatch(ms: number): void {
+  if (fetchPatchTimeoutMs >= ms && nativeFetch != null) return;
+
+  if (nativeFetch == null) {
+    nativeFetch = globalThis.fetch.bind(globalThis);
+  }
+
+  const longAgent = new Agent({
+    connectTimeout: 60_000,
+    headersTimeout: ms,
+    bodyTimeout: ms,
+    keepAliveTimeout: 10_000,
+    keepAliveMaxTimeout: 60_000,
+  });
+
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = resolveFetchUrl(input);
+    if (url.includes('generativelanguage.googleapis.com')) {
+      return undiciFetch(input, { ...init, dispatcher: longAgent } as Parameters<typeof undiciFetch>[1]);
+    }
+    return nativeFetch!(input, init);
+  }) as typeof fetch;
+
+  fetchPatchTimeoutMs = ms;
+}
+
+/** Shared Gemini client with a generous HTTP timeout for slow planner responses. */
+export function createGeminiClient(apiKey: string): GoogleGenAI {
+  const timeout = geminiHttpTimeoutMs();
+  ensureGeminiFetchPatch(timeout);
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: { timeout },
+  });
+}
 
 function debug(msg: string): void {
   if (geminiCacheDebug()) console.warn(`[gemini_cache] ${msg}`);
+}
+
+function info(msg: string): void {
+  console.log(`[gemini] ${msg}`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -77,6 +147,39 @@ export function isGeminiHighDemand503(e: unknown): boolean {
   const any = e as { status?: number; code?: number; error?: { code?: number } };
   const code = any?.status ?? any?.code ?? any?.error?.code;
   return code === 503;
+}
+
+/** Network timeouts and other retryable transport failures. */
+export function isGeminiTransientFetchError(e: unknown): boolean {
+  if (isGeminiHighDemand503(e)) return true;
+  const t = errorText(e).toLowerCase();
+  if (t.includes('fetch failed')) return true;
+  if (t.includes('headerstimeouterror') || t.includes('headers timeout')) return true;
+  if (t.includes('econnreset') || t.includes('etimedout') || t.includes('socket hang up')) {
+    return true;
+  }
+  const cause = (e as { cause?: { code?: string; message?: string } })?.cause;
+  if (cause?.code === 'UND_ERR_HEADERS_TIMEOUT') return true;
+  if (cause?.message?.toLowerCase().includes('headers timeout')) return true;
+  return false;
+}
+
+export function formatGeminiFetchError(e: unknown): string {
+  const parts: string[] = [];
+  if (e instanceof Error) {
+    parts.push(`${e.name}: ${e.message}`);
+    const cause = (e as { cause?: unknown }).cause;
+    if (cause instanceof Error) {
+      parts.push(`cause: ${cause.name} ${cause.message}`);
+      const code = (cause as { code?: string }).code;
+      if (code) parts.push(`cause_code: ${code}`);
+    } else if (cause != null) {
+      parts.push(`cause: ${String(cause)}`);
+    }
+  } else {
+    parts.push(String(e));
+  }
+  return parts.join(' | ');
 }
 
 function isGemini31ProFamilyModel(model: string): boolean {
@@ -111,12 +214,13 @@ async function modelsGenerateWith503RetriesAndProFallback(
       return { response, modelUsed: primaryModel, usedHighDemandFallback: false };
     } catch (e) {
       lastErr = e;
-      if (!isGeminiHighDemand503(e)) throw e;
+      if (!isGeminiTransientFetchError(e)) throw e;
       if (attempt < HIGH_DEMAND_503_MAX_ATTEMPTS - 1) {
-        debug(
-          `generateContent 503/high-demand retry ${attempt + 1}/${HIGH_DEMAND_503_MAX_ATTEMPTS - 1} model=${primaryModel}`,
+        const reason = isGeminiHighDemand503(e) ? '503/high-demand' : 'transient fetch';
+        info(
+          `generateContent ${reason} retry ${attempt + 1}/${HIGH_DEMAND_503_MAX_ATTEMPTS - 1} model=${primaryModel}: ${formatGeminiFetchError(e)}`,
         );
-        await sleep(800 * (attempt + 1));
+        await sleep(1500 * (attempt + 1));
         continue;
       }
       break;
@@ -126,21 +230,29 @@ async function modelsGenerateWith503RetriesAndProFallback(
   if (
     isGemini31ProFamilyModel(primaryModel) &&
     lastErr != null &&
-    isGeminiHighDemand503(lastErr)
+    (isGeminiHighDemand503(lastErr) || isGeminiTransientFetchError(lastErr))
   ) {
-    debug(
-      `generateContent using fallback model=${GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL} after 503 on ${primaryModel}`,
+    const reason = isGeminiHighDemand503(lastErr) ? '503' : 'transient fetch/timeout';
+    info(
+      `generateContent fallback model=${GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL} after ${reason} on ${primaryModel}`,
     );
-    const response = await ai.models.generateContent({
-      model: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
-      contents,
-      config: stripCachedContent(config),
-    });
-    return {
-      response,
-      modelUsed: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
-      usedHighDemandFallback: true,
-    };
+    debug(
+      `generateContent using fallback model=${GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL} after ${reason} on ${primaryModel}`,
+    );
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
+        contents,
+        config: stripCachedContent(config),
+      });
+      return {
+        response,
+        modelUsed: GEMINI_PRO_HIGH_DEMAND_FALLBACK_MODEL,
+        usedHighDemandFallback: true,
+      };
+    } catch (fallbackErr) {
+      lastErr = fallbackErr;
+    }
   }
 
   throw lastErr;
@@ -241,7 +353,15 @@ export async function callGeminiWithLogging(params: {
     explicitCachingEnabled() &&
     params.supabase != null &&
     disableExplicitCaching !== true;
+  if (!useExplicit && params.supabase != null && route.operation === 'candidate_generation') {
+    info(
+      `${route.operation} explicit_cache disabled (set GEMINI_ENABLE_EXPLICIT_CACHING=false to turn off)`,
+    );
+  }
   const started = Date.now();
+  info(
+    `${route.operation} start model=${model} http_timeout_ms=${geminiHttpTimeoutMs()} stable_chars=${params.stableSystemInstruction.length} cache_key=${params.cacheKey.slice(0, 64)}`,
+  );
 
   const baseMeta: Record<string, unknown> = {
     sub_operation: params.subOperation ?? null,
@@ -260,6 +380,7 @@ export async function callGeminiWithLogging(params: {
   };
 
   if (useExplicit && params.stableSystemInstruction.trim()) {
+    info(`${route.operation} explicit_cache lookup cache_key=${params.cacheKey.slice(0, 64)}`);
     const cacheResult = await getOrCreatePromptCache({
       ai: params.ai,
       supabase: params.supabase!,
@@ -271,6 +392,7 @@ export async function callGeminiWithLogging(params: {
     });
 
     if (cacheResult) {
+      info(`${route.operation} explicit_cache ${cacheResult.path} name=${cacheResult.resourceName}`);
       try {
         const explicitConfig: GenerateContentConfig = {
           ...config,
@@ -306,9 +428,13 @@ export async function callGeminiWithLogging(params: {
             high_demand_503_fallback: usedHighDemandFallback,
           },
         });
+        info(
+          `${route.operation} explicit_generate ok model=${modelUsed} latency_ms=${Date.now() - started}`,
+        );
         return { response, modelUsed };
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = formatGeminiFetchError(e);
+        info(`${route.operation} explicit_generate failed; fallback implicit (${msg})`);
         debug(`explicit generateContent failed; fallback implicit (${msg})`);
         const latency = Date.now() - started;
         await logLlmCall(params.supabase, {
@@ -332,6 +458,8 @@ export async function callGeminiWithLogging(params: {
   }
 
   try {
+    const cachePath = useExplicit ? 'implicit_fallback' : 'implicit';
+    info(`${route.operation} ${cachePath}_generate start`);
     const implicitConfig: GenerateContentConfig = config;
     const { response, modelUsed, usedHighDemandFallback } =
       await modelsGenerateWith503RetriesAndProFallback(params.ai, {
@@ -363,10 +491,14 @@ export async function callGeminiWithLogging(params: {
         high_demand_503_fallback: usedHighDemandFallback,
       },
     });
+    info(
+      `${route.operation} ${useExplicit ? 'implicit_fallback' : 'implicit'}_generate ok model=${modelUsed} latency_ms=${Date.now() - started}`,
+    );
     return { response, modelUsed };
   } catch (e) {
     const latency = Date.now() - started;
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = formatGeminiFetchError(e);
+    info(`${route.operation} generate failed latency_ms=${latency} error=${msg}`);
     await logLlmCall(params.supabase, {
       operation: route.operation,
       model,

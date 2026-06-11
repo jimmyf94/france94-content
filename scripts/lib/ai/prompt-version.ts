@@ -23,6 +23,10 @@ export function cacheKeyAssetAnalysisVideoSampledAudio(version: string, stableIn
   return cacheKeyWithStableFingerprint('fr94_asset_analysis_video_sampled_audio', version, stableInstruction);
 }
 
+export function cacheKeyAssetAnalysisVideoFull(version: string, stableInstruction: string): string {
+  return cacheKeyWithStableFingerprint('fr94_asset_analysis_video_full', version, stableInstruction);
+}
+
 export function cacheKeyCandidateGeneration(version: string, stableInstruction: string): string {
   return cacheKeyWithStableFingerprint('fr94_candidate_generation', version, stableInstruction);
 }
@@ -32,7 +36,9 @@ export function cacheKeyCandidateRegeneration(version: string, stableInstruction
 }
 
 export function explicitCachingEnabled(): boolean {
-  return process.env.GEMINI_ENABLE_EXPLICIT_CACHING?.trim() === 'true';
+  const v = process.env.GEMINI_ENABLE_EXPLICIT_CACHING?.trim().toLowerCase();
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  return true;
 }
 
 export function geminiCacheTtlSeconds(): number {

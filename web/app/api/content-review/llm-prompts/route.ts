@@ -6,6 +6,7 @@ import { z } from 'zod';
 import {
   resolveAnalysisPromptPath,
   resolveAudioTranscriptionPromptPath,
+  resolveVideoFullPromptPath,
   resolveVideoSampledPromptPath,
 } from '@fr94/ai/prompts/asset-analysis.js';
 import {
@@ -46,6 +47,8 @@ function fileBasenameHint(key: StablePromptKey): string {
       return path.basename(resolveAnalysisPromptPath());
     case 'video_sampled_analysis':
       return path.basename(resolveVideoSampledPromptPath());
+    case 'video_full_analysis':
+      return path.basename(resolveVideoFullPromptPath());
     case 'audio_transcription':
       return path.basename(resolveAudioTranscriptionPromptPath());
     default:

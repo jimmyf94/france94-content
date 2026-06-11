@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
+import {
+  dispatchPipelineRun,
+  fetchPipelineStatus,
+  isPipelineRunBusy,
+} from '@/lib/pipeline-run-client';
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
@@ -97,6 +102,8 @@ export function ReviewDashboard() {
   const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
   const [publishingQueueNonce, setPublishingQueueNonce] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
+  const [generatingCandidates, setGeneratingCandidates] = useState(false);
+  const [pipelineRunStatus, setPipelineRunStatus] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [queueThumbnails, setQueueThumbnails] = useState<Record<string, string | null>>({});
   const thumbFetchGen = useRef(0);
@@ -128,6 +135,38 @@ export function ReviewDashboard() {
   );
 
   const [includeBlocked, setIncludeBlocked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const json = await fetchPipelineStatus();
+        if (!cancelled) setPipelineRunStatus(json.last_run_status);
+      } catch {
+        if (!cancelled) setPipelineRunStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const generateCandidates = useCallback(async () => {
+    if (generatingCandidates || isPipelineRunBusy(pipelineRunStatus)) return;
+    setGeneratingCandidates(true);
+    try {
+      const json = await dispatchPipelineRun('candidates_only');
+      setPipelineRunStatus(json.last_run_status);
+      setToast({ kind: 'good', msg: 'Candidate batch dispatched to GitHub Actions.' });
+    } catch (e) {
+      setToast({
+        kind: 'bad',
+        msg: e instanceof Error ? e.message : 'Generate failed',
+      });
+    } finally {
+      setGeneratingCandidates(false);
+    }
+  }, [generatingCandidates, pipelineRunStatus]);
 
   const queryString = useMemo(() => {
     const q = new URLSearchParams();
@@ -340,6 +379,19 @@ export function ReviewDashboard() {
     setCandidates((prev) => prev.map((x) => (x.id === c.id ? toCandidateListItem(c) : x)));
     setSelectedDetail((prev) => (prev?.id === c.id ? c : prev));
   }, []);
+
+  const handleVariantCreated = useCallback(
+    async (c: PostCandidate) => {
+      const row = toCandidateListItem(c);
+      setCandidates((prev) => (prev.some((x) => x.id === row.id) ? prev : [row, ...prev]));
+      setActiveStatusTab('needs_review');
+      setSelectedId(c.id);
+      setSelectedDetail(c);
+      setToast({ kind: 'good', msg: 'Reel variant created — render queued' });
+      await silentReloadCandidates();
+    },
+    [silentReloadCandidates],
+  );
 
   const handleRemoveReviewAsset = useCallback(
     (file: ReviewDriveFile) => {
@@ -698,7 +750,7 @@ export function ReviewDashboard() {
   }, [selected, regenerating, draftNotes, handleCandidateUpdated]);
 
   return (
-    <div className="flex h-[100dvh] flex-col bg-[var(--bg)] text-[var(--text)]">
+    <div className="flex min-h-0 flex-1 flex-col">
       <ReviewHeader
         pendingCount={counts.needs_review}
         filters={filters}
@@ -709,6 +761,9 @@ export function ReviewDashboard() {
         onHealAssetLedger={() => void healStaleAssetLedger()}
         includeBlocked={includeBlocked}
         onToggleIncludeBlocked={() => setIncludeBlocked((v) => !v)}
+        onGenerateCandidates={generateCandidates}
+        generatingCandidates={generatingCandidates}
+        generateDisabled={isPipelineRunBusy(pipelineRunStatus)}
       />
 
       {filtersOpen && (
@@ -756,7 +811,9 @@ export function ReviewDashboard() {
                 reviewDriveFolderUrl={selected.review_drive_folder_url}
                 onRefreshQueue={() => void silentReloadCandidates()}
               />
-              {selected.post_type === 'reel' && <ProductionJobCard candidate={selected} />}
+              {selected.post_type === 'reel' && (
+                <ProductionJobCard candidate={selected} onVariantCreated={handleVariantCreated} />
+              )}
             </>
           )}
           <MediaPreviewStage
@@ -823,11 +880,15 @@ export function ReviewDashboard() {
           onRegisterActivateStream={registerActivatePrimaryVideo}
           firstThumbnailById={queueThumbnails}
           onCandidateUpdated={handleCandidateUpdated}
+          onVariantCreated={handleVariantCreated}
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onRegenerate={regenerate}
           regenerating={regenerating}
           onDelete={() => void deleteCandidate()}
           deleting={deleting}
+          onGenerateCandidates={generateCandidates}
+          generatingCandidates={generatingCandidates}
+          generateDisabled={isPipelineRunBusy(pipelineRunStatus)}
         />
       </div>
 

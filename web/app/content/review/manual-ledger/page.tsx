@@ -12,7 +12,7 @@ type ManualEntry = {
   posted_at: string;
   title: string | null;
   hook: string | null;
-  selected_lane: string | null;
+  selected_series: string | null;
   related_asset_ids: string[];
   created_at: string;
 };
@@ -36,7 +36,7 @@ export default function ManualLedgerPage() {
   const [title, setTitle] = useState('');
   const [hook, setHook] = useState('');
   const [caption, setCaption] = useState('');
-  const [selectedLane, setSelectedLane] = useState('');
+  const [selectedSeries, setSelectedSeries] = useState('');
   const [visualSummary, setVisualSummary] = useState('');
   const [notes, setNotes] = useState('');
   const [permalink, setPermalink] = useState('');
@@ -96,7 +96,7 @@ export default function ManualLedgerPage() {
           title: title || null,
           hook: hook || null,
           caption: caption || null,
-          selected_lane: selectedLane || null,
+          selected_series: selectedSeries || null,
           visual_summary: visualSummary || null,
           notes: notes || null,
           instagram_permalink: permalink || null,
@@ -194,11 +194,11 @@ export default function ManualLedgerPage() {
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-[var(--muted)]">
-              Lane
+              Series
               <input
-                value={selectedLane}
-                onChange={(e) => setSelectedLane(e.target.value)}
-                placeholder="e.g. serious_training"
+                value={selectedSeries}
+                onChange={(e) => setSelectedSeries(e.target.value)}
+                placeholder="e.g. absurd-mission-life-takeover"
                 className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm"
               />
             </label>
@@ -286,7 +286,7 @@ export default function ManualLedgerPage() {
                 >
                   <div className="font-medium">
                     {e.post_type}
-                    {e.selected_lane ? ` · ${e.selected_lane}` : ''}
+                    {e.selected_series ? ` · ${e.selected_series}` : ''}
                   </div>
                   <div className="text-[var(--muted)]">
                     {e.title || '(no title)'} · {new Date(e.posted_at).toLocaleString()}

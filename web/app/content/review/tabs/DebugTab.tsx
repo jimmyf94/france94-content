@@ -162,7 +162,7 @@ export function DebugTab({ candidate }: { candidate: PostCandidate }) {
           {candidate.collision_summary ? (
             <KV k="collision_summary" v={candidate.collision_summary} />
           ) : null}
-          {candidate.selected_lane ? <KV k="selected_lane" v={candidate.selected_lane} /> : null}
+          {candidate.selected_series ? <KV k="selected_series" v={candidate.selected_series} /> : null}
           {candidate.collision_overridden_at ? (
             <KV
               k="collision_overridden"

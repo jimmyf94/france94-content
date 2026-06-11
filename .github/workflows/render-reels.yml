@@ -1,0 +1,33 @@
+name: render-reels
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: render-reels
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run render:reels
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_OAUTH_CLIENT_SECRETS_JSON: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRETS_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_DRIVE_PROCESSED_RAW_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PROCESSED_RAW_FOLDER_ID }}
+          GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID }}
+          PUBLIC_MEDIA_BUCKET_NAME: ${{ secrets.PUBLIC_MEDIA_BUCKET_NAME }}
+          PUBLIC_MEDIA_BASE_URL: ${{ secrets.PUBLIC_MEDIA_BASE_URL }}

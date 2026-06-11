@@ -28,20 +28,29 @@ export function buildPostPlannerDynamicText(params: {
   assumeColdAudience?: boolean;
   avoidRecentRejections?: unknown[];
   committedRecentPosts?: unknown[];
+  forceSeriesSlug?: string;
+  postTypeHint?: string;
 }): string {
   const now = new Date();
   const currentDate = params.currentDate ?? now.toISOString().slice(0, 10);
   const currentPhase = params.currentPhase ?? resolveFr94Phase(now);
+  const constraints: Record<string, unknown> = {
+    batch_days: params.batchDays,
+    daily_target: params.dailyTarget,
+    asset_count: params.summaries.length,
+    enabled_post_types: params.enabledPostTypes,
+    current_date: currentDate,
+    current_phase: currentPhase,
+    assume_cold_audience: params.assumeColdAudience ?? false,
+  };
+  if (params.forceSeriesSlug?.trim()) {
+    constraints.force_series = params.forceSeriesSlug.trim();
+  }
+  if (params.postTypeHint?.trim()) {
+    constraints.post_type_hint = params.postTypeHint.trim();
+  }
   const dynamicPayload: Record<string, unknown> = {
-    constraints: {
-      batch_days: params.batchDays,
-      daily_target: params.dailyTarget,
-      asset_count: params.summaries.length,
-      enabled_post_types: params.enabledPostTypes,
-      current_date: currentDate,
-      current_phase: currentPhase,
-      assume_cold_audience: params.assumeColdAudience ?? false,
-    },
+    constraints,
     assets: params.summaries,
   };
   if (params.avoidRecentRejections && params.avoidRecentRejections.length > 0) {

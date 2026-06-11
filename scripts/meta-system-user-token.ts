@@ -28,7 +28,7 @@ for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.lo
 
 /** Default scopes for Instagram publishing prep + Page access (Meta-supported list). */
 const DEFAULT_META_SYSTEM_USER_SCOPES =
-  'instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list';
+  'instagram_basic,instagram_content_publish,instagram_manage_insights,pages_read_engagement,pages_show_list';
 
 function mask(s: string): string {
   if (s.length <= 14) return '(too short to mask)';

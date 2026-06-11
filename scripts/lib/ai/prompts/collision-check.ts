@@ -7,7 +7,7 @@ export type CollisionCheckCandidateInput = {
   hook: string | null;
   concept_summary: string | null;
   caption_fr: string | null;
-  selected_lane: string | null;
+  selected_series: string | null;
   narrative_function: string | null;
   title_overlay: string | null;
   source_asset_ids: string[];

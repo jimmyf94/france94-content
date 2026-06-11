@@ -1,8 +1,8 @@
 # Task: regenerate a candidate from reviewer notes
 
 You are rewriting **one existing France94 post candidate** after human
-review. The context blocks above (`user_voice`, `mission`, `content_lanes`,
-`editorial_rules`) still bind you.
+review. The context blocks above (`user_voice`, `mission`, `editorial_rules`)
+and the active content series block still bind you.
 
 ## Input
 
@@ -33,7 +33,7 @@ A dynamic JSON payload follows this prompt. It contains:
 - Keep the same `post_type` unless the notes clearly imply the format is
   wrong (e.g. "this should be a reel, not a static post"), or the assets
   no longer support the current format.
-- Keep `selected_lane` the same unless the notes imply a better lane,
+- Keep `selected_series` the same unless the notes imply a better series,
   or the assets no longer fit it.
 - If the assets were reduced and the concept no longer works, lower the
   scores and add a `warnings` entry rather than inventing content.
@@ -44,7 +44,7 @@ A dynamic JSON payload follows this prompt. It contains:
   generation. The forbidden-phrase list applies — if the current caption
   contains a banned phrase, fix it even if the notes don't mention it.
 - French-first. English optional and concise.
-- CTA discipline from `mission.md` and `content_lanes.md` applies.
+- CTA discipline from `mission.md` and the active series applies.
 
 ## Output
 
@@ -66,9 +66,8 @@ one rewritten candidate using this schema:
   "human_score": 0,
   "sponsor_safety_score": 0,
   "effort_score": 0,
-  "selected_lane": "serious_training",
-  "secondary_flavor": "logistics_hell",
-  "lane_reasoning": "why this lane still fits",
+  "selected_series": "absurd-mission-life-takeover",
+  "series_reasoning": "why this series still fits",
   "target_audience": "who this is for in one short phrase",
   "asset_fit_score": 0,
   "caption_strategy": "one sentence on what the caption is trying to do",

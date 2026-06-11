@@ -1,3 +1,28 @@
+export type ReelReasoning = {
+  why_script_works?: string;
+  why_clips_support_script?: string;
+  emotional_contrast?: string;
+  scroll_stop?: string;
+  series_fit?: string;
+  clips_vs_alternatives?: string;
+};
+
+export const REEL_VARIANT_KINDS = [
+  'different_pov',
+  'different_clip_order',
+  'different_hook',
+  'different_series',
+] as const;
+
+export type ReelVariantKind = (typeof REEL_VARIANT_KINDS)[number];
+
+export const REEL_VARIANT_LABELS: Record<ReelVariantKind, string> = {
+  different_pov: 'A · Different POV',
+  different_clip_order: 'B · Clip order',
+  different_hook: 'C · Different hook',
+  different_series: 'D · Different series',
+};
+
 export type PostCandidate = {
   id: string;
   candidate_date: string | null;
@@ -43,7 +68,11 @@ export type PostCandidate = {
   asset_conflict_summary?: string | null;
   freshness_warning?: string | null;
   is_fresh_story?: boolean | null;
-  selected_lane?: string | null;
+  selected_series?: string | null;
+  selected_clip_ids?: string[] | null;
+  reel_reasoning?: ReelReasoning | null;
+  variant_of?: string | null;
+  variant_kind?: ReelVariantKind | null;
   narrative_function?: string | null;
   title_overlay?: string | null;
   collision_risk?: string | null;

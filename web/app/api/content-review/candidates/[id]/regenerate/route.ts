@@ -189,6 +189,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     human_score: rewritten.human_score,
     sponsor_safety_score: rewritten.sponsor_safety_score,
     effort_score: rewritten.effort_score,
+    ...(rewritten.selected_series?.trim()
+      ? { selected_series: rewritten.selected_series.trim() }
+      : {}),
     // Keep current status (e.g. needs_rewrite stays in the rewrite queue);
     // reviewer decides when to move it forward.
     llm_model: llmResult.model,

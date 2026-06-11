@@ -7,7 +7,7 @@ export type ContentLedgerRow = {
   manual_id: string | null;
   platform: string | null;
   post_type: string;
-  selected_lane: string | null;
+  selected_series: string | null;
   narrative_function: string | null;
   title: string | null;
   hook: string | null;
@@ -28,7 +28,7 @@ export type CommittedPostForPrompt = {
   ledger_id: string;
   source: string;
   post_type: string;
-  selected_lane: string | null;
+  selected_series: string | null;
   title: string | null;
   hook: string | null;
   primary_asset_id: string | null;
@@ -46,7 +46,7 @@ export function toCommittedPostForPrompt(row: ContentLedgerRow): CommittedPostFo
     ledger_id: row.ledger_id,
     source: row.source,
     post_type: row.post_type,
-    selected_lane: row.selected_lane,
+    selected_series: row.selected_series,
     title: row.title,
     hook: row.hook,
     primary_asset_id: row.primary_asset_id,

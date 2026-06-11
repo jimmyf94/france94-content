@@ -34,7 +34,22 @@ type ProductionJobRow = {
   status: string;
   source_asset_ids: string[] | null;
   instructions: unknown;
+  reel_specification: unknown;
 };
+
+/** clips-v1 specs carry their own asset ordering (unique asset ids by first appearance). */
+function assetIdsFromSpec(spec: unknown): string[] | null {
+  if (spec == null || typeof spec !== 'object' || Array.isArray(spec)) return null;
+  const o = spec as Record<string, unknown>;
+  if (o.version !== 'clips-v1' || !Array.isArray(o.clips)) return null;
+  const ids: string[] = [];
+  for (const c of o.clips) {
+    if (c == null || typeof c !== 'object') continue;
+    const id = (c as Record<string, unknown>).asset_id;
+    if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id);
+  }
+  return ids.length > 0 ? ids : null;
+}
 
 type AssetRow = {
   id: string;
@@ -61,7 +76,11 @@ async function processOneJob(
 ): Promise<void> {
   const jobId = job.id;
   const candidateId = job.post_candidate_id;
-  const rawIds = Array.isArray(job.source_asset_ids) ? job.source_asset_ids.filter(Boolean) : [];
+  const spec = job.reel_specification ?? job.instructions;
+  const specAssetIds = assetIdsFromSpec(spec);
+  const rawIds =
+    specAssetIds ??
+    (Array.isArray(job.source_asset_ids) ? job.source_asset_ids.filter(Boolean) : []);
   const uniqueIds = [...new Set(rawIds)];
 
   if (uniqueIds.length === 0) {
@@ -146,7 +165,11 @@ async function processOneJob(
 
   let rendered: Awaited<ReturnType<typeof renderReel>>;
   try {
-    rendered = await renderReel({ sourceVideos: buffers, instructions: job.instructions });
+    rendered = await renderReel({
+      sourceVideos: buffers,
+      instructions: spec,
+      sourceAssetIds: ordered.map((r) => r.id),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await setJob(supabase, jobId, {
@@ -182,13 +205,46 @@ async function processOneJob(
     return;
   }
 
+  let thumbnailUrl: string | null = null;
+  if (rendered.thumbnailJpeg?.length) {
+    try {
+      const up = await uploadPublicMedia({
+        supabase,
+        bucket,
+        publicBaseUrl: publicBase,
+        objectPath: `instagram/production/${candidateId}/${jobId}.jpg`,
+        body: rendered.thumbnailJpeg,
+        contentType: 'image/jpeg',
+      });
+      thumbnailUrl = up.publicUrl;
+    } catch (e) {
+      console.warn(`[render:reels]\tthumbnail upload failed\t${jobId}`, e);
+    }
+  }
+
   await setJob(supabase, jobId, {
     status: 'produced',
     output_video_url: publicUrl,
-    render_strategy: 'ffmpeg-deterministic-v1',
+    thumbnail_url: thumbnailUrl,
+    render_strategy: 'ffmpeg-deterministic-v2',
     render_log: rendered.log,
+    reel_specification: spec ?? null,
     error_message: null,
   });
+
+  // Attach the rendered preview to the candidate so the review UI surfaces it.
+  if (thumbnailUrl) {
+    try {
+      const { error } = await supabase
+        .from('post_candidates')
+        .update({ cover_thumbnail_url: thumbnailUrl, updated_at: new Date().toISOString() })
+        .eq('id', candidateId)
+        .is('cover_thumbnail_url', null);
+      if (error) console.warn(`[render:reels]\tcandidate thumb attach failed\t${candidateId}: ${error.message}`);
+    } catch (e) {
+      console.warn(`[render:reels]\tcandidate thumb attach failed\t${candidateId}`, e);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -200,7 +256,7 @@ async function main(): Promise<void> {
 
   const { data: jobs, error } = await supabase
     .from('production_jobs')
-    .select('id,post_candidate_id,production_type,status,source_asset_ids,instructions')
+    .select('id,post_candidate_id,production_type,status,source_asset_ids,instructions,reel_specification')
     .eq('production_type', 'reel')
     .eq('status', 'queued')
     .order('created_at', { ascending: true });

@@ -16,6 +16,7 @@
     "auto:ingest-tick": "tsx scripts/run-auto-ingest-tick.ts",
     "geocode:assets": "tsx scripts/reverse-geocode-assets.ts",
     "backfill:thumbnails": "tsx scripts/backfill-asset-thumbnails.ts",
+    "backfill:clips": "tsx scripts/backfill-content-clips.ts",
     "oauth:google-drive": "tsx scripts/google-oauth-setup.ts",
     "check:drive-token": "tsx scripts/check-google-drive-token.ts",
     "check:instagram-token": "tsx scripts/check-instagram-graph-token.ts",
@@ -36,6 +37,7 @@
     "heic-convert": "^2.1.0",
     "jsonrepair": "^3.14.0",
     "sharp": "^0.34.5",
+    "undici": "^7.27.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

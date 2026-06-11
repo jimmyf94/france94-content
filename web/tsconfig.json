@@ -24,7 +24,11 @@
       "@fr94/review-folder-thumbnail": ["../scripts/lib/review-folder-thumbnail"],
       "@fr94/drive-media-download": ["../scripts/lib/drive-media-download"],
       "@fr94/drive-video-poster": ["../scripts/lib/drive-video-poster"],
-      "@fr94/video-preprocess": ["../scripts/lib/video-preprocess"]
+      "@fr94/video-preprocess": ["../scripts/lib/video-preprocess"],
+      "@fr94/content-series": ["../scripts/lib/content-series"],
+      "@fr94/reel-assembly": ["../scripts/lib/reel-assembly"],
+      "@fr94/content-clips": ["../scripts/lib/content-clips"],
+      "@fr94/publishing/instagram-graph": ["../scripts/lib/publishing/instagram-graph"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

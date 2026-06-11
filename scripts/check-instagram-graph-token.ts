@@ -14,7 +14,11 @@ import dotenv from 'dotenv';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 
-for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.local')]) {
+for (const envPath of [
+  path.join(repoRoot, 'web', '.env'),
+  path.join(repoRoot, '.env'),
+  path.join(repoRoot, '.env.local'),
+]) {
   dotenv.config({ path: envPath });
 }
 
@@ -86,6 +90,33 @@ async function main(): Promise<void> {
 
   console.log('\nOK — Graph accepted the token for this IG user:');
   console.log(JSON.stringify(json, null, 2));
+
+  const mediaProbe = await fetch(
+    `https://graph.facebook.com/${v}/${encodeURIComponent(igUserId)}/media?fields=id&limit=1&access_token=${encodeURIComponent(accessToken)}`,
+  );
+  const mediaJson = (await mediaProbe.json()) as { data?: { id?: string }[] };
+  const sampleMediaId = mediaJson.data?.[0]?.id;
+  if (sampleMediaId) {
+    const { probeInsightsPermission } = await import('./lib/publishing/instagram-graph.js');
+    try {
+      const insightsOk = await probeInsightsPermission(sampleMediaId);
+      if (insightsOk) {
+        console.log('\nInsights probe: OK — instagram_manage_insights appears granted.');
+      } else {
+        console.warn(
+          '\nInsights probe: MISSING — token lacks instagram_manage_insights (Graph #10).',
+        );
+        console.warn(
+          '  Feedback views / avg watch time will show "—" until you regenerate the token with that scope.',
+        );
+        console.warn(
+          '  Add instagram_manage_insights to META_SYSTEM_USER_SCOPES, then: npm run meta:system-user:generate',
+        );
+      }
+    } catch (e) {
+      console.warn('\nInsights probe failed:', e instanceof Error ? e.message : e);
+    }
+  }
 
   const appId = process.env.META_APP_ID?.trim();
   const appSecret = process.env.META_APP_SECRET?.trim();

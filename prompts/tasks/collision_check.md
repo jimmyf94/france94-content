@@ -6,7 +6,7 @@ You are the France94 content collision judge. Context blocks above define voice 
 
 A dynamic JSON payload follows with:
 
-- `candidate` — proposed post (post_type, title, hook, concept_summary, caption_fr excerpt, selected_lane, narrative_function, title_overlay, source_asset_ids, primary_asset_id).
+- `candidate` — proposed post (post_type, title, hook, concept_summary, caption_fr excerpt, selected_series, narrative_function, title_overlay, source_asset_ids, primary_asset_id).
 - `recent_committed` — posts already approved, scheduled, published, or manually logged (lane, hook, assets, timing).
 
 ## Your job

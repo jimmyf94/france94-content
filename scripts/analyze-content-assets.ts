@@ -22,9 +22,16 @@ import {
   probeVideo,
   withTempDir,
 } from './lib/video-preprocess.js';
-import { callGeminiWithLogging, getResolvedModelRoute, responseToJson } from './lib/ai/gemini-client.js';
+import {
+  callGeminiWithLogging,
+  createGeminiClient,
+  formatGeminiFetchError,
+  getResolvedModelRoute,
+  responseToJson,
+} from './lib/ai/gemini-client.js';
 import {
   cacheKeyAssetAnalysisImage,
+  cacheKeyAssetAnalysisVideoFull,
   cacheKeyAssetAnalysisVideoSampledAudio,
   cacheKeyAssetAnalysisVideoSampledFrames,
   getFr94PromptVersion,
@@ -40,6 +47,12 @@ import {
   persistAssetThumbnailFields,
   uploadAssetThumbnail,
 } from './lib/asset-thumbnail.js';
+import {
+  replaceContentClips,
+  sanitizeParsedClips,
+  type ParsedClip,
+} from './lib/content-clips.js';
+import { loadActiveSeries } from './lib/content-series.js';
 
 const activityEnum = z.enum([
   'run',
@@ -98,10 +111,38 @@ const geminiAnalysisSchema = z.object({
 
 export type GeminiAnalysis = z.infer<typeof geminiAnalysisSchema>;
 
+const stringArray = z.preprocess(
+  (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()) : []),
+  z.array(z.string()),
+);
+
+const geminiClipSchema = z.object({
+  start_sec: z.number().min(0),
+  end_sec: z.number(),
+  visual_summary: z.string(),
+  transcript_excerpt: z.preprocess((v) => (typeof v === 'string' ? v : ''), z.string()).default(''),
+  supported_reel_formats: stringArray.default([]),
+  fitting_series_slugs: stringArray.default([]),
+  pov_concepts: stringArray.default([]),
+  hooks: stringArray.default([]),
+  emotional_tags: stringArray.default([]),
+  tension_tags: stringArray.default([]),
+  visual_tags: stringArray.default([]),
+  discovery_tags: stringArray.default([]),
+  could_be_used_for: stringArray.default([]),
+});
+
+const geminiVideoFullSchema = geminiAnalysisSchema.extend({
+  clips: z.preprocess((v) => (Array.isArray(v) ? v : []), z.array(geminiClipSchema)).default([]),
+});
+
+export type GeminiVideoFullAnalysis = z.infer<typeof geminiVideoFullSchema>;
+
 export type AnalysisStrategy =
   | 'image_direct'
   | 'video_frames_only'
   | 'video_frames_plus_audio'
+  | 'video_full'
   | 'video_full_low_res'
   | 'audio_only'
   | 'too_large';
@@ -159,7 +200,7 @@ export function getSupabaseClient(): SupabaseClient {
 }
 
 export function getGenAI(): GoogleGenAI {
-  return new GoogleGenAI({ apiKey: requireEnv('GEMINI_API_KEY') });
+  return createGeminiClient(requireEnv('GEMINI_API_KEY'));
 }
 
 async function countPendingAssets(supabase: SupabaseClient): Promise<number> {
@@ -283,6 +324,33 @@ export function parseGeminiJson(rawText: string): GeminiAnalysis {
   const result = geminiAnalysisSchema.safeParse(parsed);
   if (!result.success) {
     throw new Error(`Invalid analysis schema: ${result.error.message}`);
+  }
+  return result.data;
+}
+
+/** Parse full-video output (asset analysis + clips); same JSON repair pass as parseGeminiJson. */
+export function parseGeminiVideoFullJson(rawText: string): GeminiVideoFullAnalysis {
+  const trimmed = stripCodeFences(rawText.trim());
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    const extracted = extractJsonObject(trimmed);
+    if (!extracted) {
+      throw new Error('Model output was not valid JSON (repair pass found no JSON object)');
+    }
+    try {
+      parsed = JSON.parse(extracted);
+    } catch (e2) {
+      const msg = e2 instanceof Error ? e2.message : String(e2);
+      throw new Error(`JSON repair pass failed: ${msg}`);
+    }
+  }
+
+  const result = geminiVideoFullSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new Error(`Invalid full-video analysis schema: ${result.error.message}`);
   }
   return result.data;
 }
@@ -641,6 +709,184 @@ export async function analyzeVideoSampled(
   });
 }
 
+export class FullVideoNotEligibleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FullVideoNotEligibleError';
+  }
+}
+
+export type VideoFullResult = {
+  analysis: GeminiAnalysis;
+  clips: ParsedClip[];
+  rawResponse: Record<string, unknown>;
+  strategy: 'video_full';
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+  audioTranscript: string;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  captureTime: string | null;
+  cameraMake: string | null;
+  cameraModel: string | null;
+  llmModel: string;
+};
+
+function maxFullVideoBytes(): number {
+  const mb = envInt('MAX_FULL_VIDEO_ANALYSIS_MB', 300);
+  return mb * 1024 * 1024;
+}
+
+function maxFullVideoDurationSec(): number {
+  return envInt('MAX_FULL_VIDEO_DURATION_SEC', 900);
+}
+
+/**
+ * Full-video ingest analysis: upload the entire video (with audio) to Gemini,
+ * get asset-level metadata plus semantic clip segmentation in one call.
+ * Throws FullVideoNotEligibleError when guardrails fail (caller falls back to sampled).
+ */
+export async function analyzeVideoFull(
+  ai: GoogleGenAI,
+  params: {
+    buffer: Buffer;
+    mimeType: string;
+    displayName: string;
+    fileExtension: string;
+    contentAssetId?: string;
+    llm?: { supabase: SupabaseClient | null; promptVersion: string };
+  },
+): Promise<VideoFullResult> {
+  const { buffer, mimeType, displayName, fileExtension } = params;
+
+  if (buffer.length > maxFullVideoBytes()) {
+    throw new FullVideoNotEligibleError(
+      `video size ${buffer.length} bytes exceeds MAX_FULL_VIDEO_ANALYSIS_MB cap`,
+    );
+  }
+
+  const route = await getResolvedModelRoute(params.llm?.supabase ?? null, 'asset_analysis_video_full');
+  const supabase = params.llm?.supabase ?? null;
+
+  return withTempDir('fr94-video-full-', async (dir) => {
+    const inputPath = path.join(dir, `input.${fileExtension}`);
+    fs.writeFileSync(inputPath, buffer);
+
+    const probe = await probeVideo(inputPath);
+    console.log(
+      `[ffprobe]\tduration=${probe.durationSeconds ?? 'null'}s\t${probe.width ?? '?'}x${probe.height ?? '?'}\taudio=${probe.hasAudio}`,
+    );
+
+    if (probe.durationSeconds != null && probe.durationSeconds > maxFullVideoDurationSec()) {
+      throw new FullVideoNotEligibleError(
+        `video duration ${probe.durationSeconds}s exceeds MAX_FULL_VIDEO_DURATION_SEC cap`,
+      );
+    }
+
+    const activeSeries = await loadActiveSeries(supabase);
+    const seriesContext = activeSeries.map((s) => ({
+      slug: s.slug,
+      name: s.name,
+      description: [s.description, s.body_md].filter((t) => t?.trim()).join('\n').slice(0, 600),
+    }));
+
+    const stable = (await loadResolvedStablePrompt(supabase, 'video_full_analysis')).text;
+    const dynamic = buildVideoSampledMetadataDynamicText({
+      original_filename: displayName,
+      mime_type: mimeType,
+      duration_seconds: probe.durationSeconds,
+      width: probe.width,
+      height: probe.height,
+      has_audio: probe.hasAudio,
+      active_series: seriesContext,
+    });
+
+    // Upload from disk path — Blob uploads break with our long-timeout fetch patch.
+    console.log(`[video_full]\tuploading ${buffer.length} bytes from ${inputPath}`);
+    const uploaded = await ai.files.upload({
+      file: inputPath,
+      config: { mimeType, displayName: displayName.slice(0, 480) },
+    });
+    const uploadedName = uploaded.name;
+    if (!uploadedName) {
+      throw new Error('Gemini files.upload returned no file name');
+    }
+
+    try {
+      await waitForGeminiFileActive(ai, uploadedName);
+      const refreshed = await ai.files.get({ name: uploadedName });
+      const uri = refreshed.uri;
+      if (!uri) {
+        throw new Error('Gemini file has no uri after ACTIVE');
+      }
+
+      const promptVersion = params.llm?.promptVersion ?? getFr94PromptVersion();
+      const { response, modelUsed } = await callGeminiWithLogging({
+        ai,
+        supabase,
+        route,
+        subOperation: 'video_full',
+        promptVersion,
+        cacheKey: cacheKeyAssetAnalysisVideoFull(promptVersion, stable),
+        stableSystemInstruction: stable,
+        disableExplicitCaching: true,
+        entity: params.contentAssetId
+          ? {
+              content_asset_id: params.contentAssetId,
+              prompt_keys: ['video_full_analysis'],
+              pipeline_step: 'asset_analysis_video_full',
+            }
+          : undefined,
+        getContentsImplicit: () => [
+          createPartFromUri(uri, mimeType),
+          createPartFromText(`${stable}\n\n${dynamic}`),
+        ],
+        getContentsExplicit: () => [createPartFromUri(uri, mimeType), createPartFromText(dynamic)],
+      });
+
+      const finishReason = (
+        response.candidates?.[0] as { finishReason?: string } | undefined
+      )?.finishReason;
+      if (finishReason === 'MAX_TOKENS') {
+        throw new Error(
+          'Gemini truncated full-video JSON (MAX_TOKENS); raise max_output_tokens for asset_analysis_video_full',
+        );
+      }
+
+      const text = response.text?.trim();
+      if (!text) {
+        throw new Error('Gemini returned empty text for full video analysis');
+      }
+
+      const full = parseGeminiVideoFullJson(text);
+      const { clips: rawClips, ...analysis } = full;
+      const clips = sanitizeParsedClips(rawClips, probe.durationSeconds);
+
+      return {
+        analysis,
+        clips,
+        rawResponse: responseToJson(response),
+        strategy: 'video_full',
+        durationSeconds: probe.durationSeconds,
+        width: probe.width,
+        height: probe.height,
+        audioTranscript: analysis.transcript?.trim() ?? '',
+        latitude: probe.latitude,
+        longitude: probe.longitude,
+        altitude: probe.altitude,
+        captureTime: probe.captureTime,
+        cameraMake: probe.cameraMake,
+        cameraModel: probe.cameraModel,
+        llmModel: modelUsed,
+      };
+    } finally {
+      await safeDeleteGeminiFile(ai, uploadedName);
+    }
+  });
+}
+
 export async function updateAssetAnalysis(
   supabase: SupabaseClient,
   assetId: string,
@@ -804,11 +1050,11 @@ export async function tryPersistAssetThumbnailFromBuffer(
   }
 }
 
-function resolveVideoAnalysisMode(): 'sampled' | 'frames_only' {
+function resolveVideoAnalysisMode(): 'full' | 'sampled' | 'frames_only' {
   const raw = process.env.VIDEO_ANALYSIS_MODE?.trim().toLowerCase();
-  if (!raw) return 'sampled';
-  if (raw === 'sampled' || raw === 'frames_only') return raw;
-  throw new Error(`Invalid VIDEO_ANALYSIS_MODE: ${raw} (expected sampled or frames_only)`);
+  if (!raw) return 'full';
+  if (raw === 'full' || raw === 'sampled' || raw === 'frames_only') return raw;
+  throw new Error(`Invalid VIDEO_ANALYSIS_MODE: ${raw} (expected full, sampled or frames_only)`);
 }
 
 export async function analyzePendingAssets(): Promise<void> {
@@ -828,7 +1074,9 @@ export async function analyzePendingAssets(): Promise<void> {
   const llmCtx = { supabase, promptVersion };
 
   const pending = await countPendingAssets(supabase);
-  console.log(`pending content_assets (status=new): ${pending}`);
+  console.log(
+    `pending content_assets (status=new): ${pending}\tvideo_mode=${videoMode}\tfull_cap_mb=${envInt('MAX_FULL_VIDEO_ANALYSIS_MB', 300)}\tfull_cap_sec=${maxFullVideoDurationSec()}`,
+  );
 
   const rows = await getPendingAssets(supabase, batchSize);
   if (rows.length === 0) {
@@ -906,43 +1154,93 @@ export async function analyzePendingAssets(): Promise<void> {
       let videoGeoSource: string | null = null;
       let llmModelForDb = '';
 
+      let fullClips: ParsedClip[] | null = null;
+
       if (category === 'video') {
-        console.log(`[video]\tsampled preprocess + analyze\t${asset.id}`);
-        const result = await analyzeVideoSampled(ai, {
-          buffer,
-          mimeType,
-          displayName: label,
-          fileExtension: fileExtensionFromAsset(asset),
-          contentAssetId: asset.id,
-          config: {
-            mode: videoMode,
-            frameMaxWidth: videoFrameMaxWidth,
-            maxSampleFrames: videoMaxSampleFrames,
-          },
-          llm: llmCtx,
-        });
-        analysis = result.analysis;
-        rawResponse = result.rawResponse;
-        strategy = result.strategy;
-        durationSeconds = result.durationSeconds;
-        videoWidth = result.width;
-        videoHeight = result.height;
-        frameSampleCount = result.frameSamplePaths.length;
-        frameSamplePaths = result.frameSamplePaths;
-        audioTranscript = result.audioTranscript || null;
-        videoLatitude = result.latitude;
-        videoLongitude = result.longitude;
-        videoAltitude = result.altitude;
-        videoCaptureTime = result.captureTime;
-        videoCameraMake = result.cameraMake;
-        videoCameraModel = result.cameraModel;
-        if (result.latitude != null && result.longitude != null) {
-          videoGeoSource = 'ffprobe_quicktime';
-          console.log(
-            `[geo]\tlat=${result.latitude}\tlon=${result.longitude}\tsrc=ffprobe_quicktime\t${asset.id}`,
-          );
+        let fullResult: VideoFullResult | null = null;
+        if (videoMode === 'full') {
+          console.log(`[video]\tfull-video analyze\t${asset.id}`);
+          try {
+            fullResult = await analyzeVideoFull(ai, {
+              buffer,
+              mimeType,
+              displayName: label,
+              fileExtension: fileExtensionFromAsset(asset),
+              contentAssetId: asset.id,
+              llm: llmCtx,
+            });
+          } catch (e) {
+            const kind =
+              e instanceof FullVideoNotEligibleError ? 'ineligible' : 'failed';
+            const msg =
+              e instanceof Error ? formatGeminiFetchError(e) : String(e);
+            console.warn(
+              `[video_full]\tfallback to sampled (${kind})\t${asset.id}\t${truncateErrorMessage(msg, 800)}`,
+            );
+          }
         }
-        llmModelForDb = result.llmModel;
+
+        if (fullResult) {
+          analysis = fullResult.analysis;
+          rawResponse = fullResult.rawResponse;
+          strategy = fullResult.strategy;
+          durationSeconds = fullResult.durationSeconds;
+          videoWidth = fullResult.width;
+          videoHeight = fullResult.height;
+          audioTranscript = fullResult.audioTranscript || null;
+          videoLatitude = fullResult.latitude;
+          videoLongitude = fullResult.longitude;
+          videoAltitude = fullResult.altitude;
+          videoCaptureTime = fullResult.captureTime;
+          videoCameraMake = fullResult.cameraMake;
+          videoCameraModel = fullResult.cameraModel;
+          if (fullResult.latitude != null && fullResult.longitude != null) {
+            videoGeoSource = 'ffprobe_quicktime';
+            console.log(
+              `[geo]\tlat=${fullResult.latitude}\tlon=${fullResult.longitude}\tsrc=ffprobe_quicktime\t${asset.id}`,
+            );
+          }
+          llmModelForDb = fullResult.llmModel;
+          fullClips = fullResult.clips;
+          console.log(`[video_full]\tclips=${fullClips.length}\t${asset.id}`);
+        } else {
+          console.log(`[video]\tsampled preprocess + analyze\t${asset.id}`);
+          const result = await analyzeVideoSampled(ai, {
+            buffer,
+            mimeType,
+            displayName: label,
+            fileExtension: fileExtensionFromAsset(asset),
+            contentAssetId: asset.id,
+            config: {
+              mode: videoMode === 'frames_only' ? 'frames_only' : 'sampled',
+              frameMaxWidth: videoFrameMaxWidth,
+              maxSampleFrames: videoMaxSampleFrames,
+            },
+            llm: llmCtx,
+          });
+          analysis = result.analysis;
+          rawResponse = result.rawResponse;
+          strategy = result.strategy;
+          durationSeconds = result.durationSeconds;
+          videoWidth = result.width;
+          videoHeight = result.height;
+          frameSampleCount = result.frameSamplePaths.length;
+          frameSamplePaths = result.frameSamplePaths;
+          audioTranscript = result.audioTranscript || null;
+          videoLatitude = result.latitude;
+          videoLongitude = result.longitude;
+          videoAltitude = result.altitude;
+          videoCaptureTime = result.captureTime;
+          videoCameraMake = result.cameraMake;
+          videoCameraModel = result.cameraModel;
+          if (result.latitude != null && result.longitude != null) {
+            videoGeoSource = 'ffprobe_quicktime';
+            console.log(
+              `[geo]\tlat=${result.latitude}\tlon=${result.longitude}\tsrc=ffprobe_quicktime\t${asset.id}`,
+            );
+          }
+          llmModelForDb = result.llmModel;
+        }
       } else {
         console.log(`[gemini]\tupload + analyze\t${asset.id}`);
         const result = await analyzeWithGemini(ai, {
@@ -1026,6 +1324,24 @@ export async function analyzePendingAssets(): Promise<void> {
       });
 
       console.log(`[supabase]\tstatus=analyzed\t${asset.id}`);
+
+      if (fullClips != null) {
+        try {
+          const clipResult = await replaceContentClips(supabase, {
+            contentAssetId: asset.id,
+            clips: fullClips,
+            videoBuffer: buffer,
+            fileExtension: fileExtensionFromAsset(asset),
+          });
+          console.log(
+            `[clips]\tinserted=${clipResult.inserted}\tthumbnails=${clipResult.thumbnails}\t${asset.id}`,
+          );
+        } catch (clipErr) {
+          const msg = clipErr instanceof Error ? clipErr.message : String(clipErr);
+          console.warn(`[clips]\tpersist failed (non-fatal)\t${asset.id}\t${truncateErrorMessage(msg, 300)}`);
+        }
+      }
+
       analyzed += 1;
     } catch (e) {
       await markAssetError(supabase, asset.id, e, 'failed');

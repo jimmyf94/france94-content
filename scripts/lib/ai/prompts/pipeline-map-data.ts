@@ -3,17 +3,18 @@
 export type StablePromptKey =
   | 'direct_media_analysis'
   | 'video_sampled_analysis'
+  | 'video_full_analysis'
   | 'audio_transcription'
   | 'context_user_voice'
   | 'context_mission'
-  | 'context_content_lanes'
   | 'context_editorial_rules'
   | 'task_generate_candidate'
   | 'task_regenerate_with_notes'
   | 'task_caption_rewrite'
   | 'task_story_sequence'
   | 'task_reel_caption_overlay'
-  | 'task_collision_check';
+  | 'task_collision_check'
+  | 'task_reel_reasoning';
 
 export type PromptGroupKey = 'context' | 'task_wired' | 'task_unwired' | 'analysis';
 
@@ -48,14 +49,12 @@ export type PipelineStepDef = {
 export const STABLE_CONTEXT_KEY_LIST = [
   'context_user_voice',
   'context_mission',
-  'context_content_lanes',
   'context_editorial_rules',
 ] as const satisfies readonly StablePromptKey[];
 
 export const STABLE_PROMPT_KEY_LIST = [
   'context_user_voice',
   'context_mission',
-  'context_content_lanes',
   'context_editorial_rules',
   'task_generate_candidate',
   'task_regenerate_with_notes',
@@ -63,8 +62,10 @@ export const STABLE_PROMPT_KEY_LIST = [
   'task_story_sequence',
   'task_reel_caption_overlay',
   'task_collision_check',
+  'task_reel_reasoning',
   'direct_media_analysis',
   'video_sampled_analysis',
+  'video_full_analysis',
   'audio_transcription',
 ] as const satisfies readonly StablePromptKey[];
 
@@ -104,13 +105,6 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
     wired: true,
   },
   {
-    key: 'context_content_lanes',
-    title: 'Context · Content lanes',
-    hint: 'Editorial lanes the model picks from (serious_training, logistics_hell, …).',
-    group: 'context',
-    wired: true,
-  },
-  {
     key: 'context_editorial_rules',
     title: 'Context · Editorial rules',
     hint: 'Asset-first, no slop, CTA discipline, France94 explainer discipline.',
@@ -120,7 +114,7 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
   {
     key: 'task_generate_candidate',
     title: 'Task · Generate candidate',
-    hint: 'Wired into the planner batch (scripts/generate-post-candidates.ts). Combined with the 4 Context prompts.',
+    hint: 'Wired into the planner batch (scripts/generate-post-candidates.ts). Combined with context prompts + active content series.',
     group: 'task_wired',
     wired: true,
   },
@@ -160,6 +154,13 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
     wired: true,
   },
   {
+    key: 'task_reel_reasoning',
+    title: 'Task · Reel assembly + reasoning',
+    hint: 'Wired into the clip-based reel generation path: selects clips/hook from pre-tagged content_clips and explains why the reel works.',
+    group: 'task_wired',
+    wired: true,
+  },
+  {
     key: 'direct_media_analysis',
     title: 'Analysis · Direct media',
     hint: 'Image (and custom) analysis worker. Custom params.prompt overrides DB + file.',
@@ -169,7 +170,14 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
   {
     key: 'video_sampled_analysis',
     title: 'Analysis · Video sampled',
-    hint: 'Frame + metadata block in analyze worker.',
+    hint: 'Frame + metadata block in analyze worker (fallback when full-video is not eligible).',
+    group: 'analysis',
+    wired: true,
+  },
+  {
+    key: 'video_full_analysis',
+    title: 'Analysis · Video full + clips',
+    hint: 'Full-video upload to Gemini: asset metadata + clip segmentation (content_clips) for reel assembly.',
     group: 'analysis',
     wired: true,
   },
@@ -232,10 +240,10 @@ export const PIPELINE_STEPS: readonly PipelineStepDef[] = [
   },
   {
     operation: 'asset_analysis_video_full',
-    title: 'Asset analysis (video full)',
-    hint: 'Reserved for full-video analysis when wired in the worker.',
-    promptKeys: ['video_sampled_analysis'],
-    wired: false,
+    title: 'Asset analysis (video full + clips)',
+    hint: 'Default video path: full upload, clip segmentation into content_clips; falls back to sampled.',
+    promptKeys: ['video_full_analysis'],
+    wired: true,
   },
   {
     operation: 'candidate_generation',
@@ -291,7 +299,7 @@ export const PIPELINE_STEPS: readonly PipelineStepDef[] = [
 export function analysisPromptKeysForMediaType(mediaType: string | null | undefined): StablePromptKey[] {
   const m = (mediaType ?? '').toLowerCase();
   if (m.startsWith('video/')) {
-    return ['video_sampled_analysis', 'audio_transcription'];
+    return ['video_full_analysis', 'video_sampled_analysis', 'audio_transcription'];
   }
   return ['direct_media_analysis'];
 }
