@@ -15,6 +15,7 @@ import {
   extractSeriesFieldsFromLlmRaw,
   extractTitleOverlayFromCandidate,
 } from '@fr94/candidate-collision';
+import { normalizeReelSpecOverlay, resolveReelTextStyle } from '@fr94/reel-text-style';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
@@ -24,6 +25,33 @@ const reelStructureRowSchema = z.object({
   instruction: z.string(),
 });
 
+const reelTextStylePatchSchema = z.object({
+  fontsize: z.number().int().min(24).max(72).optional(),
+  font_color: z.string().trim().min(1).max(32).optional(),
+  outline_width: z.number().int().min(0).max(12).optional(),
+  outline_color: z.string().trim().min(1).max(32).optional(),
+  position: z.enum(['top_third', 'top', 'center']).optional(),
+  line_spacing: z.number().int().min(0).max(40).optional(),
+  centered: z.boolean().optional(),
+});
+
+const reelInstructionsPatchSchema = z
+  .object({
+    structure: z.array(reelStructureRowSchema).optional(),
+    overlay_text: z.array(z.string()).optional(),
+    overlay_lines: z.array(z.string()).optional(),
+    text_style: reelTextStylePatchSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      v.structure !== undefined ||
+      v.overlay_text !== undefined ||
+      v.overlay_lines !== undefined ||
+      v.text_style !== undefined,
+    { message: 'Provide at least one reel_instructions field' },
+  );
+
 const patchSchema = z
   .object({
     status: z.enum(['approved', 'rejected', 'needs_rewrite']).optional(),
@@ -32,13 +60,8 @@ const patchSchema = z
     caption_fr: z.string().optional().nullable(),
     caption_en: z.string().optional().nullable(),
     hashtags: z.array(z.string()).optional().nullable(),
-    reel_instructions: z
-      .object({
-        structure: z.array(reelStructureRowSchema),
-        overlay_text: z.array(z.string()),
-      })
-      .strict()
-      .optional(),
+    reel_instructions: reelInstructionsPatchSchema.optional(),
+    re_render: z.boolean().optional(),
   })
   .refine(
     (v) =>
@@ -47,7 +70,8 @@ const patchSchema = z
       v.caption_fr !== undefined ||
       v.caption_en !== undefined ||
       v.hashtags !== undefined ||
-      v.reel_instructions !== undefined,
+      v.reel_instructions !== undefined ||
+      v.re_render === true,
     { message: 'Provide at least one field to update' },
   );
 
@@ -130,6 +154,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     caption_en,
     hashtags,
     reel_instructions,
+    re_render,
   } = parsed.data;
   const now = new Date().toISOString();
   const reviewedBy = await getCurrentUserEmail(req);
@@ -188,11 +213,33 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       existing?.reel_instructions != null && typeof existing.reel_instructions === 'object'
         ? (existing.reel_instructions as Record<string, unknown>)
         : {};
-    mergedReel = {
-      ...prev,
-      structure: reel_instructions.structure,
-      overlay_text: reel_instructions.overlay_text,
-    };
+    if (prev.version === 'clips-v1') {
+      mergedReel = { ...prev };
+      if (reel_instructions.overlay_lines !== undefined) {
+        mergedReel.overlay_lines = reel_instructions.overlay_lines
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(0, 3);
+      }
+      if (reel_instructions.text_style !== undefined) {
+        const prevStyle =
+          prev.text_style != null && typeof prev.text_style === 'object' && !Array.isArray(prev.text_style)
+            ? (prev.text_style as Record<string, unknown>)
+            : {};
+        mergedReel.text_style = resolveReelTextStyle({
+          ...prevStyle,
+          ...reel_instructions.text_style,
+        });
+      }
+    } else {
+      mergedReel = { ...prev };
+      if (reel_instructions.structure !== undefined) {
+        mergedReel.structure = reel_instructions.structure;
+      }
+      if (reel_instructions.overlay_text !== undefined) {
+        mergedReel.overlay_text = reel_instructions.overlay_text;
+      }
+    }
   }
 
   const update: Record<string, unknown> = {
@@ -248,6 +295,10 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
   if (mergedReel !== undefined) {
     update.reel_instructions = mergedReel;
+    const overlay0 = Array.isArray(mergedReel.overlay_lines)
+      ? (mergedReel.overlay_lines as string[])[0]?.trim()
+      : '';
+    if (overlay0) update.title_overlay = overlay0;
   }
 
   const { data, error } = await supabase
@@ -299,6 +350,48 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   const candidateOut = fresh ?? data;
+
+  if (re_render === true && candidateOut) {
+    const c = candidateOut as {
+      id: string;
+      post_type?: string;
+      hook?: string | null;
+      reel_instructions: unknown;
+      source_asset_ids: unknown;
+      source_drive_file_ids: unknown;
+    };
+    const riRaw =
+      c.reel_instructions != null && typeof c.reel_instructions === 'object'
+        ? (c.reel_instructions as Record<string, unknown>)
+        : null;
+    if (c.post_type === 'reel' && riRaw?.version === 'clips-v1') {
+      const ri = normalizeReelSpecOverlay(riRaw, c.hook ?? null);
+      const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
+      const sd = Array.isArray(c.source_drive_file_ids)
+        ? (c.source_drive_file_ids as string[])
+        : [];
+      const { error: pjErr } = await supabase.from('production_jobs').upsert(
+        {
+          post_candidate_id: c.id,
+          production_type: 'reel',
+          status: 'queued',
+          source_asset_ids: sa,
+          source_drive_file_ids: sd,
+          instructions: ri,
+          reel_specification: ri,
+          output_video_url: null,
+          thumbnail_url: null,
+          render_log: null,
+          render_strategy: null,
+          error_message: null,
+          updated_at: now,
+        },
+        { onConflict: 'post_candidate_id,production_type' },
+      );
+      if (pjErr) console.error('[candidate patch] re_render production_jobs', pjErr);
+    }
+  }
+
   if (status === 'approved' && candidateOut) {
     const pt = (candidateOut as { post_type?: string }).post_type?.trim();
     if (pt === 'reel') {

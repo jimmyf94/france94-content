@@ -19,9 +19,16 @@ import {
   seriesAllowsPostType,
   type SeriesRow,
 } from './content-series.js';
+import { loadReelRenderDefaults } from './reel-render-defaults.js';
+import {
+  DEFAULT_REEL_RENDER_TEXT_STYLE,
+  parsePartialReelTextStyle,
+  resolveReelTextStyle,
+  type ReelRenderTextStyle,
+} from './reel-text-style.js';
 
-export const REEL_MIN_TOTAL_SEC = 12;
-export const REEL_MAX_TOTAL_SEC = 18;
+export const REEL_MIN_TOTAL_SEC = 8;
+export const REEL_MAX_TOTAL_SEC = 20;
 export const REEL_MAX_CLIPS = 3;
 
 export const REEL_VARIANT_KINDS = [
@@ -42,28 +49,15 @@ export type ReelSpecClip = {
   why?: string;
 };
 
-export type ReelTextStyle = {
-  position: 'top_third';
-  color: 'white';
-  outline: 'black';
-  size: 'small';
-  centered: true;
-};
-
-export const REEL_TEXT_STYLE: ReelTextStyle = {
-  position: 'top_third',
-  color: 'white',
-  outline: 'black',
-  size: 'small',
-  centered: true,
-};
+export type { ReelRenderTextStyle as ReelTextStyle } from './reel-text-style.js';
+export { DEFAULT_REEL_RENDER_TEXT_STYLE as REEL_TEXT_STYLE } from './reel-text-style.js';
 
 export type ReelSpecification = {
   version: 'clips-v1';
   clips: ReelSpecClip[];
   overlay_lines: string[];
   keep_audio: true;
-  text_style: ReelTextStyle;
+  text_style: ReelRenderTextStyle;
   total_duration_sec: number;
 };
 
@@ -322,7 +316,7 @@ export function parseReelSpecification(raw: unknown): ReelSpecification | null {
     clips,
     overlay_lines,
     keep_audio: true,
-    text_style: REEL_TEXT_STYLE,
+    text_style: resolveReelTextStyle(parsePartialReelTextStyle(o.text_style)),
     total_duration_sec: Number.isFinite(total) ? total : clips.reduce((s, c) => s + (c.end_sec - c.start_sec), 0),
   };
 }
@@ -406,6 +400,7 @@ export async function assembleReelFromClips(params: {
   const route = await getResolvedModelRoute(supabase, 'candidate_generation');
   const composed = await loadComposedStableSystemInstruction(supabase, 'task_reel_reasoning');
   const stable = appendSeriesToSystemInstruction(composed.text, [target]);
+  const workspaceTextStyle = await loadReelRenderDefaults(supabase);
 
   const payload: Record<string, unknown> = {
     target_series: seriesForPrompt(target),
@@ -415,7 +410,7 @@ export async function assembleReelFromClips(params: {
       min_total_sec: REEL_MIN_TOTAL_SEC,
       max_total_sec: REEL_MAX_TOTAL_SEC,
       keep_original_audio: true,
-      text_style: REEL_TEXT_STYLE,
+      text_style: workspaceTextStyle,
     },
     clips: pool.map(clipForPrompt),
   };
@@ -471,15 +466,20 @@ export async function assembleReelFromClips(params: {
     return { ok: false, skipped: `clip selection invalid: ${validated.error}` };
   }
 
+  const hook = out.hook.trim();
   const overlayLines = out.overlay_lines.map((l) => l.trim()).filter(Boolean);
-  if (overlayLines.length === 0) overlayLines.push(out.hook.trim());
+  if (overlayLines.length === 0) {
+    overlayLines.push(hook);
+  } else if (hook.length > overlayLines[0]!.length && hook.startsWith(overlayLines[0]!)) {
+    overlayLines[0] = hook;
+  }
 
   const spec: ReelSpecification = {
     version: 'clips-v1',
     clips: validated.clips,
     overlay_lines: overlayLines.slice(0, 2),
     keep_audio: true,
-    text_style: REEL_TEXT_STYLE,
+    text_style: workspaceTextStyle,
     total_duration_sec: validated.totalSec,
   };
 

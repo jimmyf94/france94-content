@@ -89,6 +89,7 @@ export function DecisionButtons({
   size = 'md',
   layout = 'row',
   variant = 'default',
+  showShortcuts = true,
 }: {
   onDecide: (s: DecisionStatus) => void;
   disabled?: boolean;
@@ -99,11 +100,12 @@ export function DecisionButtons({
   size?: 'md' | 'lg';
   layout?: 'row' | 'column';
   variant?: 'default' | 'iconOnly';
+  showShortcuts?: boolean;
 }) {
   const padY = size === 'lg' ? 'py-3' : 'py-2.5';
   const iconOnly = variant === 'iconOnly';
   const containerCls = iconOnly
-    ? 'grid grid-cols-3 gap-2'
+    ? 'flex gap-2'
     : layout === 'column'
       ? 'flex flex-col gap-2'
       : 'grid grid-cols-3 gap-2';
@@ -124,7 +126,9 @@ export function DecisionButtons({
       label: 'Approve',
       shortcut: 'A',
       icon: <IconCheck className="shrink-0 opacity-90" />,
-      buttonClass: `rounded-md bg-[var(--good)] ${padY} ${btnCls} text-sm font-semibold text-black transition-[background-color,filter] hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100`,
+      buttonClass: iconOnly
+        ? `rounded-md border border-[var(--good)] bg-[var(--good)] ${padY} px-3 text-black transition-[filter] hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100`
+        : `rounded-md bg-[var(--good)] ${padY} ${btnCls} text-sm font-semibold text-black transition-[background-color,filter] hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100`,
       kbdTone: 'dark',
     },
     {
@@ -132,7 +136,9 @@ export function DecisionButtons({
       label: 'Needs rewrite',
       shortcut: 'W',
       icon: <IconPencil className="shrink-0 opacity-90" />,
-      buttonClass: `rounded-md border border-[var(--warn)] bg-transparent ${padY} ${btnCls} text-sm font-semibold text-[var(--warn)] transition-colors hover:bg-[var(--warn)]/15 disabled:opacity-50 disabled:hover:bg-transparent`,
+      buttonClass: iconOnly
+        ? `rounded-md border border-[var(--warn)] bg-[var(--warn)] ${padY} px-3 text-black transition-[filter] hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100`
+        : `rounded-md border border-[var(--warn)] bg-transparent ${padY} ${btnCls} text-sm font-semibold text-[var(--warn)] transition-colors hover:bg-[var(--warn)]/15 disabled:opacity-50 disabled:hover:bg-transparent`,
       kbdTone: 'warn',
     },
     {
@@ -140,7 +146,9 @@ export function DecisionButtons({
       label: 'Reject',
       shortcut: 'R',
       icon: <IconX className="shrink-0 opacity-90" />,
-      buttonClass: `rounded-md border border-[var(--bad)] bg-transparent ${padY} ${btnCls} text-sm font-semibold text-[var(--bad)] transition-colors hover:bg-[var(--bad)]/15 disabled:opacity-50 disabled:hover:bg-transparent`,
+      buttonClass: iconOnly
+        ? `rounded-md border border-[var(--bad)] bg-[var(--surface-2)] ${padY} px-3 text-[var(--bad)] transition-colors hover:bg-[var(--bad)]/10 disabled:opacity-50 disabled:hover:bg-[var(--surface-2)]`
+        : `rounded-md border border-[var(--bad)] bg-transparent ${padY} ${btnCls} text-sm font-semibold text-[var(--bad)] transition-colors hover:bg-[var(--bad)]/15 disabled:opacity-50 disabled:hover:bg-transparent`,
       kbdTone: 'bad',
     },
   ];
@@ -155,6 +163,7 @@ export function DecisionButtons({
             disabled={allOff || (item.status === 'approved' && approveDisabled)}
             onClick={() => onDecide(item.status)}
             aria-label={item.label}
+            title={item.label}
             className={`flex items-center justify-center ${item.buttonClass}`}
           >
             {item.icon}
@@ -178,7 +187,9 @@ export function DecisionButtons({
             {item.icon}
             <span className="min-w-0 truncate">{item.label}</span>
           </span>
-          <ShortcutKbd tone={item.kbdTone}>{item.shortcut}</ShortcutKbd>
+          {showShortcuts ? (
+            <ShortcutKbd tone={item.kbdTone}>{item.shortcut}</ShortcutKbd>
+          ) : null}
         </button>
       ))}
     </div>

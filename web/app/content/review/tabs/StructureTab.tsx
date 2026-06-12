@@ -332,6 +332,76 @@ function StaticView({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+function ClipsV1ReelSummary({ candidate }: { candidate: PostCandidate }) {
+  const raw =
+    candidate.reel_instructions != null && typeof candidate.reel_instructions === 'object'
+      ? (candidate.reel_instructions as Record<string, unknown>)
+      : null;
+  const version = typeof raw?.version === 'string' ? raw.version : null;
+  const clips = Array.isArray(raw?.clips) ? raw.clips : [];
+  const overlayLines = Array.isArray(raw?.overlay_lines)
+    ? raw.overlay_lines.map((l) => String(l))
+    : [];
+  const totalDuration =
+    typeof raw?.total_duration_sec === 'number' ? raw.total_duration_sec : null;
+
+  if (version !== 'clips-v1') return null;
+
+  return (
+    <SectionWrap title="Clip reel spec">
+      <div className="space-y-3 text-sm">
+        <p className="text-[var(--muted)]">
+          This reel uses the clip assembly pipeline. Edit overlay text and styling in the production
+          panel — not here.
+        </p>
+        {totalDuration != null && (
+          <p>
+            <span className="text-[var(--muted)]">Duration:</span> {totalDuration.toFixed(1)}s
+          </p>
+        )}
+        {overlayLines.length > 0 && (
+          <div>
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Overlay lines
+            </p>
+            <ul className="space-y-1">
+              {overlayLines.map((line, i) => (
+                <li key={i} className="rounded border border-[var(--border)] p-2">
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {clips.length > 0 && (
+          <div>
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Clips ({clips.length})
+            </p>
+            <ol className="space-y-2">
+              {clips.map((clipRaw, i) => {
+                const c = (clipRaw ?? {}) as Record<string, unknown>;
+                const start = typeof c.start_sec === 'number' ? c.start_sec : 0;
+                const end = typeof c.end_sec === 'number' ? c.end_sec : 0;
+                const why = typeof c.why === 'string' ? c.why : '';
+                return (
+                  <li key={i} className="rounded border border-[var(--border)] p-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--accent)]">
+                      #{i + 1}
+                    </span>{' '}
+                    {(end - start).toFixed(1)}s
+                    {why ? <p className="mt-1 text-[var(--muted)]">{why}</p> : null}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
+      </div>
+    </SectionWrap>
+  );
+}
+
 export function StructureTab({
   candidate,
   onCandidateUpdated,
@@ -341,6 +411,13 @@ export function StructureTab({
 }) {
   const t = candidate.post_type;
   if (t === 'reel') {
+    const raw =
+      candidate.reel_instructions != null && typeof candidate.reel_instructions === 'object'
+        ? (candidate.reel_instructions as Record<string, unknown>)
+        : null;
+    if (raw?.version === 'clips-v1') {
+      return <ClipsV1ReelSummary candidate={candidate} />;
+    }
     return (
       <EditableReelTimeline candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
     );

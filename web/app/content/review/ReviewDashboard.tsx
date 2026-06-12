@@ -10,21 +10,24 @@ import {
 } from '@/lib/pipeline-run-client';
 import { readJsonResponse } from '@/lib/read-json-response';
 
+import { ActiveCandidateWorkspace } from './ActiveCandidateWorkspace';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
-import { CandidateOverviewHeader } from './CandidateOverviewHeader';
 import { CandidateQueueSidebar } from './CandidateQueueSidebar';
-import { FilterDrawer, type ReviewFilters } from './FilterDrawer';
-import { MediaPreviewStage } from './MediaPreviewStage';
+import type { ReviewFilters } from './FilterDrawer';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
 import {
-  invalidateCandidateMediaCache,
-  useCandidateMedia,
-} from './useCandidateMedia';
-import { ProductionJobCard } from './ProductionJobCard';
-import { PublishingPrepCard } from './PublishingPrepCard';
-import { PublishingScheduleQueue } from './PublishingScheduleQueue';
-import { ReviewHeader } from './ReviewHeader';
-import { ShortcutsBanner } from './ShortcutsBanner';
+  notifyScheduleQueueChanged,
+  SCHEDULE_DRAWER_REFRESH_EVENT,
+  SCHEDULE_SELECT_CANDIDATE_EVENT,
+  syncReviewSelectedCandidate,
+} from '../schedule-events';
+import {
+  notifyReviewToolbarState,
+  REVIEW_TOOLBAR_GENERATE_REQUEST,
+  REVIEW_TOOLBAR_HEAL_LEDGER_REQUEST,
+  REVIEW_TOOLBAR_REFRESH_REQUEST,
+  REVIEW_TOOLBAR_TOGGLE_BLOCKED_REQUEST,
+} from '../review-toolbar-events';
 import { Toast, type ToastState } from './Toast';
 import type {
   CandidateListItem,
@@ -35,6 +38,10 @@ import type {
   StatusTab,
 } from './types';
 import { toCandidateListItem } from './types';
+import {
+  invalidateCandidateMediaCache,
+  useCandidateMedia,
+} from './useCandidateMedia';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
 const ALL_STATUSES = 'needs_review,needs_rewrite,approved,ready_to_publish,rejected';
@@ -90,7 +97,7 @@ export function ReviewDashboard() {
   const [activeStatusTab, setActiveStatusTab] = useState<StatusTab>(() =>
     pickInitialTab(sp.get('status')),
   );
-  const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>('caption');
+  const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>('structure');
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +140,15 @@ export function ReviewDashboard() {
     }),
     [selectedMediaFiles, selectedMediaLoading, selectedMediaError],
   );
+
+  useEffect(() => {
+    if (publishingQueueNonce === 0) return;
+    notifyScheduleQueueChanged();
+  }, [publishingQueueNonce]);
+
+  useEffect(() => {
+    syncReviewSelectedCandidate(selectedId);
+  }, [selectedId]);
 
   const [includeBlocked, setIncludeBlocked] = useState(false);
 
@@ -236,6 +252,12 @@ export function ReviewDashboard() {
     [fetchCandidatesInternal],
   );
 
+  useEffect(() => {
+    const onDrawerRefresh = () => void silentReloadCandidates();
+    window.addEventListener(SCHEDULE_DRAWER_REFRESH_EVENT, onDrawerRefresh);
+    return () => window.removeEventListener(SCHEDULE_DRAWER_REFRESH_EVENT, onDrawerRefresh);
+  }, [silentReloadCandidates]);
+
   const healStaleAssetLedger = useCallback(async () => {
     try {
       const res = await fetch('/api/content-review/reconcile-asset-reservations', {
@@ -260,6 +282,33 @@ export function ReviewDashboard() {
       });
     }
   }, [silentReloadCandidates]);
+
+  useEffect(() => {
+    const onRefresh = () => void silentReloadCandidates();
+    const onGenerate = () => void generateCandidates();
+    const onHeal = () => void healStaleAssetLedger();
+    const onToggleBlocked = () => setIncludeBlocked((v) => !v);
+
+    window.addEventListener(REVIEW_TOOLBAR_REFRESH_REQUEST, onRefresh);
+    window.addEventListener(REVIEW_TOOLBAR_GENERATE_REQUEST, onGenerate);
+    window.addEventListener(REVIEW_TOOLBAR_HEAL_LEDGER_REQUEST, onHeal);
+    window.addEventListener(REVIEW_TOOLBAR_TOGGLE_BLOCKED_REQUEST, onToggleBlocked);
+
+    return () => {
+      window.removeEventListener(REVIEW_TOOLBAR_REFRESH_REQUEST, onRefresh);
+      window.removeEventListener(REVIEW_TOOLBAR_GENERATE_REQUEST, onGenerate);
+      window.removeEventListener(REVIEW_TOOLBAR_HEAL_LEDGER_REQUEST, onHeal);
+      window.removeEventListener(REVIEW_TOOLBAR_TOGGLE_BLOCKED_REQUEST, onToggleBlocked);
+    };
+  }, [silentReloadCandidates, generateCandidates, healStaleAssetLedger]);
+
+  useEffect(() => {
+    notifyReviewToolbarState({
+      generatingCandidates,
+      generateDisabled: isPipelineRunBusy(pipelineRunStatus),
+      includeBlocked,
+    });
+  }, [generatingCandidates, pipelineRunStatus, includeBlocked]);
 
   useEffect(() => {
     void fetchCandidates();
@@ -392,6 +441,31 @@ export function ReviewDashboard() {
     },
     [silentReloadCandidates],
   );
+
+  const handleScheduleSelectCandidate = useCallback(
+    (candidateId: string) => {
+      setSelectedId(candidateId);
+      const row = candidates.find((c) => c.id === candidateId);
+      if (row && VALID_TABS.has(row.status as StatusTab)) {
+        setActiveStatusTab(row.status as StatusTab);
+      }
+    },
+    [candidates],
+  );
+
+  useEffect(() => {
+    const fromUrl = sp.get('candidate');
+    if (fromUrl) handleScheduleSelectCandidate(fromUrl);
+  }, [sp, handleScheduleSelectCandidate]);
+
+  useEffect(() => {
+    const onSelect = (event: Event) => {
+      const id = (event as CustomEvent<{ candidateId: string }>).detail?.candidateId;
+      if (id) handleScheduleSelectCandidate(id);
+    };
+    window.addEventListener(SCHEDULE_SELECT_CANDIDATE_EVENT, onSelect);
+    return () => window.removeEventListener(SCHEDULE_SELECT_CANDIDATE_EVENT, onSelect);
+  }, [handleScheduleSelectCandidate]);
 
   const handleRemoveReviewAsset = useCallback(
     (file: ReviewDriveFile) => {
@@ -751,27 +825,6 @@ export function ReviewDashboard() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <ReviewHeader
-        pendingCount={counts.needs_review}
-        filters={filters}
-        onChangeFilters={setFilters}
-        filtersOpen={filtersOpen}
-        onToggleFilters={() => setFiltersOpen((o) => !o)}
-        onRefresh={() => void silentReloadCandidates()}
-        onHealAssetLedger={() => void healStaleAssetLedger()}
-        includeBlocked={includeBlocked}
-        onToggleIncludeBlocked={() => setIncludeBlocked((v) => !v)}
-        onGenerateCandidates={generateCandidates}
-        generatingCandidates={generatingCandidates}
-        generateDisabled={isPipelineRunBusy(pipelineRunStatus)}
-      />
-
-      {filtersOpen && (
-        <div className="hidden lg:block">
-          <FilterDrawer filters={filters} onChange={setFilters} />
-        </div>
-      )}
-
       {error && (
         <div className="shrink-0 border-b border-[var(--bad)] bg-[var(--surface)] px-4 py-2 text-sm text-[var(--bad)] lg:px-6">
           {error}
@@ -785,9 +838,9 @@ export function ReviewDashboard() {
         </div>
       )}
 
-      {/* Desktop cockpit */}
-      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)_minmax(300px,380px)_minmax(280px,340px)]">
-        <div className="flex min-h-0 flex-col border-r border-[var(--border)] bg-[var(--surface)]">
+      {/* Desktop operator cockpit */}
+      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)_minmax(300px,380px)]">
+        <div className="flex min-h-0 flex-col border-r border-[var(--border)]">
           <CandidateQueueSidebar
             candidates={candidates}
             counts={counts}
@@ -797,56 +850,54 @@ export function ReviewDashboard() {
             onSelect={setSelectedId}
             loading={loading}
             firstThumbnailById={queueThumbnails}
+            filters={filters}
+            onChangeFilters={setFilters}
+            filtersOpen={filtersOpen}
+            onToggleFilters={() => setFiltersOpen((o) => !o)}
+            onCloseFilters={() => setFiltersOpen(false)}
           />
         </div>
-        <div className="flex min-h-0 flex-col">
-          <CandidateOverviewHeader
-            candidate={selected}
-            mediaFiles={selectedMedia.files}
-          />
-          {selected && (
-            <>
-              <PublishingPrepCard
-                candidate={selected}
-                reviewDriveFolderUrl={selected.review_drive_folder_url}
-                onRefreshQueue={() => void silentReloadCandidates()}
-              />
-              {selected.post_type === 'reel' && (
-                <ProductionJobCard candidate={selected} onVariantCreated={handleVariantCreated} />
-              )}
-            </>
-          )}
-          <MediaPreviewStage
-            candidate={selected}
-            videoRef={videoRef}
-            media={selectedMedia}
-            onRegisterActivateStream={registerActivatePrimaryVideo}
-            onRemoveReviewAsset={handleRemoveReviewAsset}
-          />
-        </div>
+        <ActiveCandidateWorkspace
+          candidate={selected}
+          media={selectedMedia}
+          videoRef={videoRef}
+          onRegisterActivateStream={registerActivatePrimaryVideo}
+          onRemoveReviewAsset={handleRemoveReviewAsset}
+          onCandidateUpdated={handleCandidateUpdated}
+          onVariantCreated={handleVariantCreated}
+          onDecide={decide}
+          onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
+          decisionsDisabled={selected?.status === 'ready_to_publish'}
+          approveDisabled={
+            selected?.has_asset_conflict === true ||
+            Boolean(selected?.freshness_warning) ||
+            ['blocked', 'high'].includes((selected?.collision_risk ?? '').trim())
+          }
+          allDecisionsDisabled={Boolean(selected?.invalidated_at)}
+          onDelete={() => void deleteCandidate()}
+          deleting={deleting}
+          onRefreshQueue={() => {
+            void silentReloadCandidates();
+            setPublishingQueueNonce((n) => n + 1);
+          }}
+          onStageError={(message) => setToast({ kind: 'bad', msg: message })}
+        />
         <CandidateDecisionPanel
           candidate={selected}
           notes={selected ? (draftNotes[selected.id] ?? '') : ''}
           savedNotes={selected?.reviewer_notes ?? ''}
           onChangeNotes={setNotes}
           onSaveNotes={saveNotes}
-          onDecide={decide}
-          onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
           activeTab={activeDetailTab}
           onChangeTab={setActiveDetailTab}
           onCandidateUpdated={handleCandidateUpdated}
           onRegenerate={regenerate}
           regenerating={regenerating}
-          onDelete={() => void deleteCandidate()}
-          deleting={deleting}
+          onRefreshQueue={() => {
+            void silentReloadCandidates();
+            setPublishingQueueNonce((n) => n + 1);
+          }}
         />
-        <div className="flex min-h-0 flex-col border-l border-[var(--border)]">
-          <PublishingScheduleQueue
-            variant="column"
-            reloadNonce={publishingQueueNonce}
-            onRefresh={() => void silentReloadCandidates()}
-          />
-        </div>
       </div>
 
       {/* Mobile stack */}
@@ -891,8 +942,6 @@ export function ReviewDashboard() {
           generateDisabled={isPipelineRunBusy(pipelineRunStatus)}
         />
       </div>
-
-      <ShortcutsBanner />
 
       <Toast toast={toast} onDone={() => setToast(null)} />
     </div>

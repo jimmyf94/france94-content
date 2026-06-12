@@ -2,10 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import {
+  DEFAULT_REEL_RENDER_TEXT_STYLE,
+  formatReelOverlayText,
+  parseReelOverlayDraft,
+  resolveReelTextStyle,
+  type ReelRenderTextStyle,
+} from '@fr94/reel-text-style';
+
 import { readJsonResponse } from '@/lib/read-json-response';
 
-import type { PostCandidate, ReelReasoning, ReelVariantKind } from './types';
-import { REEL_VARIANT_KINDS, REEL_VARIANT_LABELS } from './types';
+import { ReelProductionWorkspace } from './ReelProductionWorkspace';
+import type { PostCandidate, ReelReasoning, ReelVariantKind, ReviewDriveFile } from './types';
+import type { CandidateMediaState } from './useCandidateMedia';
 
 type ProductionJobDto = {
   id: string;
@@ -30,10 +39,24 @@ type ReelSpecDto = {
     why?: string;
   }>;
   overlay_lines?: string[];
+  text_style?: Partial<ReelRenderTextStyle>;
   total_duration_sec?: number;
 };
 
-const POLL_MS = 8000;
+const POLL_ACTIVE_MS = 1500;
+const POLL_AFTER_RENDER_MAX = 120;
+
+function withCacheBust(url: string, version?: string | null): string {
+  if (!version?.trim()) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('v', version);
+    return u.toString();
+  } catch {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}v=${encodeURIComponent(version)}`;
+  }
+}
 
 function parseReelSpec(raw: unknown): ReelSpecDto | null {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -45,29 +68,43 @@ function parseReasoning(raw: unknown): ReelReasoning | null {
   return raw as ReelReasoning;
 }
 
-function statusTone(status: string): string {
-  if (status === 'produced') return 'text-emerald-400';
-  if (status === 'failed' || status === 'needs_manual_production') return 'text-[var(--bad)]';
-  if (status === 'rendering' || status === 'queued') return 'text-amber-300';
-  return 'text-[var(--text)]';
-}
-
-function formatDuration(sec: number | null | undefined): string | null {
-  if (sec == null || !Number.isFinite(sec)) return null;
-  return `${sec.toFixed(1)}s`;
+function renderButtonLabel(status: string | undefined): string {
+  if (status === 'rendering') return 'Rendering…';
+  if (status === 'failed' || status === 'needs_manual_production') return 'Retry render';
+  if (status === 'produced') return 'Re-render';
+  return 'Render now';
 }
 
 export function ProductionJobCard({
   candidate,
   onVariantCreated,
+  onCandidateUpdated,
+  layout = 'compact',
+  media,
+  videoRef,
+  onRegisterActivateStream,
+  onRemoveReviewAsset,
 }: {
   candidate: PostCandidate;
   onVariantCreated?: (c: PostCandidate) => void;
+  onCandidateUpdated?: (c: PostCandidate) => void;
+  layout?: 'compact' | 'workspace';
+  media?: CandidateMediaState;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+  onRegisterActivateStream?: (activate: () => void) => void;
+  onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   const [job, setJob] = useState<ProductionJobDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [variantBusy, setVariantBusy] = useState<ReelVariantKind | null>(null);
+  const [styleBusy, setStyleBusy] = useState(false);
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [workspaceDefaults, setWorkspaceDefaults] = useState<ReelRenderTextStyle>(
+    DEFAULT_REEL_RENDER_TEXT_STYLE,
+  );
+  const [draftStyle, setDraftStyle] = useState<ReelRenderTextStyle>(DEFAULT_REEL_RENDER_TEXT_STYLE);
+  const [draftOverlay, setDraftOverlay] = useState('');
 
   const reelSpec = useMemo(
     () => parseReelSpec(candidate.reel_instructions) ?? parseReelSpec(job?.reel_specification),
@@ -78,11 +115,18 @@ export function ProductionJobCard({
 
   const isClipReel = reelSpec?.version === 'clips-v1' && (reelSpec.clips?.length ?? 0) > 0;
 
-  const hookText =
-    reelSpec?.overlay_lines?.[0]?.trim() ||
-    candidate.title_overlay?.trim() ||
-    candidate.hook?.trim() ||
-    null;
+  const overlayFallbacks = useMemo(
+    () => ({
+      titleOverlay: candidate.title_overlay,
+      hook: candidate.hook,
+    }),
+    [candidate.hook, candidate.title_overlay],
+  );
+
+  const hookText = useMemo(() => {
+    const text = formatReelOverlayText(reelSpec?.overlay_lines, overlayFallbacks);
+    return text || null;
+  }, [overlayFallbacks, reelSpec?.overlay_lines]);
 
   const durationSec = useMemo(() => {
     if (reelSpec?.total_duration_sec != null) return reelSpec.total_duration_sec;
@@ -101,27 +145,122 @@ export function ProductionJobCard({
       );
       if (res.status === 404) {
         setJob(null);
-        return;
+        return null;
       }
       const json = await readJsonResponse<{ job?: ProductionJobDto; error?: string }>(res);
       if (!res.ok) throw new Error(json.error || res.statusText);
-      setJob(json.job ?? null);
+      const next = json.job ?? null;
+      setJob(next);
+      return next;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setJob(null);
+      return null;
     } finally {
       setLoading(false);
     }
   }, [candidate.id]);
+
+  const refreshCandidate = useCallback(async () => {
+    if (!onCandidateUpdated) return;
+    try {
+      const res = await fetch(`/api/content-review/candidates/${encodeURIComponent(candidate.id)}`, {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+      if (res.ok && json.candidate) onCandidateUpdated(json.candidate);
+    } catch {
+      /* best-effort */
+    }
+  }, [candidate.id, onCandidateUpdated]);
+
+  const pollUntilRenderSettled = useCallback(async () => {
+    for (let i = 0; i < POLL_AFTER_RENDER_MAX; i += 1) {
+      await new Promise((r) => setTimeout(r, POLL_ACTIVE_MS));
+      const res = await fetch(
+        `/api/content-review/production-jobs/by-candidate/${encodeURIComponent(candidate.id)}`,
+        { credentials: 'include', cache: 'no-store' },
+      );
+      if (res.status === 404) continue;
+      const json = await readJsonResponse<{ job?: ProductionJobDto; error?: string }>(res);
+      if (!res.ok || !json.job) continue;
+      setJob(json.job);
+      const st = json.job.status;
+      if (st === 'produced' || st === 'failed' || st === 'needs_manual_production') {
+        if (st === 'produced') void refreshCandidate();
+        return;
+      }
+    }
+  }, [candidate.id, refreshCandidate]);
+
+  const triggerRender = useCallback(async () => {
+    const res = await fetch(
+      `/api/content-review/candidates/${encodeURIComponent(candidate.id)}/render-reel`,
+      { method: 'POST', credentials: 'include' },
+    );
+    const json = await readJsonResponse<{
+      ok?: boolean;
+      error?: string;
+      job?: ProductionJobDto;
+    }>(res);
+    if (!res.ok) throw new Error(json.error || res.statusText);
+    if (json.job) {
+      setJob(json.job);
+    } else {
+      setJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'queued',
+              output_video_url: null,
+              thumbnail_url: null,
+              error_message: null,
+            }
+          : prev,
+      );
+    }
+    void refreshCandidate();
+    void pollUntilRenderSettled();
+  }, [candidate.id, pollUntilRenderSettled, refreshCandidate]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/content-review/reel-render-defaults', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        const json = await readJsonResponse<{ defaults?: ReelRenderTextStyle }>(res);
+        if (res.ok && json.defaults) setWorkspaceDefaults(json.defaults);
+      } catch {
+        /* use code defaults */
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!isClipReel) return;
+    const specStyle = reelSpec?.text_style ?? null;
+    setDraftStyle(resolveReelTextStyle(specStyle, workspaceDefaults));
+    setDraftOverlay(formatReelOverlayText(reelSpec?.overlay_lines, overlayFallbacks));
+  }, [
+    candidate.id,
+    isClipReel,
+    overlayFallbacks,
+    reelSpec?.overlay_lines,
+    reelSpec?.text_style,
+    workspaceDefaults,
+  ]);
+
+  useEffect(() => {
     const status = job?.status ?? '';
     if (status !== 'queued' && status !== 'rendering') return;
-    const t = window.setInterval(() => void load(), POLL_MS);
+    const t = window.setInterval(() => void load(), POLL_ACTIVE_MS);
     return () => window.clearInterval(t);
   }, [job?.status, load]);
 
@@ -151,15 +290,86 @@ export function ProductionJobCard({
     [candidate.id, onVariantCreated, variantBusy],
   );
 
+  const saveStyle = useCallback(
+    async (reRender: boolean) => {
+      if (!onCandidateUpdated || styleBusy) return;
+      setStyleBusy(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/content-review/candidates/${candidate.id}`, {
+          method: 'PATCH',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reel_instructions: {
+              overlay_lines: parseReelOverlayDraft(draftOverlay),
+              text_style: draftStyle,
+            },
+            ...(reRender ? { re_render: true } : {}),
+          }),
+        });
+        const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+        if (!res.ok || !json.candidate) {
+          throw new Error(json.error || res.statusText);
+        }
+        onCandidateUpdated(json.candidate);
+        if (reRender) {
+          try {
+            await triggerRender();
+          } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        } else {
+          void load();
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setStyleBusy(false);
+      }
+    },
+    [candidate.id, draftOverlay, draftStyle, load, onCandidateUpdated, styleBusy, triggerRender],
+  );
+
+  const startRenderNow = useCallback(async () => {
+    if (renderBusy || job?.status === 'rendering' || styleBusy) return;
+    if (isClipReel && onCandidateUpdated) {
+      void saveStyle(true);
+      return;
+    }
+    setRenderBusy(true);
+    setError(null);
+    try {
+      await triggerRender();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRenderBusy(false);
+    }
+  }, [
+    isClipReel,
+    job?.status,
+    onCandidateUpdated,
+    renderBusy,
+    saveStyle,
+    styleBusy,
+    triggerRender,
+  ]);
+
   if (candidate.post_type !== 'reel') return null;
 
-  const previewUrl =
-    job?.status === 'produced' && job.output_video_url
-      ? job.output_video_url
-      : null;
-  const posterUrl = job?.thumbnail_url ?? candidate.cover_thumbnail_url ?? null;
+  const isRenderActive = job?.status === 'queued' || job?.status === 'rendering';
 
-  const reasoningEntries: Array<[string, string | undefined]> = [
+  const previewUrl =
+    !isRenderActive && job?.status === 'produced' && job.output_video_url
+      ? withCacheBust(job.output_video_url, job.updated_at)
+      : null;
+  const rawPoster = !isRenderActive
+    ? job?.thumbnail_url ?? candidate.cover_thumbnail_url ?? null
+    : null;
+  const posterUrl = rawPoster ? withCacheBust(rawPoster, job?.updated_at) : null;
+
+  const reasoningEntries: Array<[string, string]> = [
     ['Why the script works', reasoning?.why_script_works],
     ['Why clips support it', reasoning?.why_clips_support_script],
     ['Emotional contrast', reasoning?.emotional_contrast],
@@ -168,156 +378,53 @@ export function ProductionJobCard({
     ['Vs alternatives', reasoning?.clips_vs_alternatives],
   ].filter(([, v]) => typeof v === 'string' && v.trim().length > 0) as Array<[string, string]>;
 
+  const renderDisabled = renderBusy || styleBusy || job?.status === 'rendering';
+  const renderLabel =
+    styleBusy ? 'Saving…' : renderBusy ? 'Starting…' : renderButtonLabel(job?.status);
+
   return (
-    <section className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 lg:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Reel preview
-          </h3>
-          {candidate.variant_kind && (
-            <p className="mt-0.5 text-[10px] text-[var(--muted)]">
-              Variant · {REEL_VARIANT_LABELS[candidate.variant_kind as ReelVariantKind] ?? candidate.variant_kind}
-              {candidate.variant_of ? ` · of ${candidate.variant_of.slice(0, 8)}…` : ''}
-            </p>
-          )}
-        </div>
-        {candidate.selected_series && (
-          <span className="rounded-full border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--text)]">
-            {candidate.selected_series}
-          </span>
-        )}
-      </div>
-
-      {hookText && (
-        <p className="mt-2 text-sm font-medium leading-snug text-[var(--text)]">{hookText}</p>
-      )}
-
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--muted)]">
-        {formatDuration(durationSec) && <span>Duration {formatDuration(durationSec)}</span>}
-        {reelSpec?.clips && <span>{reelSpec.clips.length} clip(s)</span>}
-        {candidate.selected_clip_ids?.length ? (
-          <span>{candidate.selected_clip_ids.length} tagged clip id(s)</span>
-        ) : null}
-      </div>
-
-      {loading && !job && <p className="mt-2 text-xs text-[var(--muted)]">Loading render job…</p>}
-      {error && <p className="mt-2 text-xs text-[var(--bad)] whitespace-pre-wrap">{error}</p>}
-
-      {!loading && !job && !error && (
-        <p className="mt-2 text-xs text-[var(--muted)]">
-          Render queued — the worker picks this up automatically (cron every ~10 min, or{' '}
-          <code className="rounded bg-[var(--surface-2)] px-1 py-0.5 text-[10px]">npm run render:reels</code>
-          ).
-        </p>
-      )}
-
-      {job && (
-        <div className="mt-3 space-y-3">
-          <p className="text-xs">
-            <span className="text-[var(--muted)]">Render:</span>{' '}
-            <span className={`font-medium ${statusTone(job.status)}`}>{job.status}</span>
-            {job.render_strategy ? (
-              <>
-                {' '}
-                <span className="text-[var(--muted)]">·</span> {job.render_strategy}
-              </>
-            ) : null}
-          </p>
-          {job.error_message && (
-            <p className="text-xs text-[var(--bad)] whitespace-pre-wrap">{job.error_message}</p>
-          )}
-
-          {(previewUrl || posterUrl) && (
-            <div>
-              {previewUrl ? (
-                <video
-                  key={previewUrl}
-                  src={previewUrl}
-                  poster={posterUrl ?? undefined}
-                  controls
-                  playsInline
-                  className="mt-1 max-h-80 w-full max-w-sm rounded-md border border-[var(--border)] bg-black"
-                />
-              ) : posterUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={posterUrl}
-                  alt="Reel thumbnail"
-                  className="mt-1 max-h-48 w-full max-w-sm rounded-md border border-[var(--border)] object-cover"
-                />
-              ) : null}
-              {previewUrl && (
-                <a
-                  href={previewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-2 inline-block text-xs text-[var(--accent)] underline hover:opacity-80"
-                >
-                  Open rendered MP4
-                </a>
-              )}
-            </div>
-          )}
-
-          {reelSpec?.clips && reelSpec.clips.length > 0 && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Clips
-              </p>
-              <ul className="mt-1 space-y-1 text-xs text-[var(--text)]">
-                {reelSpec.clips.map((c, i) => (
-                  <li key={c.clip_id ?? i}>
-                    <span className="text-[var(--muted)]">#{i + 1}</span>{' '}
-                    {(c.end_sec - c.start_sec).toFixed(1)}s
-                    {c.why ? <span className="text-[var(--muted)]"> — {c.why}</span> : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {reasoningEntries.length > 0 && (
-            <details className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2">
-              <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Assembly reasoning
-              </summary>
-              <dl className="mt-2 space-y-2 text-xs">
-                {reasoningEntries.map(([label, text]) => (
-                  <div key={label}>
-                    <dt className="font-medium text-[var(--text)]">{label}</dt>
-                    <dd className="mt-0.5 leading-relaxed text-[var(--muted)]">{text}</dd>
-                  </div>
-                ))}
-              </dl>
-            </details>
-          )}
-        </div>
-      )}
-
-      {isClipReel && (
-        <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Render variant
-          </p>
-          <p className="mt-1 text-[11px] text-[var(--muted)]">
-            Reuses pre-tagged clips — no re-analysis. Creates a new candidate and queues a render.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {REEL_VARIANT_KINDS.map((kind) => (
-              <button
-                key={kind}
-                type="button"
-                disabled={!!variantBusy}
-                onClick={() => void createVariant(kind)}
-                className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50"
-              >
-                {variantBusy === kind ? 'Creating…' : REEL_VARIANT_LABELS[kind]}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </section>
+    <div className={layout === 'workspace' ? 'flex min-h-0 flex-1 flex-col' : undefined}>
+      <ReelProductionWorkspace
+      candidate={candidate}
+      layout={layout}
+      hookText={hookText}
+      durationSec={durationSec}
+      clipCount={reelSpec?.clips?.length ?? 0}
+      taggedClipCount={candidate.selected_clip_ids?.length ?? 0}
+      loading={loading}
+      error={error}
+      job={
+        job
+          ? {
+              status: job.status,
+              render_strategy: job.render_strategy,
+              error_message: job.error_message,
+              render_log: job.render_log,
+              updated_at: job.updated_at,
+            }
+          : null
+      }
+      isRenderActive={isRenderActive}
+      previewUrl={previewUrl}
+      posterUrl={posterUrl}
+      renderDisabled={renderDisabled}
+      renderLabel={renderLabel}
+      onRender={() => void startRenderNow()}
+      clips={reelSpec?.clips}
+      reasoningEntries={reasoningEntries}
+      isClipReel={isClipReel}
+      draftOverlay={draftOverlay}
+      draftStyle={draftStyle}
+      styleBusy={styleBusy}
+      variantBusy={variantBusy}
+      onOverlayChange={setDraftOverlay}
+      onStyleChange={setDraftStyle}
+      onCreateVariant={(kind) => void createVariant(kind)}
+      media={media}
+      videoRef={videoRef}
+      onRegisterActivateStream={onRegisterActivateStream}
+      onRemoveReviewAsset={onRemoveReviewAsset}
+    />
+    </div>
   );
 }

@@ -1,9 +1,13 @@
 'use client';
 
-import { useState } from 'react';
-
 import type { PublishingJobDto } from '@/lib/publishing-types';
-import { isoToDatetimeLocalValue } from '@/lib/publishing-schedule-datetime';
+
+import { ScheduleControls } from './ScheduleControls';
+import {
+  canPublishPublishingJobNow,
+  canSchedulePublishingJob,
+  canUnschedulePublishingJob,
+} from '../review/publishingJobStatuses';
 
 function statusTone(status: string): string {
   if (status === 'ready_to_publish' || status === 'scheduled') return 'text-[var(--good)]';
@@ -27,7 +31,7 @@ function formatWhen(iso: string | null | undefined): string {
   return new Date(t).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
-export type PublishingJobViewVariant = 'prepCard' | 'detailPage';
+export type PublishingJobViewVariant = 'prepCard' | 'detailPage' | 'popup';
 
 function PublishScheduleBlock(props: {
   variant: PublishingJobViewVariant;
@@ -38,50 +42,36 @@ function PublishScheduleBlock(props: {
   onPublishNow: () => void | Promise<void>;
 }) {
   const { variant, job, acting, onSchedule, onUnschedule, onPublishNow } = props;
-  const [showSchedule, setShowSchedule] = useState(false);
-  const [localDt, setLocalDt] = useState('');
 
-  const isCompact = variant === 'prepCard';
-  const btnBase = isCompact
-    ? 'rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50'
-    : 'rounded-md border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50';
+  const isCompact = variant === 'prepCard' || variant === 'popup';
 
-  const schedulableStatuses = new Set([
-    'draft',
-    'media_prepared',
-    'containers_created',
-    'processing',
-    'ready_to_publish',
-    'scheduled',
-  ]);
-  const canSetSchedule = schedulableStatuses.has(job.status);
-  const isEditingSchedule = job.status === 'scheduled';
-  const canUnschedule = job.status === 'scheduled';
-  const canPublishNow = schedulableStatuses.has(job.status) && job.status !== 'published';
+  const canSetSchedule = canSchedulePublishingJob(job.status);
+  const canUnschedule = canUnschedulePublishingJob(job.status);
+  const canPublishNow = canPublishPublishingJobNow(job.status);
 
-  const openScheduleEditor = () => {
-    setShowSchedule(true);
-    setLocalDt(
-      isEditingSchedule ? isoToDatetimeLocalValue(job.scheduled_publish_at) : '',
+  if (variant === 'popup') {
+    return (
+      <ScheduleControls
+        scheduledAt={job.scheduled_publish_at}
+        canSetSchedule={canSetSchedule}
+        canUnschedule={canUnschedule}
+        canPublishNow={canPublishNow}
+        acting={acting}
+        compact
+        onSchedule={onSchedule}
+        onUnschedule={onUnschedule}
+        onPublishNow={onPublishNow}
+      />
     );
-  };
-
-  const confirmSchedule = () => {
-    if (!localDt.trim()) return;
-    const ms = new Date(localDt).getTime();
-    if (!Number.isFinite(ms)) return;
-    void onSchedule(new Date(ms).toISOString());
-    setShowSchedule(false);
-    setLocalDt('');
-  };
+  }
 
   return (
     <div className={isCompact ? 'space-y-2' : 'space-y-3'}>
       <div
         className={
-          isCompact ?
-            'rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-[11px] text-[var(--muted)]'
-          : 'rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--muted)]'
+          isCompact
+            ? 'rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 text-[11px] text-[var(--muted)]'
+            : 'rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--muted)]'
         }
       >
         <p>
@@ -92,13 +82,6 @@ function PublishScheduleBlock(props: {
           <span className="font-medium text-[var(--text)]">Published:</span>{' '}
           {formatWhen(job.published_at)}
         </p>
-        <p className={isCompact ? 'mt-1' : 'mt-2'}>
-          <span className="font-medium text-[var(--text)]">Publish attempts:</span>{' '}
-          {job.publish_attempt_count ?? 0}
-          {job.last_publish_attempt_at ?
-            ` · last ${formatWhen(job.last_publish_attempt_at)}`
-          : ''}
-        </p>
         {job.instagram_permalink && (
           <p className={isCompact ? 'mt-1' : 'mt-2'}>
             <span className="font-medium text-[var(--text)]">Permalink:</span>{' '}
@@ -108,86 +91,28 @@ function PublishScheduleBlock(props: {
               rel="noreferrer"
               className="break-all text-[var(--accent)] underline hover:opacity-80"
             >
-              {job.instagram_permalink}
+              Open post
             </a>
           </p>
         )}
       </div>
 
-      {(canSetSchedule || canUnschedule || canPublishNow) && (
-        <div className={isCompact ? 'flex flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-3'}>
-          {canSetSchedule && (
-            <>
-              {!showSchedule ?
-                <button
-                  type="button"
-                  disabled={acting}
-                  onClick={openScheduleEditor}
-                  className={btnBase}
-                >
-                  {isEditingSchedule ? 'Edit schedule' : 'Schedule'}
-                </button>
-              : <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="datetime-local"
-                    value={localDt}
-                    onChange={(e) => setLocalDt(e.target.value)}
-                    className={
-                      isCompact ?
-                        'rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-[11px] text-[var(--text)]'
-                      : 'rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-sm text-[var(--text)]'
-                    }
-                  />
-                  <button
-                    type="button"
-                    disabled={acting || !localDt}
-                    onClick={() => void confirmSchedule()}
-                    className={btnBase}
-                  >
-                    {isEditingSchedule ? 'Save schedule' : 'Confirm schedule'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={acting}
-                    onClick={() => {
-                      setShowSchedule(false);
-                      setLocalDt('');
-                    }}
-                    className={btnBase}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              }
-            </>
-          )}
-          {canUnschedule && (
-            <button type="button" disabled={acting} onClick={() => void onUnschedule()} className={btnBase}>
-              Unschedule
-            </button>
-          )}
-          {canPublishNow && (
-            <button
-              type="button"
-              disabled={acting}
-              onClick={() => {
-                if (!window.confirm('Publish this post to Instagram now?')) return;
-                void onPublishNow();
-              }}
-              className={
-                isCompact ?
-                  'rounded-md border border-[var(--accent)] px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
-                : 'rounded-md border border-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
-              }
-            >
-              Publish now
-            </button>
-          )}
-        </div>
-      )}
+      <ScheduleControls
+        scheduledAt={job.scheduled_publish_at}
+        canSetSchedule={canSetSchedule}
+        canUnschedule={canUnschedule}
+        canPublishNow={canPublishNow}
+        acting={acting}
+        compact={isCompact}
+        onSchedule={onSchedule}
+        onUnschedule={onUnschedule}
+        onPublishNow={onPublishNow}
+      />
     </div>
   );
 }
+
+export { PublishScheduleBlock, statusTone, formatWhen };
 
 export function PublishingJobView({
   job,
@@ -225,9 +150,9 @@ export function PublishingJobView({
 
   const refreshLabel = refreshing ? 'Refreshing…' : 'Refresh container status';
 
-  if (variant === 'prepCard') {
+  if (variant === 'prepCard' || variant === 'popup') {
     return (
-      <div className="mt-3 space-y-3">
+      <div className={variant === 'popup' ? 'space-y-3' : 'mt-3 space-y-3'}>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
           <span className="text-[var(--muted)]">·</span>
@@ -244,7 +169,7 @@ export function PublishingJobView({
 
         {showPublishOps && (
           <PublishScheduleBlock
-            variant="prepCard"
+            variant={variant === 'popup' ? 'popup' : 'prepCard'}
             job={job}
             acting={publishingActing}
             onSchedule={onSchedulePublish}
@@ -257,7 +182,7 @@ export function PublishingJobView({
           <p className="text-xs text-[var(--bad)] whitespace-pre-wrap">{job.error_message}</p>
         )}
 
-        {job.caption && (
+        {variant === 'prepCard' && job.caption && (
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
               Caption draft
@@ -266,7 +191,7 @@ export function PublishingJobView({
           </div>
         )}
 
-        {media.length > 0 && (
+        {variant === 'prepCard' && media.length > 0 && (
           <div>
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
               Prepared media
@@ -316,7 +241,7 @@ export function PublishingJobView({
           </div>
         )}
 
-        {reviewDriveFolderUrl && (
+        {variant === 'prepCard' && reviewDriveFolderUrl && (
           <a
             href={reviewDriveFolderUrl}
             target="_blank"
@@ -327,7 +252,8 @@ export function PublishingJobView({
           </a>
         )}
 
-        {(job.instagram_child_container_ids?.length > 0 || job.instagram_creation_id) && (
+        {variant === 'prepCard' &&
+          (job.instagram_child_container_ids?.length > 0 || job.instagram_creation_id) && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--surface)] p-2 font-mono text-[10px] leading-relaxed text-[var(--muted)]">
             {job.instagram_child_container_ids?.length > 0 && (
               <p className="break-all">

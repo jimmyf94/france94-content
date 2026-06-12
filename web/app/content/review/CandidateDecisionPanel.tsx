@@ -1,10 +1,10 @@
 'use client';
 
-import { DeleteCandidateButton } from './decision/DeleteCandidateButton';
-import { DecisionButtons } from './decision/DecisionButtons';
 import { RewriteChips } from './decision/RewriteChips';
+import { PublishingPrepCard } from './PublishingPrepCard';
+import { QuickCaptionEdit } from './QuickCaptionEdit';
 import { CandidateTabs } from './tabs/CandidateTabs';
-import type { DecisionStatus, DetailTab, PostCandidate } from './types';
+import type { PostCandidate } from './types';
 
 function appendNote(notes: string, chip: string): string {
   return notes.trim() ? `${notes.trim()} · ${chip}` : chip;
@@ -24,36 +24,84 @@ function formatRelativeFromNow(iso: string | null | undefined): string | null {
   return `${diffDay} d ago`;
 }
 
+function WarningBanner({ candidate }: { candidate: PostCandidate }) {
+  const items: React.ReactNode[] = [];
+  if (candidate.invalidated_at) {
+    items.push(
+      <div
+        key="inv"
+        className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1.5 text-xs text-[var(--muted)]"
+      >
+        <span className="font-semibold text-[var(--text)]">Invalidated</span>
+        {candidate.invalidation_reason ? `: ${candidate.invalidation_reason}` : ''}
+      </div>,
+    );
+  }
+  if (candidate.has_asset_conflict === true && candidate.asset_conflict_summary) {
+    items.push(
+      <div
+        key="conflict"
+        className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2 py-1.5 text-xs text-[var(--bad)]"
+      >
+        {candidate.asset_conflict_summary}
+      </div>,
+    );
+  }
+  if (candidate.freshness_warning) {
+    items.push(
+      <div
+        key="stale"
+        className="rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-2 py-1.5 text-xs text-[var(--warn)]"
+      >
+        {candidate.freshness_warning}
+      </div>,
+    );
+  }
+  const risk = (candidate.collision_risk ?? '').trim();
+  if (candidate.collision_summary && ['blocked', 'high', 'medium'].includes(risk)) {
+    items.push(
+      <div
+        key="risk"
+        className={`rounded-md border px-2 py-1.5 text-xs ${
+          risk === 'blocked'
+            ? 'border-[var(--bad)]/40 bg-[var(--bad)]/10 text-[var(--bad)]'
+            : risk === 'high'
+              ? 'border-orange-500/40 bg-orange-500/10 text-orange-200'
+              : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+        }`}
+      >
+        <span className="font-semibold capitalize">{risk}</span>: {candidate.collision_summary}
+      </div>,
+    );
+  }
+  if (items.length === 0) return null;
+  return <div className="space-y-1.5">{items}</div>;
+}
+
 export function CandidateDecisionPanel({
   candidate,
   notes,
   savedNotes,
   onChangeNotes,
   onSaveNotes,
-  onDecide,
-  onApproveAnyway,
-  activeTab,
-  onChangeTab,
   onCandidateUpdated,
   onRegenerate,
   regenerating,
-  onDelete,
-  deleting,
+  onRefreshQueue,
+  activeTab,
+  onChangeTab,
 }: {
   candidate: PostCandidate | null;
   notes: string;
   savedNotes: string;
   onChangeNotes: (v: string) => void;
   onSaveNotes: () => void | Promise<void>;
-  onDecide: (s: DecisionStatus) => void;
-  onApproveAnyway?: () => void;
-  activeTab: DetailTab;
-  onChangeTab: (t: DetailTab) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
-  onDelete?: () => void;
-  deleting?: boolean;
+  onRefreshQueue?: () => void;
+  activeTab: import('./types').DetailTab;
+  onChangeTab: (t: import('./types').DetailTab) => void;
 }) {
   if (!candidate) {
     return (
@@ -68,151 +116,72 @@ export function CandidateDecisionPanel({
   const showRegenerate =
     !!onRegenerate && (candidate.status === 'needs_rewrite' || notesNonEmpty);
   const regenerateDisabled =
-    !!regenerating ||
-    (candidate.status === 'needs_rewrite' && !notesNonEmpty);
+    !!regenerating || (candidate.status === 'needs_rewrite' && !notesNonEmpty);
 
   return (
     <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
-      <div className="shrink-0 space-y-3 border-b border-[var(--border)] bg-[var(--surface)] p-4">
-        {candidate.invalidated_at && (
-          <div
-            className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--muted)]"
-            role="status"
-          >
-            <span className="font-semibold text-[var(--text)]">Invalidated</span>
-            {candidate.invalidation_reason ? `: ${candidate.invalidation_reason}` : ''}
-          </div>
-        )}
-        {candidate.has_asset_conflict === true && candidate.asset_conflict_summary && (
-          <div
-            className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-3 py-2 text-xs text-[var(--bad)]"
-            role="status"
-          >
-            <span className="font-semibold">Asset conflict</span>: {candidate.asset_conflict_summary}
-          </div>
-        )}
-        {candidate.freshness_warning && (
-          <div
-            className="rounded-md border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-3 py-2 text-xs text-[var(--warn)]"
-            role="status"
-          >
-            {candidate.freshness_warning}
-            {candidate.is_fresh_story === false && (
-              <span className="mt-1 block text-[10px] text-[var(--muted)]">
-                is_fresh_story: false
-              </span>
-            )}
-          </div>
-        )}
-        {candidate.collision_summary &&
-          ['blocked', 'high', 'medium'].includes((candidate.collision_risk ?? '').trim()) && (
-            <div
-              className={`rounded-md border px-3 py-2 text-xs ${
-                candidate.collision_risk === 'blocked'
-                  ? 'border-[var(--bad)]/40 bg-[var(--bad)]/10 text-[var(--bad)]'
-                  : candidate.collision_risk === 'high'
-                    ? 'border-orange-500/40 bg-orange-500/10 text-orange-200'
-                    : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-              }`}
-              role="status"
-            >
-              <span className="font-semibold capitalize">
-                Content risk: {candidate.collision_risk}
-              </span>
-              : {candidate.collision_summary}
-            </div>
-          )}
-        <DecisionButtons
-          onDecide={onDecide}
-          layout="column"
-          size="lg"
-          disabled={candidate.status === 'ready_to_publish'}
-          approveDisabled={
-            candidate.has_asset_conflict === true ||
-            Boolean(candidate.freshness_warning) ||
-            ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
-          }
-          allDecisionsDisabled={Boolean(candidate.invalidated_at)}
-        />
-        {onApproveAnyway &&
-          ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
-          candidate.has_asset_conflict !== true &&
-          !candidate.invalidated_at &&
-          candidate.status !== 'ready_to_publish' && (
-            <button
-              type="button"
-              onClick={() => onApproveAnyway()}
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--text)]"
-            >
-              Approve anyway (override collision warning)
-            </button>
-          )}
-        {onDelete && (
-          <DeleteCandidateButton
-            onDelete={onDelete}
-            size="lg"
-            disabled={
-              Boolean(deleting) ||
-              candidate.status === 'ready_to_publish' ||
-              Boolean(candidate.invalidated_at)
-            }
-          />
-        )}
-        <section className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3">
+      <div className="scrollbar-thin shrink-0 space-y-3 overflow-auto border-b border-[var(--border)] p-3">
+        <WarningBanner candidate={candidate} />
+
+        <section className="cockpit-card space-y-2.5 p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-              Reviewer&rsquo;s Notes
+              Rewrite / direction
             </h3>
             {dirty && (
-              <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">
-                Unsaved
-              </span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--warn)]">Unsaved</span>
             )}
           </div>
           <textarea
             value={notes}
             onChange={(e) => onChangeNotes(e.target.value)}
-            placeholder="Add a note before deciding…"
-            className="min-h-[72px] w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2 text-sm placeholder:text-[var(--muted)]"
+            placeholder="What should change? Regenerate uses these notes."
+            rows={6}
+            className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2.5 text-sm leading-relaxed placeholder:text-[var(--muted)]"
           />
           <RewriteChips onAppend={(t) => onChangeNotes(appendNote(notes, t))} />
-          <div className="flex items-center justify-end">
+          {showRegenerate && (
+            <button
+              type="button"
+              disabled={regenerateDisabled}
+              onClick={() => void onRegenerate?.()}
+              title={
+                candidate.status === 'needs_rewrite' && !notesNonEmpty
+                  ? 'Add direction first'
+                  : 'Saves notes if needed, then re-runs planner'
+              }
+              className="cockpit-btn-primary w-full py-2.5 text-sm disabled:opacity-40"
+            >
+              {regenerating ? 'Regenerating…' : 'Regenerate from notes'}
+            </button>
+          )}
+          <div className="flex items-center justify-between gap-2">
             <button
               type="button"
               disabled={!dirty}
               onClick={() => void onSaveNotes()}
-              className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+              className="cockpit-btn-secondary px-2.5 py-1 text-xs disabled:opacity-40"
             >
-              Save notes
+              Save notes only
             </button>
+            {(candidate.regeneration_count ?? 0) > 0 && (
+              <p className="text-[10px] text-[var(--muted)]">
+                {candidate.regeneration_count}×
+                {formatRelativeFromNow(candidate.last_regenerated_at) &&
+                  ` · ${formatRelativeFromNow(candidate.last_regenerated_at)}`}
+              </p>
+            )}
           </div>
-          {showRegenerate && (
-            <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  disabled={regenerateDisabled}
-                  onClick={() => void onRegenerate?.()}
-                  title={
-                    candidate.status === 'needs_rewrite' && !notesNonEmpty
-                      ? 'Add reviewer notes first'
-                      : 'Re-run the planner using current assets and reviewer notes'
-                  }
-                  className="rounded-md border border-[var(--warn)] bg-[var(--warn)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--warn)] transition-colors hover:bg-[var(--warn)]/20 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {regenerating ? 'Regenerating…' : 'Regenerate Candidate'}
-                </button>
-              </div>
-              {(candidate.regeneration_count ?? 0) > 0 && (
-                <p className="text-right text-[10px] text-[var(--muted)]">
-                  Regenerated {candidate.regeneration_count}×
-                  {formatRelativeFromNow(candidate.last_regenerated_at) &&
-                    ` · ${formatRelativeFromNow(candidate.last_regenerated_at)}`}
-                </p>
-              )}
-            </div>
-          )}
         </section>
+
+        <QuickCaptionEdit candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
+
+        <PublishingPrepCard
+          candidate={candidate}
+          reviewDriveFolderUrl={candidate.review_drive_folder_url}
+          onRefreshQueue={onRefreshQueue}
+          compact
+        />
       </div>
 
       <CandidateTabs
@@ -220,6 +189,8 @@ export function CandidateDecisionPanel({
         active={activeTab}
         onChange={onChangeTab}
         onCandidateUpdated={onCandidateUpdated}
+        tabs={['structure', 'transcript', 'debug']}
+        hideCaption
       />
     </aside>
   );

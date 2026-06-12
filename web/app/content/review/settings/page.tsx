@@ -16,6 +16,7 @@ import {
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { PipelineSection } from './PipelineSection';
+import { ReelTextDefaultsSection } from './ReelTextDefaultsSection';
 
 type Fr94RouteOperation =
   | 'asset_analysis_image'
@@ -1104,7 +1105,12 @@ export default function LlmSettingsPage() {
           </button>
         </div>
 
-        {tab === 'pipeline' && <PipelineSection onFeedback={setFeedback} />}
+        {tab === 'pipeline' && (
+          <>
+            <PipelineSection onFeedback={setFeedback} />
+            <ReelTextDefaultsSection onFeedback={setFeedback} />
+          </>
+        )}
 
         {tab === 'usage' && (
           <>

@@ -1,15 +1,16 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DeleteCandidateButton } from '../decision/DeleteCandidateButton';
+import { StagePublishingButton } from '../decision/StagePublishingButton';
 import { DecisionButtons } from '../decision/DecisionButtons';
 import { ProductionJobCard } from '../ProductionJobCard';
 import { PublishingPrepCard } from '../PublishingPrepCard';
 import { RewriteChips } from '../decision/RewriteChips';
 import { FilterForm, type ReviewFilters } from '../FilterDrawer';
+import { hasActiveReviewFilters, IconFilter } from '../FilterToggleButton';
 import { MainMediaPreview } from '../MainMediaPreview';
 import { ReviewMediaTrashButton } from '../ReviewMediaTrashButton';
 import { PostTypeBadge } from '../PostTypeBadge';
@@ -186,50 +187,33 @@ export function MobileReviewStack({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2">
         <button
           type="button"
           onClick={() => onChangeSheet('queue')}
-          className="rounded-md border border-[var(--border)] px-3 py-1.5 font-medium"
+          className="cockpit-btn-secondary px-3 py-1.5 text-xs font-medium"
         >
-          Queue · {counts.needs_review}
+          Inbox · {counts.needs_review}
         </button>
-        <span className="text-center text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          FR94 Review
-        </span>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             disabled={generatingCandidates || generateDisabled}
             onClick={() => void onGenerateCandidates()}
-            className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-2 py-1.5 text-[11px] font-medium text-white disabled:opacity-50"
+            className="cockpit-btn-generate px-2.5 py-1.5 text-[11px] disabled:opacity-50"
           >
-            {generatingCandidates ? 'Generating…' : 'Generate'}
+            {generatingCandidates ? 'Generating…' : 'Generate New Candidates'}
           </button>
-          <Link
-            href="/content/publishing"
-            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
-          >
-            Schedule
-          </Link>
-          <Link
-            href="/content/assets"
-            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
-          >
-            Assets
-          </Link>
-          <Link
-            href="/content/review/settings"
-            className="rounded-md border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--muted)]"
-          >
-            LLM
-          </Link>
           <button
             type="button"
             onClick={() => onChangeSheet('filters')}
-            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[var(--muted)]"
+            className={`cockpit-btn-secondary p-1.5 ${
+              hasActiveReviewFilters(filters) ? 'border-[var(--accent)] text-[var(--accent)]' : ''
+            }`}
+            aria-label="Filters"
+            title="Filters"
           >
-            Filters
+            <IconFilter />
           </button>
         </div>
       </div>
@@ -473,7 +457,11 @@ function MobileCandidateView({
           onRefreshQueue={onRefreshQueue}
         />
         {candidate.post_type === 'reel' && (
-          <ProductionJobCard candidate={candidate} onVariantCreated={onVariantCreated} />
+          <ProductionJobCard
+            candidate={candidate}
+            onVariantCreated={onVariantCreated}
+            onCandidateUpdated={onCandidateUpdated}
+          />
         )}
         {candidate.hook && (
           <p className="text-sm leading-relaxed text-[var(--muted)]">{candidate.hook}</p>
@@ -580,18 +568,33 @@ function MobileCandidateView({
               : {candidate.collision_summary}
             </div>
           )}
-        <DecisionButtons
-          onDecide={onDecide}
-          size="lg"
-          variant="iconOnly"
-          disabled={candidate.status === 'ready_to_publish'}
-          approveDisabled={
-            candidate.has_asset_conflict === true ||
-            Boolean(candidate.freshness_warning) ||
-            ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
-          }
-          allDecisionsDisabled={Boolean(candidate.invalidated_at)}
-        />
+        <div className="flex items-stretch gap-2">
+          <DecisionButtons
+            onDecide={onDecide}
+            size="lg"
+            variant="iconOnly"
+            disabled={candidate.status === 'ready_to_publish'}
+            approveDisabled={
+              candidate.has_asset_conflict === true ||
+              Boolean(candidate.freshness_warning) ||
+              ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
+            }
+            allDecisionsDisabled={Boolean(candidate.invalidated_at)}
+          />
+          <StagePublishingButton candidate={candidate} onStaged={onRefreshQueue} />
+          {onDelete && (
+            <DeleteCandidateButton
+              onDelete={onDelete}
+              size="lg"
+              variant="iconOnly"
+              disabled={
+                Boolean(deleting) ||
+                candidate.status === 'ready_to_publish' ||
+                Boolean(candidate.invalidated_at)
+              }
+            />
+          )}
+        </div>
         {onApproveAnyway &&
           ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
           candidate.has_asset_conflict !== true &&
@@ -604,17 +607,6 @@ function MobileCandidateView({
               Approve anyway
             </button>
           )}
-        {onDelete && (
-          <DeleteCandidateButton
-            onDelete={onDelete}
-            size="lg"
-            disabled={
-              Boolean(deleting) ||
-              candidate.status === 'ready_to_publish' ||
-              Boolean(candidate.invalidated_at)
-            }
-          />
-        )}
       </section>
 
       <section className="px-3 pb-2">

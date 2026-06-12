@@ -1,12 +1,16 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { PublishingJobDto, PublishingQueueItem } from '@/lib/publishing-types';
-import { isoToDatetimeLocalValue } from '@/lib/publishing-schedule-datetime';
 import { readJsonResponse } from '@/lib/read-json-response';
 
+import { ScheduleControls } from '../publishing/ScheduleControls';
+import {
+  canPublishPublishingJobNow,
+  canSchedulePublishingJob,
+  canUnschedulePublishingJob,
+} from './publishingJobStatuses';
 import { PostTypeBadge } from './PostTypeBadge';
 import { postTypeKey } from './postTypeTheme';
 
@@ -19,13 +23,6 @@ const POST_TYPE_INITIAL: Record<string, string> = {
 
 function postTypeInitial(type: string): string {
   return POST_TYPE_INITIAL[type] ?? type.slice(0, 1).toUpperCase();
-}
-
-function formatWhen(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return iso;
-  return new Date(t).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 }
 
 function statusTone(status: string): string {
@@ -78,6 +75,8 @@ function ScheduleQueueRow({
   onUnschedule,
   onPublishNow,
   compact,
+  onSelectCandidate,
+  selected,
 }: {
   item: PublishingQueueItem;
   acting: boolean;
@@ -85,37 +84,21 @@ function ScheduleQueueRow({
   onUnschedule: (jobId: string) => void | Promise<void>;
   onPublishNow: (jobId: string) => void | Promise<void>;
   compact?: boolean;
+  onSelectCandidate?: (candidateId: string) => void;
+  selected?: boolean;
 }) {
-  const [showSchedule, setShowSchedule] = useState(false);
-  const [localDt, setLocalDt] = useState('');
-
-  const canSetSchedule = item.status === 'ready_to_publish' || item.status === 'scheduled';
-  const isEditingSchedule = item.status === 'scheduled';
-  const canUnschedule = item.status === 'scheduled';
-  const canPublishNow = item.status === 'ready_to_publish' || item.status === 'scheduled';
-
-  const openScheduleEditor = () => {
-    setShowSchedule(true);
-    setLocalDt(
-      isEditingSchedule ? isoToDatetimeLocalValue(item.scheduled_publish_at) : '',
-    );
-  };
-
-  const btnBase = compact
-    ? 'rounded-md border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50'
-    : 'rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-50';
-
-  const confirmSchedule = () => {
-    if (!localDt.trim()) return;
-    const ms = new Date(localDt).getTime();
-    if (!Number.isFinite(ms)) return;
-    void onSchedule(item.id, new Date(ms).toISOString());
-    setShowSchedule(false);
-    setLocalDt('');
-  };
+  const canSetSchedule = canSchedulePublishingJob(item.status);
+  const canUnschedule = canUnschedulePublishingJob(item.status);
+  const canPublishNow = canPublishPublishingJobNow(item.status);
 
   return (
-    <li className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/60 p-3">
+    <li
+      className={`rounded-xl border p-3 transition-colors ${
+        selected
+          ? 'border-[var(--accent)] bg-[var(--accent-muted)]'
+          : 'border-[var(--border)] bg-[var(--surface-2)]/60'
+      }`}
+    >
       <div className="flex gap-3">
         <QueueThumbnail item={item} />
         <div className="min-w-0 flex-1">
@@ -125,101 +108,47 @@ function ScheduleQueueRow({
               {item.status.replace(/_/g, ' ')}
             </span>
           </div>
-          <p className="mt-1 line-clamp-2 text-sm font-medium leading-snug">
-            {item.candidate.title || '(untitled)'}
-          </p>
+          {onSelectCandidate ? (
+            <button
+              type="button"
+              onClick={() => onSelectCandidate(item.post_candidate_id)}
+              className="mt-1 line-clamp-2 text-left text-sm font-medium leading-snug hover:text-[var(--accent)]"
+            >
+              {item.candidate.title || '(untitled)'}
+            </button>
+          ) : (
+            <p className="mt-1 line-clamp-2 text-sm font-medium leading-snug">
+              {item.candidate.title || '(untitled)'}
+            </p>
+          )}
           <p className="mt-1 text-[11px] text-[var(--muted)]">
             {item.status === 'scheduled' ? (
-              <>
-                <span className="font-medium text-[var(--text)]">Goes live:</span>{' '}
-                {formatWhen(item.scheduled_publish_at)}
-              </>
+              <span>Scheduled — change time or cancel below</span>
             ) : item.status === 'ready_to_publish' ? (
-              <span>Ready — not scheduled</span>
+              <span>Ready — set a go-live time below</span>
+            ) : canSetSchedule ? (
+              <span>Prep in progress — schedule below</span>
             ) : (
               <span>In progress ({item.publish_type})</span>
             )}
           </p>
-          <Link
-            href={`/content/publishing/${item.id}`}
-            className="mt-1 inline-block text-[11px] text-[var(--accent)] underline hover:opacity-80"
-          >
-            Open detail
-          </Link>
         </div>
       </div>
 
       {(canSetSchedule || canUnschedule || canPublishNow) && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-[var(--border)] pt-2">
-          {canSetSchedule && (
-            <>
-              {!showSchedule ? (
-                <button
-                  type="button"
-                  disabled={acting}
-                  onClick={openScheduleEditor}
-                  className={btnBase}
-                >
-                  {isEditingSchedule ? 'Edit schedule' : 'Schedule'}
-                </button>
-              ) : (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <input
-                    type="datetime-local"
-                    value={localDt}
-                    onChange={(e) => setLocalDt(e.target.value)}
-                    className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-0.5 text-[10px] text-[var(--text)]"
-                  />
-                  <button
-                    type="button"
-                    disabled={acting || !localDt}
-                    onClick={() => void confirmSchedule()}
-                    className={btnBase}
-                  >
-                    {isEditingSchedule ? 'Save' : 'Confirm'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={acting}
-                    onClick={() => {
-                      setShowSchedule(false);
-                      setLocalDt('');
-                    }}
-                    className={btnBase}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {canUnschedule && (
-            <button
-              type="button"
-              disabled={acting}
-              onClick={() => void onUnschedule(item.id)}
-              className={btnBase}
-            >
-              Unschedule
-            </button>
-          )}
-          {canPublishNow && (
-            <button
-              type="button"
-              disabled={acting}
-              onClick={() => {
-                if (!window.confirm('Publish this post to Instagram now?')) return;
-                void onPublishNow(item.id);
-              }}
-              className={
-                compact
-                  ? 'rounded-md border border-[var(--accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
-                  : 'rounded-md border border-[var(--accent)] px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50'
-              }
-            >
-              Publish now
-            </button>
-          )}
+        <div className="mt-2 border-t border-[var(--border)] pt-2">
+          <ScheduleControls
+            scheduledAt={item.scheduled_publish_at}
+            canSetSchedule={canSetSchedule}
+            canUnschedule={canUnschedule}
+            canPublishNow={canPublishNow}
+            acting={acting}
+            compact
+            layout="queue"
+            onSchedule={(iso) => void onSchedule(item.id, iso)}
+            onUnschedule={() => void onUnschedule(item.id)}
+            onPublishNow={() => void onPublishNow(item.id)}
+          />
         </div>
       )}
     </li>
@@ -229,11 +158,19 @@ function ScheduleQueueRow({
 export function PublishingScheduleQueue({
   variant = 'column',
   reloadNonce = 0,
+  hideHeader = false,
+  onStatsChange,
   onRefresh,
+  onSelectCandidate,
+  selectedCandidateId,
 }: {
   variant?: 'column' | 'page';
   reloadNonce?: number;
+  hideHeader?: boolean;
+  onStatsChange?: (stats: { scheduled: number; ready: number }) => void;
   onRefresh?: () => void;
+  onSelectCandidate?: (candidateId: string) => void;
+  selectedCandidateId?: string | null;
 }) {
   const [items, setItems] = useState<PublishingQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -262,6 +199,13 @@ export function PublishingScheduleQueue({
   useEffect(() => {
     void load();
   }, [load, reloadNonce]);
+
+  useEffect(() => {
+    onStatsChange?.({
+      scheduled: items.filter((i) => i.status === 'scheduled').length,
+      ready: items.filter((i) => i.status === 'ready_to_publish').length,
+    });
+  }, [items, onStatsChange]);
 
   const patchJobFromResponse = (job: PublishingJobDto) => {
     setItems((prev) =>
@@ -356,6 +300,7 @@ export function PublishingScheduleQueue({
   const isPage = variant === 'page';
   const scheduledCount = items.filter((i) => i.status === 'scheduled').length;
   const readyCount = items.filter((i) => i.status === 'ready_to_publish').length;
+  const showHeader = !hideHeader;
 
   return (
     <div
@@ -365,38 +310,40 @@ export function PublishingScheduleQueue({
           : 'flex min-h-0 flex-1 flex-col bg-[var(--surface)]'
       }
     >
-      <div
-        className={
-          isPage
-            ? 'mb-4 flex flex-wrap items-baseline justify-between gap-2'
-            : 'flex shrink-0 items-baseline justify-between gap-2 border-b border-[var(--border)] px-3 pt-3 pb-2'
-        }
-      >
-        <div>
-          <h2
-            className={
-              isPage
-                ? 'text-lg font-semibold tracking-tight'
-                : 'text-sm font-semibold tracking-tight'
-            }
-          >
-            Publishing queue
-          </h2>
-          {!isPage && (
-            <p className="mt-0.5 text-[10px] text-[var(--muted)]">
-              {scheduledCount} scheduled · {readyCount} ready
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={loading}
-          className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+      {showHeader && (
+        <div
+          className={
+            isPage
+              ? 'mb-4 flex flex-wrap items-baseline justify-between gap-2'
+              : 'flex shrink-0 items-baseline justify-between gap-2 border-b border-[var(--border)] px-3 pt-3 pb-2'
+          }
         >
-          Refresh
-        </button>
-      </div>
+          <div>
+            <h2
+              className={
+                isPage
+                  ? 'text-lg font-semibold tracking-tight'
+                  : 'text-sm font-semibold tracking-tight'
+              }
+            >
+              Publishing queue
+            </h2>
+            {!isPage && (
+              <p className="mt-0.5 text-[10px] text-[var(--muted)]">
+                {scheduledCount} scheduled · {readyCount} ready
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+          >
+            Refresh
+          </button>
+        </div>
+      )}
 
       {error && (
         <p className={`text-xs text-[var(--bad)] ${isPage ? 'mb-3' : 'px-3 py-2'}`}>{error}</p>
@@ -435,6 +382,8 @@ export function PublishingScheduleQueue({
                 onUnschedule={unschedulePublish}
                 onPublishNow={publishNow}
                 compact={!isPage}
+                onSelectCandidate={onSelectCandidate}
+                selected={selectedCandidateId === item.post_candidate_id}
               />
             ))}
           </ul>

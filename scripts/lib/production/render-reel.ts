@@ -4,6 +4,16 @@ import path from 'node:path';
 
 import ffmpegPathDefault from 'ffmpeg-static';
 
+import {
+  drawtextXExpression,
+  drawtextYExpression,
+  parsePartialReelTextStyle,
+  resolveReelTextStyle,
+  wrapOverlayLinesForRender,
+  type ReelRenderTextStyle,
+} from '../reel-text-style.js';
+import type { ReelRenderProgressPatch } from '../reel-render-progress.js';
+import { progressForEncode, progressForStage } from '../reel-render-progress.js';
 import { probeVideo, withTempDir } from '../video-preprocess.js';
 
 const OUTRO_DEFAULT_LINES = ['94 triathlons · 94 jours · 94 départements'];
@@ -74,6 +84,7 @@ type ParsedInstructions = {
   includeOutro: boolean;
   /** Overlay persists for the whole reel (clips-v1) vs first 3s (legacy). */
   persistentOverlay: boolean;
+  textStylePartial: Partial<ReelRenderTextStyle> | null;
 };
 
 /**
@@ -87,6 +98,7 @@ function parseInstructions(raw: unknown, sourceAssetIds: string[]): ParsedInstru
   let includeOutro = true;
   let persistentOverlay = false;
   let segments: SegmentSpec[] | null = null;
+  let textStylePartial: Partial<ReelRenderTextStyle> | null = null;
 
   if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
     const o = raw as Record<string, unknown>;
@@ -112,7 +124,8 @@ function parseInstructions(raw: unknown, sourceAssetIds: string[]): ParsedInstru
       }
       includeOutro = false;
       persistentOverlay = true;
-      return { segments, overlayLines, includeOutro, persistentOverlay };
+      textStylePartial = parsePartialReelTextStyle(o.text_style);
+      return { segments, overlayLines, includeOutro, persistentOverlay, textStylePartial };
     }
 
     const c = o.clips;
@@ -150,7 +163,7 @@ function parseInstructions(raw: unknown, sourceAssetIds: string[]): ParsedInstru
     if (o.outro_card === false) includeOutro = false;
   }
 
-  return { segments, overlayLines, includeOutro, persistentOverlay };
+  return { segments, overlayLines, includeOutro, persistentOverlay, textStylePartial };
 }
 
 function scaleCropFilter(): string {
@@ -161,21 +174,24 @@ function escapeDrawtextPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
-/**
- * Reel text style: small white text, black outline, centered horizontally,
- * top third of the 9:16 frame.
- */
 function overlayFilter(params: {
   font: string;
   textFileAbs: string;
   persistent: boolean;
+  style: ReelRenderTextStyle;
 }): string {
   const enable = params.persistent ? '' : `:enable='between(t,0,3)'`;
+  const { style } = params;
+  const border =
+    style.outline_width > 0
+      ? `:borderw=${style.outline_width}:bordercolor=${style.outline_color}`
+      : '';
   return (
     `,drawtext=fontfile='${escapeDrawtextPath(params.font)}'` +
     `:textfile='${escapeDrawtextPath(params.textFileAbs)}':reload=1` +
-    `:fontsize=38:fontcolor=white:borderw=4:bordercolor=black` +
-    `:x=(w-text_w)/2:y=(h/3-text_h)/2:line_spacing=10${enable}`
+    `:fontsize=${style.fontsize}:fontcolor=${style.font_color}${border}` +
+    `:x=${drawtextXExpression(style.centered)}:y=${drawtextYExpression(style.position)}` +
+    `:line_spacing=${style.line_spacing}${enable}`
   );
 }
 
@@ -190,6 +206,9 @@ export async function renderReel(params: {
   instructions: unknown;
   /** content_asset ids aligned with sourceVideos; required to map clips-v1 specs. */
   sourceAssetIds?: string[];
+  /** Workspace defaults when spec has no text_style overrides. */
+  defaultTextStyle?: ReelRenderTextStyle;
+  onProgress?: (patch: ReelRenderProgressPatch) => void;
 }): Promise<{
   mp4: Buffer;
   thumbnailJpeg: Buffer | null;
@@ -204,6 +223,7 @@ export async function renderReel(params: {
   const sourceAssetIds = (params.sourceAssetIds ?? []).slice(0, MAX_SOURCES);
   const parsed = parseInstructions(params.instructions, sourceAssetIds);
   const { overlayLines, includeOutro, persistentOverlay } = parsed;
+  const textStyle = resolveReelTextStyle(parsed.textStylePartial, params.defaultTextStyle);
 
   let segments: SegmentSpec[];
   if (parsed.segments != null && parsed.segments.length > 0) {
@@ -220,7 +240,7 @@ export async function renderReel(params: {
     overlay_lines: overlayLines.length,
     include_outro: includeOutro,
     keep_audio: true,
-    text_style: 'top-third-white-outline',
+    text_style: textStyle,
   };
 
   return withTempDir('fr94-reel-', async (dir) => {
@@ -237,15 +257,23 @@ export async function renderReel(params: {
     const textRel = 'overlay.txt';
     const textAbs = path.join(dir, textRel);
     const overlay = overlayLines.length > 0 && font
-      ? overlayFilter({ font, textFileAbs: textAbs, persistent: persistentOverlay })
+      ? overlayFilter({
+          font,
+          textFileAbs: textAbs,
+          persistent: persistentOverlay,
+          style: textStyle,
+        })
       : '';
     if (overlay) {
-      fs.writeFileSync(textAbs, overlayLines.slice(0, 3).join('\n'), 'utf8');
+      const wrapped = wrapOverlayLinesForRender(overlayLines.slice(0, 3), textStyle);
+      fs.writeFileSync(textAbs, wrapped, 'utf8');
+      log.overlay_wrapped_lines = wrapped.split('\n').length;
     }
 
     const segmentPaths: string[] = [];
     let totalUsed = 0;
     const stderrTails: string[] = [];
+    const segmentTotal = segments.length;
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i]!;
@@ -310,12 +338,15 @@ export async function renderReel(params: {
       const err = await runFfmpeg(args, dir);
       stderrTails.push(err.trim().slice(-400));
       segmentPaths.push(segOut);
+      params.onProgress?.(progressForEncode(segmentPaths.length, segmentTotal));
       if (totalUsed >= MAX_TOTAL_SEC) break;
     }
 
     if (segmentPaths.length === 0) {
       throw new Error('No segments produced (duration / trim invalid).');
     }
+
+    params.onProgress?.(progressForStage('concat'));
 
     const concatList = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
     const concatPath = path.join(dir, 'concat.txt');
@@ -416,6 +447,7 @@ export async function renderReel(params: {
 
     let thumbnailJpeg: Buffer | null = null;
     try {
+      params.onProgress?.(progressForStage('thumbnail'));
       const thumbPath = path.join(dir, 'thumb.jpg');
       await runFfmpeg(
         ['-y', '-loglevel', 'error', '-ss', '0.5', '-i', outMp4, '-frames:v', '1', '-q:v', '3', thumbPath],

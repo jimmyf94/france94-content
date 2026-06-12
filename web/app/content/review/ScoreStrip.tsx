@@ -24,6 +24,10 @@ function formatScore(v: unknown): string | null {
   return n.toFixed(1);
 }
 
+export function hasCandidateScores(candidate: PostCandidate): boolean {
+  return SCORES.some((s) => formatScore(candidate[s.key]) != null);
+}
+
 export function ScoreStrip({
   candidate,
   compact = false,

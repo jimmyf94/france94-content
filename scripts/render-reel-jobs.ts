@@ -12,6 +12,16 @@ import { getDriveClient } from './ingest-drive-content.js';
 import { fetchDriveFileMedia, maxPublishingFileBytes } from './lib/drive-media-download.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { renderReel } from './lib/production/render-reel.js';
+import { loadReelRenderDefaults } from './lib/reel-render-defaults.js';
+import {
+  createRenderProgressPatch,
+  mergeRenderLogWithProgress,
+  progressForDownload,
+  progressForStage,
+  type ReelRenderProgress,
+  type ReelRenderProgressPatch,
+} from './lib/reel-render-progress.js';
+import type { ReelRenderTextStyle } from './lib/reel-text-style.js';
 import { uploadPublicMedia } from './lib/publishing/public-upload.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,13 +79,85 @@ async function setJob(
   if (error) throw new Error(error.message);
 }
 
+function parseCandidateIdArg(): string | undefined {
+  const fromEquals = process.argv.find((a) => a.startsWith('--candidate-id='));
+  if (fromEquals) {
+    const v = fromEquals.slice('--candidate-id='.length).trim();
+    if (v) return v;
+  }
+  const idx = process.argv.indexOf('--candidate-id');
+  if (idx >= 0) {
+    const v = process.argv[idx + 1]?.trim();
+    if (v && !v.startsWith('-')) return v;
+  }
+  return undefined;
+}
+
+/** Atomically claim a queued job so parallel workers do not double-render. */
+async function tryClaimJob(supabase: SupabaseClient, jobId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('production_jobs')
+    .update({ status: 'rendering', error_message: null, updated_at: new Date().toISOString() })
+    .eq('id', jobId)
+    .eq('status', 'queued')
+    .select('id')
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data != null;
+}
+
+const PROGRESS_WRITE_MIN_MS = 1000;
+
+class JobProgressTracker {
+  private current: ReelRenderProgress;
+  private lastWriteMs = 0;
+  private lastStage: string;
+
+  constructor(
+    private supabase: SupabaseClient,
+    private jobId: string,
+    startedAt: string,
+  ) {
+    this.current = createRenderProgressPatch({
+      stage: 'starting',
+      progress_pct: 2,
+      message: 'Starting render…',
+      started_at: startedAt,
+    });
+    this.lastStage = this.current.stage;
+  }
+
+  async update(patch: ReelRenderProgressPatch, force = false): Promise<void> {
+    this.current = createRenderProgressPatch(patch, this.current);
+    await this.flush(force);
+  }
+
+  async flush(force = false): Promise<void> {
+    const now = Date.now();
+    const stageChanged = this.current.stage !== this.lastStage;
+    if (!force && now - this.lastWriteMs < PROGRESS_WRITE_MIN_MS && !stageChanged) return;
+    await setJob(this.supabase, this.jobId, { render_log: this.current });
+    this.lastWriteMs = now;
+    this.lastStage = this.current.stage;
+  }
+
+  snapshot(): ReelRenderProgress {
+    return this.current;
+  }
+}
+
 async function processOneJob(
   supabase: SupabaseClient,
   drive: Awaited<ReturnType<typeof getDriveClient>>,
   job: ProductionJobRow,
+  defaultTextStyle: ReelRenderTextStyle,
 ): Promise<void> {
   const jobId = job.id;
   const candidateId = job.post_candidate_id;
+  const startedAt = new Date().toISOString();
+  const progress = new JobProgressTracker(supabase, jobId, startedAt);
+  await progress.flush(true);
+
   const spec = job.reel_specification ?? job.instructions;
   const specAssetIds = assetIdsFromSpec(spec);
   const rawIds =
@@ -146,7 +228,9 @@ async function processOneJob(
 
   const maxBytes = maxPublishingFileBytes();
   const buffers: Buffer[] = [];
-  for (const row of ordered) {
+  for (let i = 0; i < ordered.length; i++) {
+    const row = ordered[i]!;
+    await progress.update(progressForDownload(i + 1, ordered.length));
     try {
       const buf = await fetchDriveFileMedia(drive, row.drive_file_id!, maxBytes);
       buffers.push(buf);
@@ -161,14 +245,16 @@ async function processOneJob(
     }
   }
 
-  await setJob(supabase, jobId, { status: 'rendering', error_message: null });
-
   let rendered: Awaited<ReturnType<typeof renderReel>>;
   try {
     rendered = await renderReel({
       sourceVideos: buffers,
       instructions: spec,
       sourceAssetIds: ordered.map((r) => r.id),
+      defaultTextStyle,
+      onProgress: (patch) => {
+        void progress.update(patch);
+      },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -186,6 +272,7 @@ async function processOneJob(
 
   let publicUrl: string;
   try {
+    await progress.update(progressForStage('upload', 'Uploading rendered video…'), true);
     const up = await uploadPublicMedia({
       supabase,
       bucket,
@@ -208,6 +295,7 @@ async function processOneJob(
   let thumbnailUrl: string | null = null;
   if (rendered.thumbnailJpeg?.length) {
     try {
+      await progress.update(progressForStage('upload', 'Uploading thumbnail…'));
       const up = await uploadPublicMedia({
         supabase,
         bucket,
@@ -227,7 +315,10 @@ async function processOneJob(
     output_video_url: publicUrl,
     thumbnail_url: thumbnailUrl,
     render_strategy: 'ffmpeg-deterministic-v2',
-    render_log: rendered.log,
+    render_log: mergeRenderLogWithProgress(
+      createRenderProgressPatch(progressForStage('done'), progress.snapshot()),
+      rendered.log,
+    ),
     reel_specification: spec ?? null,
     error_message: null,
   });
@@ -238,8 +329,7 @@ async function processOneJob(
       const { error } = await supabase
         .from('post_candidates')
         .update({ cover_thumbnail_url: thumbnailUrl, updated_at: new Date().toISOString() })
-        .eq('id', candidateId)
-        .is('cover_thumbnail_url', null);
+        .eq('id', candidateId);
       if (error) console.warn(`[render:reels]\tcandidate thumb attach failed\t${candidateId}: ${error.message}`);
     } catch (e) {
       console.warn(`[render:reels]\tcandidate thumb attach failed\t${candidateId}`, e);
@@ -254,23 +344,41 @@ async function main(): Promise<void> {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data: jobs, error } = await supabase
+  const singleCandidateId = parseCandidateIdArg();
+
+  let query = supabase
     .from('production_jobs')
     .select('id,post_candidate_id,production_type,status,source_asset_ids,instructions,reel_specification')
     .eq('production_type', 'reel')
     .eq('status', 'queued')
     .order('created_at', { ascending: true });
 
+  if (singleCandidateId) {
+    query = query.eq('post_candidate_id', singleCandidateId);
+  }
+
+  const { data: jobs, error } = await query;
+
   if (error) throw new Error(error.message);
 
   const list = (jobs ?? []) as ProductionJobRow[];
+  if (singleCandidateId && list.length === 0) {
+    console.log(`[render:reels]\tno queued job for candidate ${singleCandidateId}`);
+    return;
+  }
   console.log(`[render:reels]\tqueued jobs: ${list.length}`);
 
+  const defaultTextStyle = await loadReelRenderDefaults(supabase);
   const drive = await getDriveClient();
 
   for (const job of list) {
     try {
-      await processOneJob(supabase, drive, job);
+      const claimed = await tryClaimJob(supabase, job.id);
+      if (!claimed) {
+        console.log(`[render:reels]\tskip (already claimed)\t${job.id}`);
+        continue;
+      }
+      await processOneJob(supabase, drive, job, defaultTextStyle);
       console.log(`[render:reels]\tdone\t${job.id}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

@@ -77,5 +77,4 @@ Return **strict JSON only**, no markdown fences:
 Rules:
 
 - `clips[].clip_id` must come from the provided `clips` list; trims must stay inside the clip's range.
-- Total trimmed duration must be between 12 and 18 seconds.
 - If no combination of provided clips can make a good 12–18s reel for this series, return `{"skip": true, "skip_reason": "short explanation"}` instead.

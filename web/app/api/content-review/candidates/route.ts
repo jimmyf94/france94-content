@@ -71,7 +71,11 @@ export async function GET(req: NextRequest) {
 
     const includeBlocked = sp.get('include_blocked') === 'true';
     if (!includeBlocked) {
-      q = q.or('collision_risk.is.null,collision_risk.neq.blocked');
+      // Blocked candidates stay visible in the review queue so freshly generated
+      // items are not silently dropped when the asset-overlap prefilter fires.
+      q = q.or(
+        'collision_risk.is.null,collision_risk.neq.blocked,status.in.(needs_review,needs_rewrite)',
+      );
     }
 
     q = q

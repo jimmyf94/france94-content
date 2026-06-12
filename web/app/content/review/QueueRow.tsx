@@ -17,33 +17,16 @@ function postTypeInitial(type: string): string {
   return POST_TYPE_INITIAL[type] ?? type.slice(0, 1).toUpperCase();
 }
 
-/** Hours while under 24h, then whole days. */
-function formatCreatedAge(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '';
-  const ms = Date.now() - t;
-  if (ms < 0) return '';
-  const h = Math.floor(ms / 3600000);
-  const d = Math.floor(ms / 86400000);
-  if (h < 24) {
-    if (h < 1) return '<1h ago';
-    return `${h}h ago`;
-  }
-  return `${d}d ago`;
-}
-
 function PostTypeAvatar({
   candidate,
   thumbnailUrl,
-  className = 'h-24 w-24 shrink-0',
 }: {
   candidate: CandidateListItem;
   thumbnailUrl: string | null;
-  /** Tall queue thumbs use e.g. `h-[98%] min-h-[4rem] w-full shrink-0`. */
-  className?: string;
 }) {
   const k = postTypeKey(candidate.post_type);
-  const shell = `overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-2)] ${className}`;
+  const shell =
+    'h-12 w-12 shrink-0 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-2)]';
   const [imgFailed, setImgFailed] = useState(false);
 
   useEffect(() => {
@@ -70,7 +53,7 @@ function PostTypeAvatar({
   return (
     <div
       data-post-type={k}
-      className={`post-type-avatar flex items-center justify-center text-2xl font-semibold uppercase ${shell}`}
+      className={`post-type-avatar flex h-12 w-12 items-center justify-center text-sm font-semibold uppercase ${shell}`}
     >
       {postTypeInitial(candidate.post_type)}
     </div>
@@ -86,17 +69,12 @@ export const QueueRow = memo(function QueueRow({
   candidate: CandidateListItem;
   selected: boolean;
   onSelect: (id: string) => void;
-  /** From bulk Drive listing; null until loaded or if no thumbnail. */
   firstThumbnailUrl: string | null;
 }) {
   const handleClick = useCallback(() => {
     onSelect(candidate.id);
   }, [onSelect, candidate.id]);
 
-  const dbAssetLen =
-    candidate.source_asset_ids?.length ?? candidate.source_drive_file_ids?.length ?? null;
-  const assetCount = typeof dbAssetLen === 'number' && dbAssetLen > 0 ? dbAssetLen : null;
-  const age = formatCreatedAge(candidate.created_at);
   const priority =
     candidate.priority_score != null
       ? Number(candidate.priority_score).toFixed(1)
@@ -106,89 +84,44 @@ export const QueueRow = memo(function QueueRow({
   const stale = Boolean(candidate.freshness_warning);
   const risk = (candidate.collision_risk ?? '').trim();
   const riskGreyed = risk === 'blocked' || risk === 'high';
-
-  const riskBadgeCls =
-    risk === 'blocked'
-      ? 'border-[var(--bad)]/35 bg-[var(--bad)]/10 text-[var(--bad)]'
-      : risk === 'high'
-        ? 'border-orange-500/35 bg-orange-500/10 text-orange-200'
-        : risk === 'medium'
-          ? 'border-amber-500/35 bg-amber-500/10 text-amber-200'
-          : risk === 'low'
-            ? 'border-[var(--good)]/35 bg-[var(--good)]/10 text-[var(--good)]'
-            : '';
+  const hasPublishing =
+    Boolean(candidate.publishing_job_id) || candidate.status === 'ready_to_publish';
 
   return (
     <button
       type="button"
       onClick={handleClick}
-      className={`grid w-full grid-cols-[7rem_minmax(0,1fr)] items-stretch gap-3 rounded-xl border p-4 text-left transition-colors ${
-        conflict || stale || riskGreyed ? 'opacity-50' : ''
+      className={`flex w-full items-start gap-2.5 rounded-lg border px-2 py-2 text-left transition-colors ${
+        conflict || stale || riskGreyed ? 'opacity-55' : ''
       } ${
         selected
-          ? 'border-[color:rgb(91_140_255_/0.55)] bg-[var(--surface-2)] ring-1 ring-[var(--ring)]'
-          : 'border-[color:rgb(42_49_66_/0.55)] hover:border-[color:rgb(58_66_88_/0.9)] hover:bg-[var(--surface-2)]/60'
+          ? 'border-[var(--accent)] bg-[var(--accent-muted)] ring-1 ring-[var(--ring)]'
+          : 'border-transparent hover:border-[var(--border)] hover:bg-[var(--surface-2)]'
       }`}
     >
-      {/* Grid row height follows text column; this column fills it so % height resolves. */}
-      <div className="flex h-full min-h-[5rem] w-[7rem] flex-col justify-center justify-self-start">
-        <PostTypeAvatar
-          candidate={candidate}
-          thumbnailUrl={firstThumbnailUrl}
-          className="h-[98%] min-h-[4.5rem] w-full shrink-0"
-        />
-      </div>
-      <div className="min-w-0 py-1">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <PostTypeBadge postType={candidate.post_type} />
-            <span
-              className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--muted)]"
-              title="Source assets on this candidate"
-            >
-              {assetCount != null
-                ? `${assetCount} ${assetCount === 1 ? 'asset' : 'assets'}`
-                : '—'}
-            </span>
-            {stale && (
-              <span
-                className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200"
-                title={candidate.freshness_warning ?? ''}
-              >
-                Stale
-              </span>
-            )}
-            {conflict && (
-              <span
-                className="rounded-md border border-[var(--bad)]/35 bg-[var(--bad)]/10 px-2 py-0.5 text-[11px] text-[var(--bad)]"
-                title={candidate.asset_conflict_summary ?? 'Asset conflict'}
-              >
-                Conflict
-              </span>
-            )}
-            {risk && (
-              <span
-                className={`rounded-md border px-2 py-0.5 text-[11px] capitalize ${riskBadgeCls}`}
-                title={candidate.collision_summary ?? `Collision risk: ${risk}`}
-              >
-                {risk}
-              </span>
-            )}
-          </div>
+      <PostTypeAvatar candidate={candidate} thumbnailUrl={firstThumbnailUrl} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-1">
+          <PostTypeBadge postType={candidate.post_type} />
           {priority != null && (
-            <span className="shrink-0 text-sm font-medium tabular-nums text-amber-200">
+            <span className="shrink-0 text-[11px] font-medium tabular-nums text-[var(--accent)]">
               {priority}
             </span>
           )}
         </div>
-        <div className="mt-2 line-clamp-2 text-base font-medium leading-snug">
+        <div className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug">
           {candidate.title || '(untitled)'}
         </div>
-        {candidate.hook && (
-          <div className="mt-1.5 line-clamp-2 text-sm leading-snug text-[var(--muted)]">
-            {candidate.hook}
-          </div>
-        )}
+        <div className="mt-0.5 flex flex-wrap gap-1">
+          {hasPublishing && (
+            <span className="cockpit-pill text-[9px] text-[var(--good)]">Publish</span>
+          )}
+          {stale && <span className="cockpit-pill text-[9px] text-[var(--warn)]">Stale</span>}
+          {conflict && <span className="cockpit-pill text-[9px] text-[var(--bad)]">Conflict</span>}
+          {risk === 'high' || risk === 'blocked' ? (
+            <span className="cockpit-pill text-[9px] capitalize">{risk}</span>
+          ) : null}
+        </div>
       </div>
     </button>
   );

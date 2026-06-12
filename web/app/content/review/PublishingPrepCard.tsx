@@ -1,23 +1,30 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
-import { readJsonResponse } from '@/lib/read-json-response';
 
-import { PublishingJobView } from '../publishing/PublishingJobView';
+import { PublishingJobView, statusTone } from '../publishing/PublishingJobView';
+import { notifyScheduleQueueChanged } from '../schedule-events';
 
+import {
+  loadPublishingJobByCandidate,
+  publishPublishingJobNow,
+  refreshPublishingJobStatus,
+  schedulePublishingJob,
+  unschedulePublishingJob,
+} from './publishingJobClient';
 import type { PostCandidate } from './types';
 
 export function PublishingPrepCard({
   candidate,
-  reviewDriveFolderUrl,
   onRefreshQueue,
+  compact = false,
 }: {
   candidate: PostCandidate;
-  reviewDriveFolderUrl: string | null;
+  reviewDriveFolderUrl?: string | null;
   onRefreshQueue?: () => void;
+  compact?: boolean;
 }) {
   const show =
     candidate.status === 'approved' ||
@@ -29,27 +36,25 @@ export function PublishingPrepCard({
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [publishingActing, setPublishingActing] = useState(false);
-  const [preparing, setPreparing] = useState(false);
+
+  const refreshQueue = useCallback(() => {
+    notifyScheduleQueueChanged();
+    onRefreshQueue?.();
+  }, [onRefreshQueue]);
 
   const load = useCallback(async () => {
-    if (!candidate.publishing_job_id && candidate.status !== 'approved' && candidate.status !== 'ready_to_publish') {
+    if (
+      !candidate.publishing_job_id &&
+      candidate.status !== 'approved' &&
+      candidate.status !== 'ready_to_publish'
+    ) {
       setJob(null);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/by-candidate/${encodeURIComponent(candidate.id)}`,
-        { credentials: 'include' },
-      );
-      if (res.status === 404) {
-        setJob(null);
-        return;
-      }
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: string }>(res);
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      setJob(json.job ?? null);
+      setJob(await loadPublishingJobByCandidate(candidate.id));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setJob(null);
@@ -71,14 +76,8 @@ export function PublishingPrepCard({
     setRefreshing(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/refresh-status`,
-        { method: 'POST', credentials: 'include' },
-      );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: string }>(res);
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      if (json.job) setJob(json.job as PublishingJobDto);
-      onRefreshQueue?.();
+      setJob(await refreshPublishingJobStatus(job.id));
+      refreshQueue();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -91,22 +90,8 @@ export function PublishingPrepCard({
     setPublishingActing(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/schedule`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scheduled_publish_at: scheduledPublishAt }),
-        },
-      );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
-      if (!res.ok) {
-        const err = json.error;
-        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
-      }
-      if (json.job) setJob(json.job as PublishingJobDto);
-      onRefreshQueue?.();
+      setJob(await schedulePublishingJob(job.id, scheduledPublishAt));
+      refreshQueue();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -119,55 +104,12 @@ export function PublishingPrepCard({
     setPublishingActing(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/unschedule`,
-        { method: 'POST', credentials: 'include' },
-      );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
-      if (!res.ok) {
-        const err = json.error;
-        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
-      }
-      if (json.job) setJob(json.job as PublishingJobDto);
-      onRefreshQueue?.();
+      setJob(await unschedulePublishingJob(job.id));
+      refreshQueue();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setPublishingActing(false);
-    }
-  };
-
-  const startPreparePublishing = async () => {
-    setPreparing(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/content-review/candidates/${encodeURIComponent(candidate.id)}/prepare-publishing`,
-        { method: 'POST', credentials: 'include' },
-      );
-      const json = await readJsonResponse<{ ok?: boolean; error?: string; message?: string }>(res);
-      if (!res.ok) throw new Error(json.error || res.statusText);
-
-      for (let attempt = 0; attempt < 15; attempt += 1) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const poll = await fetch(
-          `/api/content-review/publishing-jobs/by-candidate/${encodeURIComponent(candidate.id)}`,
-          { credentials: 'include' },
-        );
-        if (poll.status === 404) continue;
-        const pollJson = await readJsonResponse<{ job?: PublishingJobDto; error?: string }>(poll);
-        if (!poll.ok) throw new Error(pollJson.error || poll.statusText);
-        if (pollJson.job) {
-          setJob(pollJson.job);
-          onRefreshQueue?.();
-          return;
-        }
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPreparing(false);
-      void load();
     }
   };
 
@@ -176,38 +118,8 @@ export function PublishingPrepCard({
     setPublishingActing(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/${encodeURIComponent(job.id)}/publish-now`,
-        { method: 'POST', credentials: 'include' },
-      );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown; message?: string }>(
-        res,
-      );
-      if (!res.ok) {
-        const err = json.error;
-        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
-      }
-      if (json.job) setJob(json.job as PublishingJobDto);
-      onRefreshQueue?.();
-
-      for (let attempt = 0; attempt < 120; attempt += 1) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const poll = await fetch(
-          `/api/content-review/publishing-jobs/by-candidate/${encodeURIComponent(candidate.id)}`,
-          { credentials: 'include' },
-        );
-        if (poll.status === 404) continue;
-        const pollJson = await readJsonResponse<{ job?: PublishingJobDto; error?: string }>(poll);
-        if (!poll.ok) throw new Error(pollJson.error || poll.statusText);
-        if (pollJson.job) {
-          setJob(pollJson.job);
-          const st = pollJson.job.status;
-          if (st === 'published' || st === 'failed') {
-            onRefreshQueue?.();
-            return;
-          }
-        }
-      }
+      setJob(await publishPublishingJobNow(job.id, candidate.id));
+      refreshQueue();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -219,63 +131,37 @@ export function PublishingPrepCard({
   if (!show) return null;
 
   return (
-    <section className="shrink-0 border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 lg:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Publishing
-          </h3>
-          <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-            Stage the post, set a schedule, then media prep and Instagram publish run together when
-            due. Permalink appears after publish.
-          </p>
-        </div>
-        {job?.id && (
-          <Link
-            href={`/content/publishing/${job.id}`}
-            className="shrink-0 text-xs font-medium text-[var(--accent)] underline hover:opacity-80"
-          >
-            Open publishing detail
-          </Link>
-        )}
-      </div>
+    <section className={compact ? 'cockpit-card p-3' : 'shrink-0 border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 lg:px-6'}>
+      <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+        Publishing
+      </h3>
 
       {loading && <p className="mt-2 text-xs text-[var(--muted)]">Loading publishing job…</p>}
-      {error && (
-        <p className="mt-2 text-xs text-[var(--bad)]">
-          {error}
-        </p>
-      )}
-
-      {!loading && !job && candidate.status === 'approved' && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={preparing}
-            onClick={() => void startPreparePublishing()}
-            className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {preparing ? 'Staging…' : 'Stage for publishing'}
-          </button>
-          {preparing && (
-            <span className="text-xs text-[var(--muted)]">
-              Validating eligibility and creating draft job…
-            </span>
-          )}
-        </div>
-      )}
+      {error && <p className="mt-2 text-xs text-[var(--bad)]">{error}</p>}
 
       {!loading && !job && candidate.status !== 'approved' && !error && (
         <p className="mt-2 text-xs text-[var(--muted)]">No publishing job for this candidate yet.</p>
       )}
 
-      {job && (
+      {!loading && !job && candidate.status === 'approved' && !error && (
+        <p className="mt-2 text-xs text-[var(--muted)]">
+          Use the share icon in the action bar to stage and publish.
+        </p>
+      )}
+
+      {job && compact && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
+          <span className="text-[var(--muted)]">· {job.publish_type}</span>
+        </div>
+      )}
+
+      {job && !compact && (
         <PublishingJobView
           variant="prepCard"
           job={job}
           refreshing={refreshing}
           onRefreshGraph={refreshGraph}
-          reviewDriveFolderUrl={reviewDriveFolderUrl}
           publishingActing={publishingActing}
           onSchedulePublish={schedulePublish}
           onUnschedulePublish={unschedulePublish}
