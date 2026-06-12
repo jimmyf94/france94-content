@@ -15,6 +15,8 @@ import {
   extractSeriesFieldsFromLlmRaw,
   extractTitleOverlayFromCandidate,
 } from '@fr94/candidate-collision';
+import { buildPublishingCaption } from '@fr94/publishing/caption';
+import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 import { normalizeReelSpecOverlay, resolveReelTextStyle } from '@fr94/reel-text-style';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
@@ -350,6 +352,64 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   const candidateOut = fresh ?? data;
+
+  const captionFieldsPatched =
+    caption_fr !== undefined || caption_en !== undefined || hashtags !== undefined;
+
+  if (captionFieldsPatched && candidateOut) {
+    const SYNC_CAPTION_STATUSES = new Set([
+      'draft',
+      'media_prepared',
+      'containers_created',
+      'processing',
+      'ready_to_publish',
+      'scheduled',
+    ]);
+
+    const { data: pubJob, error: pubJobErr } = await supabase
+      .from('publishing_jobs')
+      .select('id, status')
+      .eq('post_candidate_id', id)
+      .maybeSingle();
+
+    if (pubJobErr) {
+      console.error('[candidate patch] publishing job lookup', pubJobErr);
+    } else if (pubJob) {
+      const jobStatus = String((pubJob as { status?: string }).status ?? '');
+      if (SYNC_CAPTION_STATUSES.has(jobStatus)) {
+        const c = candidateOut as unknown as {
+          id: string;
+          post_type: string;
+          caption_fr: string | null;
+          caption_en: string | null;
+          hashtags: string[] | null;
+        };
+        const built = buildPublishingCaption({
+          id: c.id,
+          post_type: c.post_type,
+          caption_fr: c.caption_fr,
+          caption_en: c.caption_en,
+          hashtags: c.hashtags,
+          story_frames: null,
+          reel_instructions: null,
+          carousel_slides: null,
+          static_post_instructions: null,
+          source_asset_ids: null,
+          source_drive_file_ids: null,
+          status: '',
+        }).trim();
+        const cap =
+          built.length > 2200 ? `${built.slice(0, 2199)}…` : built;
+        try {
+          await updatePublishingJob(supabase, pubJob.id as string, {
+            caption: cap || null,
+          });
+        } catch (e) {
+          console.error('[candidate patch] sync publishing caption', e);
+        }
+      }
+    }
+  }
 
   if (re_render === true && candidateOut) {
     const c = candidateOut as {

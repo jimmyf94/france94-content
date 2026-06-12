@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 
+import { canOpenPublishingForCandidate } from '@/lib/publishing-staging';
+
 import { CandidatePublishingPopover } from '../CandidatePublishingPopover';
 import type { PostCandidate } from '../types';
 
@@ -30,11 +32,7 @@ function IconShare({ className }: { className?: string }) {
 
 function canOpenPublishing(candidate: PostCandidate): boolean {
   if (candidate.invalidated_at) return false;
-  return (
-    candidate.status === 'approved' ||
-    candidate.status === 'ready_to_publish' ||
-    Boolean(candidate.publishing_job_id)
-  );
+  return canOpenPublishingForCandidate(candidate.status) || Boolean(candidate.publishing_job_id);
 }
 
 export function StagePublishingButton({

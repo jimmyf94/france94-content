@@ -540,6 +540,46 @@ export async function reserveAssetsForCandidate(supabase: SupabaseClient, candid
   await refreshConflictsForAssets(supabase, assetIds);
 }
 
+const PUBLISHING_JOB_USAGE_STAGES_TO_RELEASE = ['scheduled', 'published'] as const;
+
+/** Remove job-scoped scheduled/published usage rows; keeps approved candidate reservations. */
+export async function releasePublishingJobUsage(
+  supabase: SupabaseClient,
+  jobId: string,
+): Promise<string[]> {
+  const { data: events, error: evErr } = await supabase
+    .from('asset_usage_events')
+    .select('content_asset_id')
+    .eq('publishing_job_id', jobId)
+    .in('usage_stage', [...PUBLISHING_JOB_USAGE_STAGES_TO_RELEASE]);
+  if (evErr) throw new Error(`releasePublishingJobUsage: ${evErr.message}`);
+
+  const assetIds = [
+    ...new Set(
+      (events ?? [])
+        .map((e: { content_asset_id?: string }) => e.content_asset_id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ];
+
+  const { error: delErr } = await supabase
+    .from('asset_usage_events')
+    .delete()
+    .eq('publishing_job_id', jobId)
+    .in('usage_stage', [...PUBLISHING_JOB_USAGE_STAGES_TO_RELEASE]);
+  if (delErr) throw new Error(`releasePublishingJobUsage(delete): ${delErr.message}`);
+
+  for (const aid of assetIds) {
+    await updateAssetUsageSummary(supabase, aid);
+  }
+
+  if (assetIds.length > 0) {
+    await refreshConflictsForAssets(supabase, assetIds);
+  }
+
+  return assetIds;
+}
+
 export async function releaseAssetsForCandidate(supabase: SupabaseClient, candidateId: string): Promise<void> {
   const { data: events, error: evErr } = await supabase
     .from('asset_usage_events')

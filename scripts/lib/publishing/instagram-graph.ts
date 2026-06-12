@@ -169,17 +169,26 @@ export async function createFeedVideoContainer(params: {
   return extractCreationId(res);
 }
 
-/** Reels container. */
+export type ReelTrialGraduationStrategy = 'MANUAL' | 'SS_PERFORMANCE';
+
+/** Reels container. Pass `trialGraduationStrategy` for Instagram Trial Reels (non-followers first). */
 export async function createReelsContainer(params: {
   igUserId: string;
   videoUrl: string;
   caption: string;
+  trialGraduationStrategy?: ReelTrialGraduationStrategy | null;
 }): Promise<string> {
-  const res = await igFormPost(`${params.igUserId}/media`, {
+  const fields: Record<string, string> = {
     media_type: 'REELS',
     video_url: params.videoUrl,
     caption: params.caption,
-  });
+  };
+  if (params.trialGraduationStrategy) {
+    fields.trial_params = JSON.stringify({
+      graduation_strategy: params.trialGraduationStrategy,
+    });
+  }
+  const res = await igFormPost(`${params.igUserId}/media`, fields);
   return extractCreationId(res);
 }
 

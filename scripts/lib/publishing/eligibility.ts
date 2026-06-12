@@ -1,3 +1,4 @@
+import { isClipBasedReel } from './reel-publish.js';
 import type {
   EligibilityResult,
   PostCandidateRow,
@@ -6,6 +7,11 @@ import type {
 } from './types.js';
 
 const PRODUCTION_MSG = 'Candidate requires production/rendering before Graph API prep.';
+
+export type PublishingEligibilityContext = {
+  /** When true, reel prep publishes the rendered MP4 (multi-source clip reels). */
+  hasProducedReelRender?: boolean;
+};
 
 function carouselSlidesMissingAssets(slides: unknown): boolean {
   if (!Array.isArray(slides) || slides.length === 0) return false;
@@ -42,6 +48,7 @@ export function resolvePublishType(
 export function assessPublishingEligibility(
   candidate: PostCandidateRow,
   resolved: ResolvedMediaItem[],
+  ctx?: PublishingEligibilityContext,
 ): EligibilityResult {
   const pt = candidate.post_type;
 
@@ -77,8 +84,17 @@ export function assessPublishingEligibility(
   }
 
   if (publishType === 'reel') {
-    if (resolved.length !== 1 || resolved[0]!.media_type !== 'video') {
-      return { ok: false, reason: 'Reel publishing prep supports a single video asset only.' };
+    const clipReel = isClipBasedReel(candidate);
+    if (clipReel && !ctx?.hasProducedReelRender) {
+      return {
+        ok: false,
+        reason: 'Clip-based reel must finish rendering before publishing prep.',
+      };
+    }
+    if (!ctx?.hasProducedReelRender) {
+      if (resolved.length !== 1 || resolved[0]!.media_type !== 'video') {
+        return { ok: false, reason: 'Reel publishing prep supports a single video asset only.' };
+      }
     }
   }
 

@@ -46,7 +46,12 @@ export function CandidateQueueSidebar({
   onCloseFilters?: () => void;
 }) {
   const visible = useMemo(
-    () => candidates.filter((c) => c.status === activeTab),
+    () =>
+      candidates.filter((c) =>
+        activeTab === 'approved'
+          ? c.status === 'approved' || c.status === 'produced'
+          : c.status === activeTab,
+      ),
     [candidates, activeTab],
   );
 

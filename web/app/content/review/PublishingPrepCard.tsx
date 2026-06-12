@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
+import { canOpenPublishingForCandidate } from '@/lib/publishing-staging';
+import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
 import { PublishingJobView, statusTone } from '../publishing/PublishingJobView';
 import { notifyScheduleQueueChanged } from '../schedule-events';
@@ -13,6 +15,7 @@ import {
   refreshPublishingJobStatus,
   schedulePublishingJob,
   unschedulePublishingJob,
+  updateReelTrialStrategy,
 } from './publishingJobClient';
 import type { PostCandidate } from './types';
 
@@ -27,9 +30,7 @@ export function PublishingPrepCard({
   compact?: boolean;
 }) {
   const show =
-    candidate.status === 'approved' ||
-    candidate.status === 'ready_to_publish' ||
-    Boolean(candidate.publishing_job_id);
+    canOpenPublishingForCandidate(candidate.status) || Boolean(candidate.publishing_job_id);
 
   const [job, setJob] = useState<PublishingJobDto | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,8 +46,7 @@ export function PublishingPrepCard({
   const load = useCallback(async () => {
     if (
       !candidate.publishing_job_id &&
-      candidate.status !== 'approved' &&
-      candidate.status !== 'ready_to_publish'
+      !canOpenPublishingForCandidate(candidate.status)
     ) {
       setJob(null);
       return;
@@ -128,6 +128,19 @@ export function PublishingPrepCard({
     }
   };
 
+  const updateReelTrial = async (strategy: ReelTrialGraduationStrategy | null) => {
+    if (!job?.id) return;
+    setPublishingActing(true);
+    setError(null);
+    try {
+      setJob(await updateReelTrialStrategy(job.id, strategy));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
   if (!show) return null;
 
   return (
@@ -139,11 +152,7 @@ export function PublishingPrepCard({
       {loading && <p className="mt-2 text-xs text-[var(--muted)]">Loading publishing job…</p>}
       {error && <p className="mt-2 text-xs text-[var(--bad)]">{error}</p>}
 
-      {!loading && !job && candidate.status !== 'approved' && !error && (
-        <p className="mt-2 text-xs text-[var(--muted)]">No publishing job for this candidate yet.</p>
-      )}
-
-      {!loading && !job && candidate.status === 'approved' && !error && (
+      {!loading && !job && canOpenPublishingForCandidate(candidate.status) && !error && (
         <p className="mt-2 text-xs text-[var(--muted)]">
           Use the share icon in the action bar to stage and publish.
         </p>
@@ -166,6 +175,7 @@ export function PublishingPrepCard({
           onSchedulePublish={schedulePublish}
           onUnschedulePublish={unschedulePublish}
           onPublishNow={publishNow}
+          onUpdateReelTrial={updateReelTrial}
         />
       )}
     </section>

@@ -56,6 +56,8 @@ export type PublishingJobRow = {
   published_at: string | null;
   publish_attempt_count: number;
   last_publish_attempt_at: string | null;
+  /** Instagram Trial Reels graduation strategy; null = normal reel (followers). */
+  reel_trial_graduation_strategy: 'MANUAL' | 'SS_PERFORMANCE' | null;
   created_at: string;
   updated_at: string;
 };

@@ -13,8 +13,12 @@ import {
   refreshPublishingJobStatus,
   schedulePublishingJob,
   unschedulePublishingJob,
+  unstagePublishingJob,
+  updateReelTrialStrategy,
 } from './publishingJobClient';
 import type { PostCandidate } from './types';
+import { canAutoStagePublishingForCandidate } from '@/lib/publishing-staging';
+import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
 export function CandidatePublishingPopover({
   open,
@@ -68,7 +72,7 @@ export function CandidatePublishingPopover({
       const existing = await loadJob();
       if (existing || candidate.publishing_job_id) return;
 
-      if (candidate.status !== 'approved') return;
+      if (!canAutoStagePublishingForCandidate(candidate.status)) return;
 
       setStaging(true);
       try {
@@ -150,6 +154,36 @@ export function CandidatePublishingPopover({
     }
   };
 
+  const unstagePublish = async () => {
+    if (!job?.id) return;
+    setActing(true);
+    setError(null);
+    try {
+      await unstagePublishingJob(job.id);
+      setJob(null);
+      refreshQueue();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const updateReelTrial = async (strategy: ReelTrialGraduationStrategy | null) => {
+    if (!job?.id) return;
+    setActing(true);
+    setError(null);
+    try {
+      const updated = await updateReelTrialStrategy(job.id, strategy);
+      setJob(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActing(false);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -199,6 +233,8 @@ export function CandidatePublishingPopover({
               onSchedulePublish={schedulePublish}
               onUnschedulePublish={unschedulePublish}
               onPublishNow={publishNow}
+              onUnstagePublish={unstagePublish}
+              onUpdateReelTrial={updateReelTrial}
             />
           )}
         </div>

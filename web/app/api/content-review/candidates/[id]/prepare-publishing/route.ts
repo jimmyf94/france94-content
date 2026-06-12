@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { NextRequest, NextResponse } from 'next/server';
 
+import { isStageableCandidateStatus } from '@fr94/publishing/staging-gates';
+
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -34,7 +36,7 @@ function canPreparePublishing(
     };
   }
 
-  if (candidateStatus === 'approved' || candidateStatus === 'ready_to_publish') {
+  if (isStageableCandidateStatus(candidateStatus)) {
     if (!jobStatus) return { ok: true };
     if (STAGEABLE_JOB_STATUSES.includes(jobStatus)) return { ok: true };
     return {

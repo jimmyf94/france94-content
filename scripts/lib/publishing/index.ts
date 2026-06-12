@@ -1,5 +1,6 @@
 export { buildPublishingCaption } from './caption.js';
 export { assessPublishingEligibility, resolvePublishType } from './eligibility.js';
+export type { PublishingEligibilityContext } from './eligibility.js';
 export {
   createCarouselImageChild,
   createCarouselParentContainer,
@@ -30,8 +31,23 @@ export {
   syncCandidateReadyToPublish,
   updatePublishingJob,
 } from './publishing-state.js';
+export {
+  resolveCandidateStatusAfterUnstage,
+  unstagePublishingJob,
+  UnstagePublishingJobError,
+  validateUnstagePublishingJobStatus,
+} from './unstage-publishing-job.js';
+export type { UnstagePublishingJobResult } from './unstage-publishing-job.js';
 export { expectedSupabasePublicUrl, uploadPublicMedia } from './public-upload.js';
 export { resolveCandidateMedia } from './resolve-media.js';
+export {
+  findProducedReelRender,
+  isClipBasedReel,
+  parseReelTrialGraduationStrategy,
+} from './reel-publish.js';
+export type { ReelTrialGraduationStrategy } from './reel-publish.js';
+export { isStageableCandidateStatus, STAGEABLE_CANDIDATE_STATUSES } from './staging-gates.js';
+export type { StageableCandidateStatus } from './staging-gates.js';
 export type {
   EligibilityResult,
   PostCandidateRow,

@@ -15,6 +15,10 @@ export function canUnschedulePublishingJob(status: string): boolean {
   return status === 'scheduled';
 }
 
+export function canUnstagePublishingJob(status: string): boolean {
+  return !['scheduled', 'publishing', 'published'].includes(status);
+}
+
 export function canPublishPublishingJobNow(status: string): boolean {
   return canSchedulePublishingJob(status) && status !== 'published' && status !== 'publishing';
 }

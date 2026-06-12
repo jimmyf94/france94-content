@@ -1,9 +1,31 @@
 import type { PublishingJobDto } from '@/lib/publishing-types';
+import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { preparePublishingForCandidate } from './preparePublishingClient';
 
 export { preparePublishingForCandidate };
+
+export async function updateReelTrialStrategy(
+  jobId: string,
+  strategy: ReelTrialGraduationStrategy | null,
+): Promise<PublishingJobDto> {
+  const res = await fetch(
+    `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reel_trial_graduation_strategy: strategy }),
+    },
+  );
+  const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+  if (!res.ok || !json.job) {
+    const err = json.error;
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+  return json.job;
+}
 
 export async function loadPublishingJobByCandidate(
   candidateId: string,
@@ -60,6 +82,25 @@ export async function unschedulePublishingJob(jobId: string): Promise<Publishing
     throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
   }
   return json.job;
+}
+
+export type UnstagePublishingJobResult = {
+  ok: boolean;
+  candidate_id: string;
+  reverted_status: string;
+};
+
+export async function unstagePublishingJob(jobId: string): Promise<UnstagePublishingJobResult> {
+  const res = await fetch(
+    `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/unstage`,
+    { method: 'POST', credentials: 'include' },
+  );
+  const json = await readJsonResponse<UnstagePublishingJobResult & { error?: unknown }>(res);
+  if (!res.ok || !json.candidate_id) {
+    const err = json.error;
+    throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+  }
+  return json;
 }
 
 export async function publishPublishingJobNow(

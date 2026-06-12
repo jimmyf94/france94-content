@@ -21,6 +21,8 @@ export type PublishingJobDto = {
   published_at: string | null;
   publish_attempt_count: number | null;
   last_publish_attempt_at: string | null;
+  /** MANUAL | SS_PERFORMANCE = Instagram Trial Reel; null = normal reel */
+  reel_trial_graduation_strategy: 'MANUAL' | 'SS_PERFORMANCE' | null;
 };
 
 export type PublishingQueueCandidateBrief = {

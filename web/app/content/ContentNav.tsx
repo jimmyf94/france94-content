@@ -225,9 +225,13 @@ function IconBlocked({ className }: { className?: string }) {
 }
 
 function utilityBtnClass(active: boolean): string {
-  return `cockpit-btn-secondary p-1.5 ${
+  return `cockpit-btn-secondary flex min-h-11 min-w-11 items-center justify-center p-2 lg:min-h-0 lg:min-w-0 lg:p-1.5 ${
     active ? 'border-[var(--accent)] text-[var(--accent)]' : ''
   }`;
+}
+
+function iconBtnClass(extra = ''): string {
+  return `cockpit-btn-secondary flex min-h-11 min-w-11 items-center justify-center p-2 lg:min-h-0 lg:min-w-0 lg:p-1.5 ${extra}`.trim();
 }
 
 export function ContentNav() {
@@ -310,118 +314,106 @@ export function ContentNav() {
 
   return (
     <header className="shrink-0 border-b border-[var(--border)] bg-[var(--surface)]">
-      <div className="flex items-center gap-4 px-4 py-2.5 lg:px-5">
-        <Link href="/content/review" className="flex shrink-0 items-center gap-2">
-          {pipelineDot}
-          <span className="text-sm font-semibold tracking-tight text-[var(--text)]">
-            France94 Studio
-          </span>
-        </Link>
+      <div className="flex flex-col gap-2 px-3 py-2 lg:flex-row lg:items-center lg:gap-4 lg:px-5 lg:py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Link href="/content/review" className="flex shrink-0 items-center gap-2">
+            {pipelineDot}
+            <span className="text-sm font-semibold tracking-tight text-[var(--text)]">
+              France94 Studio
+            </span>
+          </Link>
 
-        <nav
-          className="scrollbar-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
-          aria-label="Content pipeline"
-        >
-          {PRIMARY_TABS.map((tab) => {
-            const active = isTabActive(pathname, tab.href);
-            if (tab.label === 'Publishing') {
+          <nav
+            className="scrollbar-thin flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+            aria-label="Content pipeline"
+          >
+            {PRIMARY_TABS.map((tab) => {
+              const active = isTabActive(pathname, tab.href);
               return (
-                <button
+                <Link
                   key={tab.href}
-                  type="button"
-                  onClick={() => openScheduleDrawer()}
-                  className={`shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  href={tab.href}
+                  className={`shrink-0 rounded-md px-3 py-2 text-sm transition-colors lg:py-1.5 ${
                     active
                       ? 'bg-[var(--surface-2)] font-medium text-[var(--text)]'
                       : 'text-[var(--muted)] hover:text-[var(--text)]'
                   }`}
                 >
                   {tab.label}
-                </button>
+                </Link>
               );
-            }
-            return (
-              <Link
-                key={tab.href}
-                href={tab.href}
-                className={`shrink-0 rounded-md px-3 py-1.5 text-sm transition-colors ${
-                  active
-                    ? 'bg-[var(--surface-2)] font-medium text-[var(--text)]'
-                    : 'text-[var(--muted)] hover:text-[var(--text)]'
-                }`}
+            })}
+          </nav>
+
+          {!pathname.startsWith('/content/publishing') && (
+            <button
+              type="button"
+              onClick={() => openScheduleDrawer()}
+              className="relative flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md border border-black bg-black p-2 text-[var(--bad)] transition-[filter] hover:brightness-125 lg:min-h-0 lg:min-w-0"
+              aria-label="Schedule"
+              title="Schedule"
+            >
+              <IconCalendar />
+              {scheduleCount > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--bad)] px-1 text-[10px] font-semibold text-black">
+                  {scheduleCount > 9 ? '9+' : scheduleCount}
+                </span>
+              ) : null}
+            </button>
+          )}
+        </div>
+
+        <div className="flex min-w-0 items-center justify-end gap-1 lg:ml-auto">
+          {showReviewToolbar && (
+            <div className="hidden shrink-0 items-center gap-1 lg:flex">
+              <button
+                type="button"
+                onClick={() => requestReviewRefresh()}
+                className={iconBtnClass()}
+                aria-label="Refresh"
+                title="Refresh"
               >
-                {tab.label}
-              </Link>
-            );
-          })}
-        </nav>
+                <IconRefresh />
+              </button>
+              <button
+                type="button"
+                disabled={generateBusy}
+                onClick={() => requestReviewGenerate()}
+                className={`${iconBtnClass()} cockpit-btn-generate disabled:opacity-50`}
+                aria-label="Generate new candidates"
+                title={
+                  reviewToolbar.generatingCandidates
+                    ? 'Generating…'
+                    : 'Generate new candidates'
+                }
+              >
+                <IconGenerate />
+              </button>
+              <button
+                type="button"
+                onClick={() => requestReviewHealLedger()}
+                className={iconBtnClass()}
+                aria-label="Heal ledger"
+                title="Heal ledger"
+              >
+                <IconHealLedger />
+              </button>
+              <button
+                type="button"
+                onClick={() => requestReviewToggleBlocked()}
+                className={utilityBtnClass(reviewToolbar.includeBlocked)}
+                aria-label={
+                  reviewToolbar.includeBlocked ? 'Hide other blocked' : 'Show all blocked'
+                }
+                title={
+                  reviewToolbar.includeBlocked ? 'Hide other blocked' : 'Show all blocked'
+                }
+              >
+                <IconBlocked />
+              </button>
+            </div>
+          )}
 
-        {showReviewToolbar && (
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => requestReviewRefresh()}
-              className="cockpit-btn-secondary p-1.5"
-              aria-label="Refresh"
-              title="Refresh"
-            >
-              <IconRefresh />
-            </button>
-            <button
-              type="button"
-              disabled={generateBusy}
-              onClick={() => requestReviewGenerate()}
-              className="cockpit-btn-generate p-1.5 disabled:opacity-50"
-              aria-label="Generate new candidates"
-              title={
-                reviewToolbar.generatingCandidates
-                  ? 'Generating…'
-                  : 'Generate new candidates'
-              }
-            >
-              <IconGenerate />
-            </button>
-            <button
-              type="button"
-              onClick={() => requestReviewHealLedger()}
-              className="cockpit-btn-secondary p-1.5"
-              aria-label="Heal ledger"
-              title="Heal ledger"
-            >
-              <IconHealLedger />
-            </button>
-            <button
-              type="button"
-              onClick={() => requestReviewToggleBlocked()}
-              className={utilityBtnClass(reviewToolbar.includeBlocked)}
-              aria-label={
-                reviewToolbar.includeBlocked ? 'Hide other blocked' : 'Show all blocked'
-              }
-              title={
-                reviewToolbar.includeBlocked ? 'Hide other blocked' : 'Show all blocked'
-              }
-            >
-              <IconBlocked />
-            </button>
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={() => openScheduleDrawer()}
-          className="relative flex shrink-0 items-center justify-center rounded-md border border-black bg-black p-2 text-[var(--bad)] transition-[filter] hover:brightness-125"
-          aria-label="Schedule"
-          title="Schedule"
-        >
-          <IconCalendar />
-          {scheduleCount > 0 ? (
-            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--bad)] px-1 text-[10px] font-semibold text-black">
-              {scheduleCount > 9 ? '9+' : scheduleCount}
-            </span>
-          ) : null}
-        </button>
-
-        <div className="flex shrink-0 items-center gap-1">
           <Link
             href="/content/review/manual-ledger"
             className={utilityBtnClass(manualActive)}
@@ -448,7 +440,7 @@ export function ContentNav() {
           </Link>
           <button
             type="button"
-            className="cockpit-btn-secondary p-1.5"
+            className={iconBtnClass()}
             aria-label="Log out"
             title="Log out"
             onClick={async () => {

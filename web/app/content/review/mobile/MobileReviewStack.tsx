@@ -459,8 +459,10 @@ function MobileCandidateView({
         {candidate.post_type === 'reel' && (
           <ProductionJobCard
             candidate={candidate}
+            media={media}
             onVariantCreated={onVariantCreated}
             onCandidateUpdated={onCandidateUpdated}
+            onRemoveReviewAsset={onRemoveReviewAsset}
           />
         )}
         {candidate.hook && (

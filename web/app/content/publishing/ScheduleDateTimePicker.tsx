@@ -149,7 +149,7 @@ export function ScheduleDateTimePicker({
 
   return (
     <div className={compact ? 'space-y-2' : 'space-y-2.5'}>
-      <div className="flex items-stretch gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
         <button
           type="button"
           disabled={disabled}
@@ -162,7 +162,7 @@ export function ScheduleDateTimePicker({
           <span className="min-w-0 flex-1 truncate text-sm text-[var(--text)]">{dateLabel}</span>
         </button>
 
-        <div className={`${fieldShell} w-[7.25rem] shrink-0`}>
+        <div className={`${fieldShell} w-full shrink-0 sm:w-[7.25rem]`}>
           <IconClock className="shrink-0 text-[var(--accent)]" />
           <input
             id="schedule-time"

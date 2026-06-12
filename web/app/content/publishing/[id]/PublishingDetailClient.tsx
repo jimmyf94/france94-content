@@ -1,12 +1,15 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { PublishingJobView } from '../PublishingJobView';
+import { unstagePublishingJob, updateReelTrialStrategy } from '../../review/publishingJobClient';
+import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
 type CandidateBrief = {
   id: string;
@@ -17,6 +20,7 @@ type CandidateBrief = {
 };
 
 export function PublishingDetailClient({ jobId }: { jobId: string }) {
+  const router = useRouter();
   const [job, setJob] = useState<PublishingJobDto | null>(null);
   const [candidate, setCandidate] = useState<CandidateBrief | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,6 +146,31 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
     }
   };
 
+  const unstagePublish = async () => {
+    setPublishingActing(true);
+    setError(null);
+    try {
+      await unstagePublishingJob(jobId);
+      router.push('/content/review');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
+  const updateReelTrial = async (strategy: ReelTrialGraduationStrategy | null) => {
+    setPublishingActing(true);
+    setError(null);
+    try {
+      setJob(await updateReelTrialStrategy(jobId, strategy));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishingActing(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 text-[var(--text)]">
       <div className="mb-6 flex flex-wrap items-center gap-3">
@@ -186,6 +215,8 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
             onSchedulePublish={schedulePublish}
             onUnschedulePublish={unschedulePublish}
             onPublishNow={publishNow}
+            onUnstagePublish={unstagePublish}
+            onUpdateReelTrial={updateReelTrial}
           />
         </div>
       )}

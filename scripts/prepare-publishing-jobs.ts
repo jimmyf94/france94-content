@@ -38,6 +38,8 @@ import {
   updatePublishingJob,
   uploadPublicMedia,
 } from './lib/publishing/index.js';
+import { findProducedReelRender, parseReelTrialGraduationStrategy, type ReelTrialGraduationStrategy } from './lib/publishing/reel-publish.js';
+import { isStageableCandidateStatus } from './lib/publishing/staging-gates.js';
 import type { PostCandidateRow, PreparedMediaItem, PublishType } from './lib/publishing/types.js';
 
 function requireEnv(name: string): string {
@@ -80,7 +82,7 @@ function candidatePublishPrepGate(candidateStatus: string, jobStatus: string): P
   ) {
     return 'blocked';
   }
-  if (candidateStatus === 'approved') return 'proceed';
+  if (isStageableCandidateStatus(candidateStatus)) return 'proceed';
   if (candidateStatus === 'ready_to_publish' && jobStatus !== 'ready_to_publish') {
     return 'proceed';
   }
@@ -169,26 +171,6 @@ async function createDraftJob(
     .update({ publishing_job_id: data.id, updated_at: new Date().toISOString() })
     .eq('id', candidate.id);
   return data.id;
-}
-
-/** Rendered reel output (already in the public bucket) for a candidate, if any. */
-async function findProducedReelRender(
-  supabase: SupabaseClient,
-  candidateId: string,
-): Promise<{ url: string; durationSeconds: number | null } | null> {
-  const { data, error } = await supabase
-    .from('production_jobs')
-    .select('output_video_url, render_log, status')
-    .eq('post_candidate_id', candidateId)
-    .eq('production_type', 'reel')
-    .eq('status', 'produced')
-    .maybeSingle();
-  if (error || !data) return null;
-  const url = typeof data.output_video_url === 'string' ? data.output_video_url.trim() : '';
-  if (!url) return null;
-  const log = (data.render_log ?? {}) as Record<string, unknown>;
-  const dur = Number(log.duration_seconds);
-  return { url, durationSeconds: Number.isFinite(dur) ? dur : null };
 }
 
 async function prepareMediaForJob(params: {
@@ -345,9 +327,10 @@ async function createGraphContainers(params: {
   publishType: PublishType;
   caption: string;
   prepared: PreparedMediaItem[];
+  reelTrialGraduationStrategy?: ReelTrialGraduationStrategy | null;
 }): Promise<void> {
   const { igUserId } = requireInstagramEnv();
-  const { jobId, publishType, caption, prepared } = params;
+  const { jobId, publishType, caption, prepared, reelTrialGraduationStrategy } = params;
   const cap = igCaption(caption);
   pubLog('graph API start', {
     jobId,
@@ -453,6 +436,7 @@ async function createGraphContainers(params: {
       igUserId,
       videoUrl: single.public_url,
       caption: cap,
+      trialGraduationStrategy: reelTrialGraduationStrategy,
     });
   } else if (publishType === 'story') {
     if (single.media_type === 'image') {
@@ -594,7 +578,10 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     count: resolved.length,
     first_drive: resolved[0]?.drive_file_id?.slice(0, 12) ?? null,
   });
-  const el = assessPublishingEligibility(cand, resolved);
+  const reelRender = await findProducedReelRender(supabase, cand.id);
+  const el = assessPublishingEligibility(cand, resolved, {
+    hasProducedReelRender: reelRender != null,
+  });
   if (!el.ok) {
     pubLog('eligibility failed', { jobId, reason: el.reason });
   } else {
@@ -689,12 +676,16 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
   }
 
   try {
+    const trialStrategy = parseReelTrialGraduationStrategy(
+      (job as Record<string, unknown>).reel_trial_graduation_strategy,
+    );
     await createGraphContainers({
       supabase,
       jobId,
       publishType: el.publishType,
       caption,
       prepared,
+      reelTrialGraduationStrategy: trialStrategy,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -717,7 +708,10 @@ async function ensureJobForApprovedCandidate(
 ): Promise<string | null> {
   const caption = igCaption(buildPublishingCaption(candidate));
   const resolved = await resolveCandidateMedia(supabase, candidate);
-  const el = assessPublishingEligibility(candidate, resolved);
+  const reelRender = await findProducedReelRender(supabase, candidate.id);
+  const el = assessPublishingEligibility(candidate, resolved, {
+    hasProducedReelRender: reelRender != null,
+  });
 
   if (!el.ok) {
     const fallbackType = resolvePublishType(candidate, resolved) ?? 'image';
@@ -782,7 +776,7 @@ export async function validatePublishingForCandidate(
   if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
     throw new Error(`Cannot stage publishing: post_candidates.status is "${st}".`);
   }
-  if (st !== 'approved' && st !== 'ready_to_publish') {
+  if (!isStageableCandidateStatus(st)) {
     throw new Error(`Cannot stage publishing for candidate status "${st}".`);
   }
 
@@ -843,7 +837,7 @@ export async function preparePublishingForCandidate(
     }
     if (
       (OPEN_PUBLISHING_JOB_STATUSES as readonly string[]).includes(js) &&
-      (st === 'approved' || (st === 'ready_to_publish' && js !== 'ready_to_publish'))
+      (isStageableCandidateStatus(st) || (st === 'ready_to_publish' && js !== 'ready_to_publish'))
     ) {
       pubLog('resume single candidate', {
         candidateId,
@@ -854,14 +848,14 @@ export async function preparePublishingForCandidate(
       await processPublishingJob(supabase, existingJob.id as string);
       return;
     }
-    if (st === 'approved') {
+    if (isStageableCandidateStatus(st)) {
       throw new Error(
         `Cannot prepare publishing: existing job status is "${js}". Delete the job or use publishing detail to continue.`,
       );
     }
   }
 
-  if (st === 'approved') {
+  if (isStageableCandidateStatus(st)) {
     pubLog('fresh single candidate', { candidateId, post_type: candidate.post_type });
     const jobId = await ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
     if (jobId) {
@@ -934,7 +928,7 @@ async function main(): Promise<void> {
     if (!st) return false;
     const js = j.status as string;
     if (js === 'scheduled') return false;
-    if (st === 'approved') return true;
+    if (isStageableCandidateStatus(st)) return true;
     if (st === 'ready_to_publish' && js !== 'ready_to_publish') return true;
     return false;
   });

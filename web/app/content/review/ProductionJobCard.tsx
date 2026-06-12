@@ -75,6 +75,18 @@ function renderButtonLabel(status: string | undefined): string {
   return 'Render now';
 }
 
+function reelDownloadFilename(candidate: PostCandidate): string {
+  const date = candidate.candidate_date ?? 'undated';
+  const core = (candidate.title ?? candidate.hook ?? candidate.id)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48);
+  return `${date}_${core}_reel.mp4`;
+}
+
 export function ProductionJobCard({
   candidate,
   onVariantCreated,
@@ -364,6 +376,9 @@ export function ProductionJobCard({
     !isRenderActive && job?.status === 'produced' && job.output_video_url
       ? withCacheBust(job.output_video_url, job.updated_at)
       : null;
+  const downloadUrl = previewUrl
+    ? `/api/content-review/production-jobs/by-candidate/${encodeURIComponent(candidate.id)}/download?filename=${encodeURIComponent(reelDownloadFilename(candidate))}`
+    : null;
   const rawPoster = !isRenderActive
     ? job?.thumbnail_url ?? candidate.cover_thumbnail_url ?? null
     : null;
@@ -406,9 +421,15 @@ export function ProductionJobCard({
       }
       isRenderActive={isRenderActive}
       previewUrl={previewUrl}
+      downloadUrl={downloadUrl}
       posterUrl={posterUrl}
       renderDisabled={renderDisabled}
       renderLabel={renderLabel}
+      renderIsReRender={
+        job?.status === 'produced' ||
+        job?.status === 'failed' ||
+        job?.status === 'needs_manual_production'
+      }
       onRender={() => void startRenderNow()}
       clips={reelSpec?.clips}
       reasoningEntries={reasoningEntries}

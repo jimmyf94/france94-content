@@ -3,10 +3,13 @@
 import type { PublishingJobDto } from '@/lib/publishing-types';
 
 import { ScheduleControls } from './ScheduleControls';
+import { ReelTrialBadge, ReelTrialControls } from './ReelTrialControls';
+import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 import {
   canPublishPublishingJobNow,
   canSchedulePublishingJob,
   canUnschedulePublishingJob,
+  canUnstagePublishingJob,
 } from '../review/publishingJobStatuses';
 
 function statusTone(status: string): string {
@@ -40,28 +43,58 @@ function PublishScheduleBlock(props: {
   onSchedule: (iso: string) => void | Promise<void>;
   onUnschedule: () => void | Promise<void>;
   onPublishNow: () => void | Promise<void>;
+  onUnstage?: () => void | Promise<void>;
 }) {
-  const { variant, job, acting, onSchedule, onUnschedule, onPublishNow } = props;
+  const { variant, job, acting, onSchedule, onUnschedule, onPublishNow, onUnstage } = props;
 
   const isCompact = variant === 'prepCard' || variant === 'popup';
 
   const canSetSchedule = canSchedulePublishingJob(job.status);
   const canUnschedule = canUnschedulePublishingJob(job.status);
   const canPublishNow = canPublishPublishingJobNow(job.status);
+  const canUnstage = canUnstagePublishingJob(job.status);
+
+  const unstageBtnClass = isCompact
+    ? 'w-full rounded-md border border-[var(--border)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted)] hover:border-[var(--bad)]/50 hover:text-[var(--bad)] disabled:opacity-50'
+    : 'rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--muted)] hover:border-[var(--bad)]/50 hover:text-[var(--bad)] disabled:opacity-50';
+
+  const handleUnstage = () => {
+    if (
+      !window.confirm(
+        'Remove this post from the publishing queue and return it to review? This cannot be undone.',
+      )
+    ) {
+      return;
+    }
+    void onUnstage?.();
+  };
 
   if (variant === 'popup') {
     return (
-      <ScheduleControls
-        scheduledAt={job.scheduled_publish_at}
-        canSetSchedule={canSetSchedule}
-        canUnschedule={canUnschedule}
-        canPublishNow={canPublishNow}
-        acting={acting}
-        compact
-        onSchedule={onSchedule}
-        onUnschedule={onUnschedule}
-        onPublishNow={onPublishNow}
-      />
+      <div className="space-y-2">
+        <ScheduleControls
+          scheduledAt={job.scheduled_publish_at}
+          canSetSchedule={canSetSchedule}
+          canUnschedule={canUnschedule}
+          canPublishNow={canPublishNow}
+          acting={acting}
+          compact
+          onSchedule={onSchedule}
+          onUnschedule={onUnschedule}
+          onPublishNow={onPublishNow}
+        />
+        {onUnstage && (
+          <button
+            type="button"
+            disabled={acting || !canUnstage}
+            onClick={handleUnstage}
+            title={canUnstage ? undefined : 'Cancel schedule before unstaging'}
+            className={unstageBtnClass}
+          >
+            Unstage post
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -108,6 +141,17 @@ function PublishScheduleBlock(props: {
         onUnschedule={onUnschedule}
         onPublishNow={onPublishNow}
       />
+      {onUnstage && (
+        <button
+          type="button"
+          disabled={acting || !canUnstage}
+          onClick={handleUnstage}
+          title={canUnstage ? undefined : 'Cancel schedule before unstaging'}
+          className={unstageBtnClass}
+        >
+          Unstage post
+        </button>
+      )}
     </div>
   );
 }
@@ -124,6 +168,8 @@ export function PublishingJobView({
   onSchedulePublish,
   onUnschedulePublish,
   onPublishNow,
+  onUnstagePublish,
+  onUpdateReelTrial,
 }: {
   job: PublishingJobDto;
   variant: PublishingJobViewVariant;
@@ -134,6 +180,8 @@ export function PublishingJobView({
   onSchedulePublish?: (iso: string) => void | Promise<void>;
   onUnschedulePublish?: () => void | Promise<void>;
   onPublishNow?: () => void | Promise<void>;
+  onUnstagePublish?: () => void | Promise<void>;
+  onUpdateReelTrial?: (strategy: ReelTrialGraduationStrategy | null) => void | Promise<void>;
 }) {
   const media = sortedPreparedMedia(job);
   const showPublishOps =
@@ -157,6 +205,7 @@ export function PublishingJobView({
           <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
           <span className="text-[var(--muted)]">·</span>
           <span className="text-[var(--muted)]">{job.publish_type}</span>
+          <ReelTrialBadge job={job} />
           <button
             type="button"
             disabled={refreshing}
@@ -167,6 +216,14 @@ export function PublishingJobView({
           </button>
         </div>
 
+        {onUpdateReelTrial && (
+          <ReelTrialControls
+            job={job}
+            acting={publishingActing}
+            onUpdate={onUpdateReelTrial}
+          />
+        )}
+
         {showPublishOps && (
           <PublishScheduleBlock
             variant={variant === 'popup' ? 'popup' : 'prepCard'}
@@ -175,6 +232,7 @@ export function PublishingJobView({
             onSchedule={onSchedulePublish}
             onUnschedule={onUnschedulePublish}
             onPublishNow={onPublishNow}
+            onUnstage={onUnstagePublish}
           />
         )}
 
@@ -289,6 +347,7 @@ export function PublishingJobView({
           {job.status}
         </span>
         <span className="text-xs text-[var(--muted)]">{job.publish_type}</span>
+        <ReelTrialBadge job={job} />
         <button
           type="button"
           disabled={refreshing}
@@ -299,6 +358,10 @@ export function PublishingJobView({
         </button>
       </div>
 
+      {onUpdateReelTrial && (
+        <ReelTrialControls job={job} acting={publishingActing} onUpdate={onUpdateReelTrial} />
+      )}
+
       {showPublishOps && (
         <PublishScheduleBlock
           variant="detailPage"
@@ -307,6 +370,7 @@ export function PublishingJobView({
           onSchedule={onSchedulePublish}
           onUnschedule={onUnschedulePublish}
           onPublishNow={onPublishNow}
+          onUnstage={onUnstagePublish}
         />
       )}
 

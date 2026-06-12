@@ -40,9 +40,11 @@ export type ReelProductionWorkspaceProps = {
   } | null;
   isRenderActive: boolean;
   previewUrl: string | null;
+  downloadUrl: string | null;
   posterUrl: string | null;
   renderDisabled: boolean;
   renderLabel: string;
+  renderIsReRender?: boolean;
   onRender: () => void;
   clips: ReelClip[] | undefined;
   reasoningEntries: Array<[string, string]>;
@@ -159,22 +161,51 @@ function IconOpenMp4({ className }: { className?: string }) {
   );
 }
 
+function IconDownload({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" x2="12" y1="15" y2="3" />
+    </svg>
+  );
+}
+
 function ReelProductionBar({
   previewUrl,
+  downloadUrl,
   renderDisabled,
   renderLabel,
+  renderIsReRender = false,
   onRender,
   compact = false,
 }: {
   previewUrl: string | null;
+  downloadUrl: string | null;
   renderDisabled: boolean;
   renderLabel: string;
+  renderIsReRender?: boolean;
   onRender: () => void;
   compact?: boolean;
 }) {
-  const renderBtnClass = compact
-    ? 'shrink-0 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-50'
-    : 'shrink-0 rounded-lg border border-[var(--accent)] bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50';
+  const renderBtnClass = renderIsReRender
+    ? compact
+      ? 'shrink-0 rounded-md border border-[var(--warn)]/50 bg-[var(--warn)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--warn)] transition-colors hover:bg-[var(--warn)]/20 disabled:cursor-not-allowed disabled:opacity-50'
+      : 'shrink-0 rounded-lg border border-[var(--warn)] bg-[var(--warn)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50'
+    : compact
+      ? 'shrink-0 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-50'
+      : 'shrink-0 rounded-lg border border-[var(--accent)] bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50';
 
   const openBtnClass = compact
     ? 'inline-flex shrink-0 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-1.5 text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--text)]'
@@ -183,6 +214,16 @@ function ReelProductionBar({
   return (
     <div className="shrink-0 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-2">
       <div className="flex items-center justify-end gap-2">
+        {downloadUrl && (
+          <a
+            href={downloadUrl}
+            className={openBtnClass}
+            aria-label="Download rendered MP4"
+            title="Download rendered MP4"
+          >
+            <IconDownload />
+          </a>
+        )}
         {previewUrl && (
           <a
             href={previewUrl}
@@ -210,6 +251,7 @@ function RenderedStage({
   large,
   candidate,
   media,
+  isRenderActive = false,
 }: {
   previewUrl: string | null;
   posterUrl: string | null;
@@ -217,6 +259,7 @@ function RenderedStage({
   large?: boolean;
   candidate?: PostCandidate;
   media?: CandidateMediaState;
+  isRenderActive?: boolean;
 }) {
   const shellClass = large
     ? 'flex h-full min-h-0 w-full items-center justify-center'
@@ -278,6 +321,15 @@ function RenderedStage({
               />
             </div>
             <p className="text-xs text-[var(--muted)]">Source preview — not the final render</p>
+          </div>
+        ) : isRenderActive ? (
+          <div
+            className={`flex flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface-2)] text-center ${
+              large ? 'aspect-[9/16] h-full max-h-full w-auto max-w-full px-6' : 'w-full max-w-sm px-4 py-12'
+            }`}
+          >
+            <p className="text-sm font-medium text-[var(--text)]">Rendering…</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">Final MP4 will appear here when done</p>
           </div>
         ) : (
           <div
@@ -534,8 +586,10 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
         <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
           <ReelProductionBar
             previewUrl={props.previewUrl}
+            downloadUrl={props.downloadUrl}
             renderDisabled={props.renderDisabled}
             renderLabel={props.renderLabel}
+            renderIsReRender={props.renderIsReRender}
             onRender={props.onRender}
           />
           {(props.loading && !props.job) || props.error || props.job?.error_message ? (
@@ -608,39 +662,34 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
         </div>
       ) : null}
 
-      {props.job && (
-        <div className="space-y-3 px-4 py-3 lg:px-6">
-          {props.job.error_message && (
-            <p className="text-xs whitespace-pre-wrap text-[var(--bad)]">
-              {props.job.error_message}
-            </p>
-          )}
-          {props.isRenderActive && (
-            <ReelRenderProgress
-              jobStatus={props.job.status}
-              renderLog={props.job.render_log}
-              jobUpdatedAt={props.job.updated_at}
-            />
-          )}
-          <RenderedStage
-            previewUrl={props.previewUrl}
-            posterUrl={props.posterUrl}
-            hookText={props.hookText}
-            candidate={props.candidate}
-            media={props.media}
-          />
+      {props.job?.error_message && (
+        <div className="border-b border-[var(--border)] px-4 py-2 lg:px-6">
+          <p className="text-xs whitespace-pre-wrap text-[var(--bad)]">
+            {props.job.error_message}
+          </p>
         </div>
       )}
 
+      <div className="space-y-3 px-4 py-3 lg:px-6">
+        {props.isRenderActive && props.job && (
+          <ReelRenderProgress
+            jobStatus={props.job.status}
+            renderLog={props.job.render_log}
+            jobUpdatedAt={props.job.updated_at}
+          />
+        )}
+        <RenderedStage
+          previewUrl={props.previewUrl}
+          posterUrl={props.posterUrl}
+          hookText={props.hookText}
+          candidate={props.candidate}
+          media={props.media}
+          isRenderActive={props.isRenderActive}
+        />
+      </div>
+
       {props.isClipReel ? (
         <div className="border-t border-[var(--border)]">
-          <ReelProductionBar
-            previewUrl={props.previewUrl}
-            renderDisabled={props.renderDisabled}
-            renderLabel={props.renderLabel}
-            onRender={props.onRender}
-            compact
-          />
           <div className="px-4 pt-3 pb-3 lg:px-6">
             <details
               open={styleOpen}
@@ -669,13 +718,26 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
               </div>
             </details>
           </div>
+          <div className="sticky bottom-0 z-10 border-t border-[var(--border)] bg-[var(--bg)]">
+            <ReelProductionBar
+              previewUrl={props.previewUrl}
+              downloadUrl={props.downloadUrl}
+              renderDisabled={props.renderDisabled}
+              renderLabel={props.renderLabel}
+              renderIsReRender={props.renderIsReRender}
+              onRender={props.onRender}
+              compact
+            />
+          </div>
         </div>
       ) : (
-        <div className="border-t border-[var(--border)]">
+        <div className="sticky bottom-0 z-10 border-t border-[var(--border)] bg-[var(--bg)]">
           <ReelProductionBar
             previewUrl={props.previewUrl}
+            downloadUrl={props.downloadUrl}
             renderDisabled={props.renderDisabled}
             renderLabel={props.renderLabel}
+            renderIsReRender={props.renderIsReRender}
             onRender={props.onRender}
             compact
           />

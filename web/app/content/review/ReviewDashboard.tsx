@@ -44,7 +44,7 @@ import {
 } from './useCandidateMedia';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
-const ALL_STATUSES = 'needs_review,needs_rewrite,approved,ready_to_publish,rejected';
+const ALL_STATUSES = 'needs_review,needs_rewrite,approved,produced,ready_to_publish,rejected';
 
 const VALID_TABS: ReadonlySet<StatusTab> = new Set([
   'needs_review',
@@ -357,7 +357,9 @@ export function ReviewDashboard() {
       rejected: [],
     };
     for (const c of candidates) {
-      if (VALID_TABS.has(c.status as StatusTab)) {
+      if (c.status === 'produced') {
+        m.approved.push(c);
+      } else if (VALID_TABS.has(c.status as StatusTab)) {
         m[c.status as StatusTab].push(c);
       }
     }
