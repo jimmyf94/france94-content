@@ -2,6 +2,9 @@
 
 import { useMemo } from 'react';
 
+import type { PublishingQueueItem } from '@/lib/publishing-types';
+
+import { PublishingQueueRow } from '../publishing/PublishingQueueRow';
 import type { ReviewFilters } from './FilterDrawer';
 import { FilterToggleButton } from './FilterToggleButton';
 import { QueueRow } from './QueueRow';
@@ -12,9 +15,20 @@ const TAB_ORDER: StatusTab[] = [
   'needs_review',
   'needs_rewrite',
   'approved',
-  'ready_to_publish',
+  'publishing',
   'rejected',
 ];
+
+type PublishingSidebarProps = {
+  publishingItems?: PublishingQueueItem[];
+  publishingLoading?: boolean;
+  publishingActingJobId?: string | null;
+  onSchedulePublish?: (jobId: string, iso: string) => void | Promise<void>;
+  onUnschedulePublish?: (jobId: string) => void | Promise<void>;
+  onPublishNow?: (jobId: string) => void | Promise<void>;
+  onUnstagePublish?: (jobId: string) => void | Promise<void>;
+  onRefreshPublishing?: () => void;
+};
 
 export function CandidateQueueSidebar({
   candidates,
@@ -30,6 +44,14 @@ export function CandidateQueueSidebar({
   filtersOpen,
   onToggleFilters,
   onCloseFilters,
+  publishingItems = [],
+  publishingLoading = false,
+  publishingActingJobId = null,
+  onSchedulePublish,
+  onUnschedulePublish,
+  onPublishNow,
+  onUnstagePublish,
+  onRefreshPublishing,
 }: {
   candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
@@ -44,7 +66,9 @@ export function CandidateQueueSidebar({
   filtersOpen?: boolean;
   onToggleFilters?: () => void;
   onCloseFilters?: () => void;
-}) {
+} & PublishingSidebarProps) {
+  const isPublishingTab = activeTab === 'publishing';
+
   const visible = useMemo(
     () =>
       candidates.filter((c) =>
@@ -55,24 +79,51 @@ export function CandidateQueueSidebar({
     [candidates, activeTab],
   );
 
+  const listCount = isPublishingTab ? publishingItems.length : visible.length;
+  const listLoading = isPublishingTab ? publishingLoading : loading;
+
+  const scheduledCount = publishingItems.filter((i) => i.status === 'scheduled').length;
+  const readyCount = publishingItems.filter((i) => i.status === 'ready_to_publish').length;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--surface)]">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-3 pt-3 pb-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-          Review inbox
-        </h2>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {filters && onChangeFilters && onToggleFilters && onCloseFilters && (
-            <FilterToggleButton
-              filters={filters}
-              onChangeFilters={onChangeFilters}
-              open={filtersOpen ?? false}
-              onToggle={onToggleFilters}
-              onClose={onCloseFilters}
-              popoverAlign="left"
-            />
+        <div className="min-w-0">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Review inbox
+          </h2>
+          {isPublishingTab && publishingItems.length > 0 && (
+            <p className="mt-0.5 text-[10px] text-[var(--muted)]">
+              {scheduledCount} scheduled · {readyCount} ready
+            </p>
           )}
-          <span className="text-[11px] tabular-nums text-[var(--text)]">{visible.length}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isPublishingTab && onRefreshPublishing && (
+            <button
+              type="button"
+              onClick={onRefreshPublishing}
+              disabled={publishingLoading}
+              className="rounded-md border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          )}
+          {!isPublishingTab &&
+            filters &&
+            onChangeFilters &&
+            onToggleFilters &&
+            onCloseFilters && (
+              <FilterToggleButton
+                filters={filters}
+                onChangeFilters={onChangeFilters}
+                open={filtersOpen ?? false}
+                onToggle={onToggleFilters}
+                onClose={onCloseFilters}
+                popoverAlign="left"
+              />
+            )}
+          <span className="text-[11px] tabular-nums text-[var(--text)]">{listCount}</span>
         </div>
       </div>
       <div className="shrink-0 border-b border-[var(--border)] p-2">
@@ -100,13 +151,37 @@ export function CandidateQueueSidebar({
         </div>
       </div>
       <div className="scrollbar-thin flex min-h-0 flex-1 flex-col overflow-hidden">
-        {loading && visible.length === 0 && (
+        {listLoading && listCount === 0 && (
           <p className="p-3 text-sm text-[var(--muted)]">Loading…</p>
         )}
-        {!loading && visible.length === 0 && (
-          <p className="p-3 text-sm text-[var(--muted)]">Inbox empty.</p>
+        {!listLoading && listCount === 0 && (
+          <p className="p-3 text-sm text-[var(--muted)]">
+            {isPublishingTab ? 'No posts queued to go live.' : 'Inbox empty.'}
+          </p>
         )}
-        {visible.length > 0 && (
+        {isPublishingTab && publishingItems.length > 0 && (
+          <ul
+            className="scrollbar-thin flex min-h-0 flex-1 list-none flex-col gap-2 overflow-auto p-2"
+            role="list"
+          >
+            {publishingItems.map((item) => (
+              <li key={item.id} className="[content-visibility:auto]">
+                <PublishingQueueRow
+                  item={item}
+                  acting={publishingActingJobId === item.id}
+                  onSchedule={(jobId, iso) => void onSchedulePublish?.(jobId, iso)}
+                  onUnschedule={(jobId) => void onUnschedulePublish?.(jobId)}
+                  onPublishNow={(jobId) => void onPublishNow?.(jobId)}
+                  onUnstage={(jobId) => void onUnstagePublish?.(jobId)}
+                  compact
+                  onSelectCandidate={onSelect}
+                  selected={selectedId === item.post_candidate_id}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        {!isPublishingTab && visible.length > 0 && (
           <ul
             className="scrollbar-thin flex min-h-0 flex-1 list-none flex-col gap-1 overflow-auto p-2"
             role="list"

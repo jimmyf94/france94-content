@@ -17,7 +17,7 @@ import {
 } from '@fr94/candidate-collision';
 import { buildPublishingCaption } from '@fr94/publishing/caption';
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
-import { normalizeReelSpecOverlay, resolveReelTextStyle } from '@fr94/reel-text-style';
+import { normalizeOverlayEndSec, normalizeReelSpecOverlay, normalizeTimedOverlayCues, parseTimedOverlayCues, resolveReelTextStyle } from '@fr94/reel-text-style';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { reorderCandidateCarouselSlides } from '@/lib/reorder-candidate-carousel-slides';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
@@ -38,11 +38,19 @@ const reelTextStylePatchSchema = z.object({
   centered: z.boolean().optional(),
 });
 
+const reelTimedOverlayCueSchema = z.object({
+  start_sec: z.number().min(0).max(120),
+  end_sec: z.number().min(0).max(120),
+  text: z.string().trim().min(1).max(200),
+});
+
 const reelInstructionsPatchSchema = z
   .object({
     structure: z.array(reelStructureRowSchema).optional(),
     overlay_text: z.array(z.string()).optional(),
     overlay_lines: z.array(z.string()).optional(),
+    overlay_end_sec: z.number().min(0).max(120).nullable().optional(),
+    timed_overlay_cues: z.array(reelTimedOverlayCueSchema).max(12).optional(),
     text_style: reelTextStylePatchSchema.optional(),
   })
   .strict()
@@ -51,6 +59,8 @@ const reelInstructionsPatchSchema = z
       v.structure !== undefined ||
       v.overlay_text !== undefined ||
       v.overlay_lines !== undefined ||
+      v.overlay_end_sec !== undefined ||
+      v.timed_overlay_cues !== undefined ||
       v.text_style !== undefined,
     { message: 'Provide at least one reel_instructions field' },
   );
@@ -244,6 +254,26 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
           ...reel_instructions.text_style,
         });
       }
+      if (reel_instructions.timed_overlay_cues !== undefined) {
+        const maxDur =
+          typeof prev.total_duration_sec === 'number' && Number.isFinite(prev.total_duration_sec)
+            ? prev.total_duration_sec
+            : 120;
+        mergedReel.timed_overlay_cues = normalizeTimedOverlayCues(
+          parseTimedOverlayCues(reel_instructions.timed_overlay_cues),
+          { maxDurationSec: maxDur },
+        );
+      }
+      if (reel_instructions.overlay_end_sec !== undefined) {
+        const maxDur =
+          typeof prev.total_duration_sec === 'number' && Number.isFinite(prev.total_duration_sec)
+            ? prev.total_duration_sec
+            : 120;
+        mergedReel.overlay_end_sec = normalizeOverlayEndSec(
+          reel_instructions.overlay_end_sec,
+          maxDur,
+        );
+      }
     } else {
       mergedReel = { ...prev };
       if (reel_instructions.structure !== undefined) {
@@ -311,7 +341,13 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const overlay0 = Array.isArray(mergedReel.overlay_lines)
       ? (mergedReel.overlay_lines as string[])[0]?.trim()
       : '';
-    if (overlay0) update.title_overlay = overlay0;
+    const timedCues = parseTimedOverlayCues(mergedReel.timed_overlay_cues);
+    const titleFromTimed = timedCues[0]?.text?.trim() ?? '';
+    if (titleFromTimed) {
+      update.title_overlay = titleFromTimed;
+    } else if (overlay0) {
+      update.title_overlay = overlay0;
+    }
   }
 
   if (carousel_slides !== undefined) {
@@ -501,6 +537,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     if (pt === 'reel') {
       const c = candidateOut as unknown as {
         id: string;
+        hook?: string | null;
         reel_instructions: unknown;
         source_asset_ids: unknown;
         source_drive_file_ids: unknown;
@@ -508,6 +545,14 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
       const sd =
         Array.isArray(c.source_drive_file_ids) ? (c.source_drive_file_ids as string[]) : [];
+      const riRaw =
+        c.reel_instructions != null && typeof c.reel_instructions === 'object'
+          ? (c.reel_instructions as Record<string, unknown>)
+          : {};
+      const ri =
+        riRaw.version === 'clips-v1'
+          ? normalizeReelSpecOverlay(riRaw, c.hook ?? null)
+          : riRaw;
       // Clip-based reels auto-render at generation; don't reset a job that is
       // already queued/rendering/produced — only (re)queue when missing or failed.
       const { data: existingJob } = await supabase
@@ -529,7 +574,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
             status: 'queued',
             source_asset_ids: sa,
             source_drive_file_ids: sd,
-            instructions: c.reel_instructions ?? {},
+            instructions: ri,
+            reel_specification: ri,
             error_message: null,
             render_log: null,
             output_video_url: null,

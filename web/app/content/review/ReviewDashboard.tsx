@@ -15,6 +15,7 @@ import { CandidateDecisionPanel } from './CandidateDecisionPanel';
 import { CandidateQueueSidebar } from './CandidateQueueSidebar';
 import type { ReviewFilters } from './FilterDrawer';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
+import { usePublishingScheduleQueue } from '../publishing/usePublishingScheduleQueue';
 import {
   notifyScheduleQueueChanged,
   SCHEDULE_DRAWER_REFRESH_EVENT,
@@ -50,11 +51,12 @@ const VALID_TABS: ReadonlySet<StatusTab> = new Set([
   'needs_review',
   'needs_rewrite',
   'approved',
-  'ready_to_publish',
+  'publishing',
   'rejected',
 ]);
 
 function pickInitialTab(raw: string | null): StatusTab {
+  if (raw === 'ready_to_publish') return 'publishing';
   if (raw && VALID_TABS.has(raw as StatusTab)) return raw as StatusTab;
   return 'needs_review';
 }
@@ -123,6 +125,15 @@ export function ReviewDashboard() {
   const [mobileSheet, setMobileSheet] = useState<null | 'queue' | 'details' | 'filters'>(null);
   const [mediaReloadNonce, setMediaReloadNonce] = useState(0);
   const [publishingQueueNonce, setPublishingQueueNonce] = useState(0);
+  const {
+    items: publishingItems,
+    loading: publishingLoading,
+    actingJobId: publishingActingJobId,
+    schedulePublish,
+    unschedulePublish,
+    publishNow,
+    unstagePublish,
+  } = usePublishingScheduleQueue(publishingQueueNonce);
   const [regenerating, setRegenerating] = useState(false);
   const [generatingCandidates, setGeneratingCandidates] = useState(false);
   const [pipelineRunStatus, setPipelineRunStatus] = useState<string | null>(null);
@@ -369,39 +380,69 @@ export function ReviewDashboard() {
     };
   }, [candidates, mediaReloadNonce]);
 
+  const pipelineCandidateIds = useMemo(
+    () => new Set(publishingItems.map((i) => i.post_candidate_id)),
+    [publishingItems],
+  );
+
   const visibleByTab = useMemo(() => {
     const m: Record<StatusTab, CandidateListItem[]> = {
       needs_review: [],
       needs_rewrite: [],
       approved: [],
-      ready_to_publish: [],
+      publishing: [],
       rejected: [],
     };
     for (const c of candidates) {
+      if (pipelineCandidateIds.has(c.id)) continue;
       if (c.status === 'produced') {
         m.approved.push(c);
-      } else if (VALID_TABS.has(c.status as StatusTab)) {
-        m[c.status as StatusTab].push(c);
+      } else if (c.status === 'needs_review') {
+        m.needs_review.push(c);
+      } else if (c.status === 'needs_rewrite') {
+        m.needs_rewrite.push(c);
+      } else if (c.status === 'approved') {
+        m.approved.push(c);
+      } else if (c.status === 'rejected') {
+        m.rejected.push(c);
       }
     }
     return m;
-  }, [candidates]);
+  }, [candidates, pipelineCandidateIds]);
 
   const counts = useMemo<Record<StatusTab, number>>(
     () => ({
       needs_review: visibleByTab.needs_review.length,
       needs_rewrite: visibleByTab.needs_rewrite.length,
       approved: visibleByTab.approved.length,
-      ready_to_publish: visibleByTab.ready_to_publish.length,
+      publishing: publishingItems.length,
       rejected: visibleByTab.rejected.length,
     }),
-    [visibleByTab],
+    [visibleByTab, publishingItems.length],
   );
 
-  const visible = visibleByTab[activeStatusTab];
+  const visible = useMemo((): CandidateListItem[] => {
+    if (activeStatusTab === 'publishing') {
+      return publishingItems
+        .map((item) => candidates.find((c) => c.id === item.post_candidate_id))
+        .filter((c): c is CandidateListItem => c != null);
+    }
+    return visibleByTab[activeStatusTab];
+  }, [activeStatusTab, publishingItems, candidates, visibleByTab]);
 
   // Keep selection valid for the current tab.
   useEffect(() => {
+    if (activeStatusTab === 'publishing') {
+      if (publishingItems.length === 0) {
+        if (selectedId !== null) setSelectedId(null);
+        return;
+      }
+      const ids = publishingItems.map((i) => i.post_candidate_id);
+      if (!selectedId || !ids.includes(selectedId)) {
+        setSelectedId(ids[0]);
+      }
+      return;
+    }
     if (visible.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
@@ -409,7 +450,7 @@ export function ReviewDashboard() {
     if (!selectedId || !visible.some((c) => c.id === selectedId)) {
       setSelectedId(visible[0].id);
     }
-  }, [visible, selectedId]);
+  }, [activeStatusTab, visible, publishingItems, selectedId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -465,16 +506,10 @@ export function ReviewDashboard() {
     [silentReloadCandidates],
   );
 
-  const handleScheduleSelectCandidate = useCallback(
-    (candidateId: string) => {
-      setSelectedId(candidateId);
-      const row = candidates.find((c) => c.id === candidateId);
-      if (row && VALID_TABS.has(row.status as StatusTab)) {
-        setActiveStatusTab(row.status as StatusTab);
-      }
-    },
-    [candidates],
-  );
+  const handleScheduleSelectCandidate = useCallback((candidateId: string) => {
+    setSelectedId(candidateId);
+    setActiveStatusTab('publishing');
+  }, []);
 
   useEffect(() => {
     const fromUrl = sp.get('candidate');
@@ -892,6 +927,54 @@ export function ReviewDashboard() {
     }
   }, [selected, regenerating, draftNotes, handleCandidateUpdated]);
 
+  const refreshPublishingQueue = useCallback(() => {
+    void silentReloadCandidates();
+    setPublishingQueueNonce((n) => n + 1);
+  }, [silentReloadCandidates]);
+
+  const handlePublishingSchedule = useCallback(
+    async (jobId: string, iso: string) => {
+      await schedulePublish(jobId, iso);
+      refreshPublishingQueue();
+    },
+    [schedulePublish, refreshPublishingQueue],
+  );
+
+  const handlePublishingUnschedule = useCallback(
+    async (jobId: string) => {
+      await unschedulePublish(jobId);
+      refreshPublishingQueue();
+    },
+    [unschedulePublish, refreshPublishingQueue],
+  );
+
+  const handlePublishingPublishNow = useCallback(
+    async (jobId: string) => {
+      await publishNow(jobId);
+      refreshPublishingQueue();
+    },
+    [publishNow, refreshPublishingQueue],
+  );
+
+  const handlePublishingUnstage = useCallback(
+    async (jobId: string) => {
+      await unstagePublish(jobId);
+      refreshPublishingQueue();
+    },
+    [unstagePublish, refreshPublishingQueue],
+  );
+
+  const publishingSidebarProps = {
+    publishingItems,
+    publishingLoading,
+    publishingActingJobId,
+    onSchedulePublish: handlePublishingSchedule,
+    onUnschedulePublish: handlePublishingUnschedule,
+    onPublishNow: handlePublishingPublishNow,
+    onUnstagePublish: handlePublishingUnstage,
+    onRefreshPublishing: refreshPublishingQueue,
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {error && (
@@ -924,6 +1007,7 @@ export function ReviewDashboard() {
             filtersOpen={filtersOpen}
             onToggleFilters={() => setFiltersOpen((o) => !o)}
             onCloseFilters={() => setFiltersOpen(false)}
+            {...publishingSidebarProps}
           />
         </div>
         <ActiveCandidateWorkspace
@@ -1012,6 +1096,7 @@ export function ReviewDashboard() {
           onGenerateCandidates={generateCandidates}
           generatingCandidates={generatingCandidates}
           generateDisabled={isPipelineRunBusy(pipelineRunStatus)}
+          {...publishingSidebarProps}
         />
       </div>
 

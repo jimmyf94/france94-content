@@ -14,6 +14,10 @@ import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
 import { renderReel, resolveFfmpegBin } from './lib/production/render-reel.js';
 import { loadReelRenderDefaults } from './lib/reel-render-defaults.js';
 import {
+  normalizeReelSpecOverlay,
+  resolveClipsV1ProductionSpec,
+} from './lib/reel-text-style.js';
+import {
   createRenderProgressPatch,
   mergeRenderLogWithProgress,
   progressForDownload,
@@ -146,6 +150,33 @@ class JobProgressTracker {
   }
 }
 
+async function loadRenderSpec(
+  supabase: SupabaseClient,
+  jobId: string,
+  candidateId: string,
+  fallbackSpec: unknown,
+): Promise<unknown> {
+  const { data: freshJob, error: jobErr } = await supabase
+    .from('production_jobs')
+    .select('instructions,reel_specification')
+    .eq('id', jobId)
+    .maybeSingle();
+  if (jobErr) throw new Error(jobErr.message);
+
+  const { data: candidateRow, error: candErr } = await supabase
+    .from('post_candidates')
+    .select('reel_instructions,hook')
+    .eq('id', candidateId)
+    .maybeSingle();
+  if (candErr) throw new Error(candErr.message);
+
+  const jobSpec = freshJob?.reel_specification ?? freshJob?.instructions ?? fallbackSpec;
+  const resolved = resolveClipsV1ProductionSpec(candidateRow?.reel_instructions, jobSpec);
+  if (!resolved) return jobSpec ?? fallbackSpec;
+
+  return normalizeReelSpecOverlay(resolved, (candidateRow?.hook as string | null) ?? null);
+}
+
 async function processOneJob(
   supabase: SupabaseClient,
   drive: Awaited<ReturnType<typeof getDriveClient>>,
@@ -158,7 +189,7 @@ async function processOneJob(
   const progress = new JobProgressTracker(supabase, jobId, startedAt);
   await progress.flush(true);
 
-  const spec = job.reel_specification ?? job.instructions;
+  const spec = await loadRenderSpec(supabase, jobId, candidateId, job.reel_specification ?? job.instructions);
   const specAssetIds = assetIdsFromSpec(spec);
   const rawIds =
     specAssetIds ??

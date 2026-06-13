@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { PublishingQueueItem } from '@/lib/publishing-types';
+
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DeleteCandidateButton } from '../decision/DeleteCandidateButton';
 import { StagePublishingButton } from '../decision/StagePublishingButton';
@@ -65,7 +67,7 @@ function StatusPill({ status }: { status: string }) {
     needs_review: 'border-[var(--accent)] text-[var(--accent)]',
     needs_rewrite: 'border-[var(--warn)] text-[var(--warn)]',
     approved: 'border-[var(--good)] text-[var(--good)]',
-    ready_to_publish: 'border-[var(--good)] text-[var(--good)]',
+    publishing: 'border-[var(--good)] text-[var(--good)]',
     rejected: 'border-[var(--bad)] text-[var(--bad)]',
   };
   const tone = map[status] ?? 'border-[var(--border)] text-[var(--muted)]';
@@ -125,6 +127,14 @@ export function MobileReviewStack({
   onGenerateCandidates,
   generatingCandidates,
   generateDisabled,
+  publishingItems = [],
+  publishingLoading = false,
+  publishingActingJobId = null,
+  onSchedulePublish,
+  onUnschedulePublish,
+  onPublishNow,
+  onUnstagePublish,
+  onRefreshPublishing,
 }: {
   candidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
@@ -163,6 +173,14 @@ export function MobileReviewStack({
   onGenerateCandidates: () => void | Promise<void>;
   generatingCandidates?: boolean;
   generateDisabled?: boolean;
+  publishingItems?: PublishingQueueItem[];
+  publishingLoading?: boolean;
+  publishingActingJobId?: string | null;
+  onSchedulePublish?: (jobId: string, iso: string) => void | Promise<void>;
+  onUnschedulePublish?: (jobId: string) => void | Promise<void>;
+  onPublishNow?: (jobId: string) => void | Promise<void>;
+  onUnstagePublish?: (jobId: string) => void | Promise<void>;
+  onRefreshPublishing?: () => void;
 }) {
   // Caption isn't a tab on mobile (it's inline). Coerce when the sheet opens from caption.
   const sheetTab: MobileDetailSheetTab =
@@ -264,6 +282,14 @@ export function MobileReviewStack({
           onSelect={handleQueueSelect}
           loading={loading}
           firstThumbnailById={firstThumbnailById}
+          publishingItems={publishingItems}
+          publishingLoading={publishingLoading}
+          publishingActingJobId={publishingActingJobId}
+          onSchedulePublish={onSchedulePublish}
+          onUnschedulePublish={onUnschedulePublish}
+          onPublishNow={onPublishNow}
+          onUnstagePublish={onUnstagePublish}
+          onRefreshPublishing={onRefreshPublishing}
         />
       </BottomSheet>
 

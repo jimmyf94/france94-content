@@ -97,18 +97,30 @@ export function drawtextXExpression(centered: boolean): string {
   return centered ? '(w-text_w)/2' : 'w*0.05';
 }
 
+function parseOptionalNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 /** Parse partial style from unknown JSON (e.g. reel_instructions.text_style). */
 export function parsePartialReelTextStyle(raw: unknown): Partial<ReelRenderTextStyle> | null {
   if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
   const out: Partial<ReelRenderTextStyle> = {};
-  if (typeof o.fontsize === 'number') out.fontsize = o.fontsize;
+  const fontsize = parseOptionalNumber(o.fontsize);
+  if (fontsize != null) out.fontsize = fontsize;
   if (typeof o.font_color === 'string') out.font_color = o.font_color;
-  if (typeof o.outline_width === 'number') out.outline_width = o.outline_width;
+  const outlineWidth = parseOptionalNumber(o.outline_width);
+  if (outlineWidth != null) out.outline_width = outlineWidth;
   if (typeof o.outline_color === 'string') out.outline_color = o.outline_color;
   const pos = parsePosition(o.position);
   if (pos) out.position = pos;
-  if (typeof o.line_spacing === 'number') out.line_spacing = o.line_spacing;
+  const lineSpacing = parseOptionalNumber(o.line_spacing);
+  if (lineSpacing != null) out.line_spacing = lineSpacing;
   if (typeof o.centered === 'boolean') out.centered = o.centered;
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -262,6 +274,231 @@ export function parseReelOverlayDraft(text: string): string[] {
     .map((l) => l.trim())
     .filter(Boolean)
     .slice(0, 3);
+}
+
+export type ReelTimedOverlayCue = {
+  start_sec: number;
+  end_sec: number;
+  text: string;
+};
+
+export const REEL_TIMED_OVERLAY_MAX_CUES = 12;
+export const REEL_TIMED_OVERLAY_MAX_TEXT_LEN = 200;
+
+function roundSec(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Parse timed overlay cues from reel_instructions JSON. */
+export function parseTimedOverlayCues(raw: unknown): ReelTimedOverlayCue[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ReelTimedOverlayCue[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== 'object' || Array.isArray(item)) continue;
+    const o = item as Record<string, unknown>;
+    const start = Number(o.start_sec);
+    const end = Number(o.end_sec);
+    const text = typeof o.text === 'string' ? o.text.trim() : '';
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !text) continue;
+    if (start < 0 || end <= start) continue;
+    out.push({
+      start_sec: roundSec(start),
+      end_sec: roundSec(end),
+      text: text.slice(0, REEL_TIMED_OVERLAY_MAX_TEXT_LEN),
+    });
+  }
+  return out.slice(0, REEL_TIMED_OVERLAY_MAX_CUES);
+}
+
+/** Clamp, sort, and drop invalid timed overlay cues. */
+export function normalizeTimedOverlayCues(
+  cues: ReelTimedOverlayCue[],
+  opts?: { maxDurationSec?: number },
+): ReelTimedOverlayCue[] {
+  const maxDur = opts?.maxDurationSec ?? 120;
+  return cues
+    .filter((c) => c.text.trim() && c.end_sec > c.start_sec && c.start_sec >= 0)
+    .map((c) => ({
+      start_sec: roundSec(Math.max(0, c.start_sec)),
+      end_sec: roundSec(Math.min(maxDur, c.end_sec)),
+      text: c.text.trim().slice(0, REEL_TIMED_OVERLAY_MAX_TEXT_LEN),
+    }))
+    .filter((c) => c.end_sec > c.start_sec)
+    .sort((a, b) => a.start_sec - b.start_sec)
+    .slice(0, REEL_TIMED_OVERLAY_MAX_CUES);
+}
+
+/** Cue active at playback time (half-open interval [start, end)). */
+export function activeTimedOverlayCueAtTime(
+  cues: ReelTimedOverlayCue[],
+  timeSec: number,
+): ReelTimedOverlayCue | null {
+  if (!Number.isFinite(timeSec)) return null;
+  for (const cue of cues) {
+    if (timeSec >= cue.start_sec && timeSec < cue.end_sec) return cue;
+  }
+  return null;
+}
+
+/** Parse optional static overlay end from reel_instructions JSON. */
+export function parseOverlayEndSec(raw: unknown): number | null {
+  if (raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return roundSec(n);
+}
+
+/** Clamp static overlay end to reel duration. */
+export function normalizeOverlayEndSec(
+  value: number | null | undefined,
+  maxDurationSec?: number,
+): number | null {
+  if (value == null || !Number.isFinite(value) || value <= 0) return null;
+  const maxDur = maxDurationSec ?? 120;
+  const clamped = roundSec(Math.min(maxDur, Math.max(0, value)));
+  return clamped > 0 ? clamped : null;
+}
+
+export type OverlayPreviewResult = {
+  text: string | null;
+  source: 'cue' | 'static' | null;
+};
+
+/** Resolve which overlay text to preview at a given playback time. */
+export function resolveOverlayPreviewText(params: {
+  overlayLines: string[] | null | undefined;
+  overlayEndSec?: number | null;
+  timedCues: ReelTimedOverlayCue[];
+  timeSec: number;
+  fallbacks?: { titleOverlay?: string | null; hook?: string | null };
+}): OverlayPreviewResult {
+  const { timedCues, timeSec } = params;
+  if (!Number.isFinite(timeSec)) return { text: null, source: null };
+
+  const activeCue = activeTimedOverlayCueAtTime(timedCues, timeSec);
+  if (activeCue) return { text: activeCue.text, source: 'cue' };
+
+  const staticText = formatReelOverlayText(params.overlayLines, params.fallbacks).trim();
+  if (!staticText) return { text: null, source: null };
+
+  const overlayEnd = params.overlayEndSec ?? null;
+  const hasTimedCues = timedCues.length > 0;
+
+  if (overlayEnd != null) {
+    if (timeSec < overlayEnd) return { text: staticText, source: 'static' };
+    return { text: null, source: null };
+  }
+
+  if (hasTimedCues) return { text: null, source: null };
+  return { text: staticText, source: 'static' };
+}
+
+/** Whether a timed cue overlaps the static overlay intro window. */
+export function timedCueOverlapsOverlayEnd(
+  cues: ReelTimedOverlayCue[],
+  overlayEndSec: number | null | undefined,
+): boolean {
+  if (overlayEndSec == null || overlayEndSec <= 0) return false;
+  return cues.some((c) => c.start_sec < overlayEndSec && c.end_sec > 0);
+}
+
+/**
+ * Build the clips-v1 spec for FFmpeg render. Candidate reel_instructions are the
+ * source of truth for overlay text, timed cues, and text_style; job spec only
+ * fills in clips when the candidate row is missing them.
+ */
+export function resolveClipsV1ProductionSpec(
+  candidateInstructions: unknown,
+  jobSpec: unknown,
+): Record<string, unknown> | null {
+  const cand =
+    candidateInstructions != null &&
+    typeof candidateInstructions === 'object' &&
+    !Array.isArray(candidateInstructions)
+      ? (candidateInstructions as Record<string, unknown>)
+      : null;
+  const job =
+    jobSpec != null && typeof jobSpec === 'object' && !Array.isArray(jobSpec)
+      ? (jobSpec as Record<string, unknown>)
+      : null;
+
+  if (cand?.version === 'clips-v1') {
+    const out: Record<string, unknown> = { ...cand };
+    const candClips = Array.isArray(cand.clips) ? cand.clips : [];
+    const jobClips = Array.isArray(job?.clips) ? job.clips : [];
+    if (candClips.length === 0 && jobClips.length > 0) {
+      out.clips = jobClips;
+    }
+    return out;
+  }
+
+  if (job?.version === 'clips-v1') return { ...job };
+  return null;
+}
+
+export type ReelOverlayProductionFields = {
+  overlay_lines?: string[] | null;
+  overlay_end_sec?: number | null;
+  timed_overlay_cues?: unknown;
+  text_style?: Partial<ReelRenderTextStyle> | null;
+};
+
+/** Canonical snapshot of overlay fields used for render (for draft vs produced comparison). */
+export function reelOverlayProductionSnapshot(params: {
+  overlayLines: string[] | string;
+  overlayEndSec?: number | null;
+  timedCues: ReelTimedOverlayCue[];
+  textStyle?: Partial<ReelRenderTextStyle> | null;
+  workspaceDefaults?: Partial<ReelRenderTextStyle> | null;
+  maxDurationSec?: number;
+}): {
+  overlay_lines: string[];
+  overlay_end_sec: number | null;
+  timed_overlay_cues: ReelTimedOverlayCue[];
+  text_style: ReelRenderTextStyle;
+} {
+  const overlay_lines =
+    typeof params.overlayLines === 'string'
+      ? parseReelOverlayDraft(params.overlayLines)
+      : (params.overlayLines ?? []).map((l) => l.trim()).filter(Boolean).slice(0, 3);
+  const maxDur = params.maxDurationSec ?? 120;
+  return {
+    overlay_lines,
+    overlay_end_sec: normalizeOverlayEndSec(params.overlayEndSec ?? null, maxDur),
+    timed_overlay_cues: normalizeTimedOverlayCues(params.timedCues, { maxDurationSec: maxDur }),
+    text_style: resolveReelTextStyle(params.textStyle, params.workspaceDefaults),
+  };
+}
+
+/** True when draft overlay/style/cues differ from the last produced job spec. */
+export function reelOverlayDraftDiffersFromRenderedSpec(params: {
+  draftOverlay: string;
+  draftOverlayEndSec: number | null;
+  draftTimedCues: ReelTimedOverlayCue[];
+  draftStyle: ReelRenderTextStyle;
+  renderedSpec: ReelOverlayProductionFields | null | undefined;
+  workspaceDefaults?: Partial<ReelRenderTextStyle> | null;
+  maxDurationSec?: number;
+}): boolean {
+  if (!params.renderedSpec) return false;
+  const maxDur = params.maxDurationSec ?? 120;
+  const draft = reelOverlayProductionSnapshot({
+    overlayLines: params.draftOverlay,
+    overlayEndSec: params.draftOverlayEndSec,
+    timedCues: params.draftTimedCues,
+    textStyle: params.draftStyle,
+    workspaceDefaults: params.workspaceDefaults,
+    maxDurationSec: maxDur,
+  });
+  const rendered = reelOverlayProductionSnapshot({
+    overlayLines: params.renderedSpec.overlay_lines ?? [],
+    overlayEndSec: parseOverlayEndSec(params.renderedSpec.overlay_end_sec),
+    timedCues: parseTimedOverlayCues(params.renderedSpec.timed_overlay_cues),
+    textStyle: params.renderedSpec.text_style,
+    workspaceDefaults: params.workspaceDefaults,
+    maxDurationSec: maxDur,
+  });
+  return JSON.stringify(draft) !== JSON.stringify(rendered);
 }
 
 /** Ensure clips-v1 reel_instructions overlay matches hook when hook is the fuller POV line. */

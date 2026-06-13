@@ -57,6 +57,12 @@ export type ReelSpecification = {
   version: 'clips-v1';
   clips: ReelSpecClip[];
   overlay_lines: string[];
+  overlay_end_sec?: number | null;
+  timed_overlay_cues?: Array<{
+    start_sec: number;
+    end_sec: number;
+    text: string;
+  }>;
   keep_audio: true;
   text_style: ReelRenderTextStyle;
   total_duration_sec: number;

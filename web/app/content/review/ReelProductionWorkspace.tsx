@@ -1,8 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
-import type { ReelRenderTextStyle } from '@fr94/reel-text-style';
+import {
+  parseReelOverlayDraft,
+  REEL_TIMED_OVERLAY_MAX_CUES,
+  resolveOverlayPreviewText,
+  timedCueOverlapsOverlayEnd,
+  type ReelRenderTextStyle,
+  type ReelTimedOverlayCue,
+} from '@fr94/reel-text-style';
 
 import { MainMediaPreview } from './MainMediaPreview';
 import { ReelRenderProgress } from './ReelRenderProgress';
@@ -50,16 +57,23 @@ export type ReelProductionWorkspaceProps = {
   reasoningEntries: Array<[string, string]>;
   isClipReel: boolean;
   draftOverlay: string;
+  draftOverlayEndSec: number | null;
+  draftTimedCues: ReelTimedOverlayCue[];
   draftStyle: ReelRenderTextStyle;
+  overlayFallbacks?: { titleOverlay?: string | null; hook?: string | null };
   styleBusy: boolean;
   variantBusy: ReelVariantKind | null;
   onOverlayChange: (v: string) => void;
+  onOverlayEndSecChange: (sec: number | null) => void;
+  onTimedCuesChange: (cues: ReelTimedOverlayCue[]) => void;
   onStyleChange: (s: ReelRenderTextStyle) => void;
   onCreateVariant: (kind: ReelVariantKind) => void;
   media?: CandidateMediaState;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
+  /** Draft overlay/style/cues differ from the last produced job spec. */
+  draftDiffersFromRendered?: boolean;
 };
 
 function formatDuration(sec: number | null | undefined): string | null {
@@ -182,12 +196,238 @@ function IconDownload({ className }: { className?: string }) {
   );
 }
 
+function formatSecInput(sec: number): string {
+  if (!Number.isFinite(sec)) return '0';
+  return String(Math.round(sec * 10) / 10);
+}
+
+function overlayPreviewPositionClass(position: ReelRenderTextStyle['position']): string {
+  switch (position) {
+    case 'top':
+      return 'top-[8%]';
+    case 'center':
+      return 'top-1/2 -translate-y-1/2';
+    case 'top_third':
+    default:
+      return 'top-[16.67%] -translate-y-1/2';
+  }
+}
+
+function OverlayPreviewLayer({
+  text,
+  style,
+  previewOnly = false,
+}: {
+  text: string;
+  style: ReelRenderTextStyle;
+  previewOnly?: boolean;
+}) {
+  return (
+    <div
+      className={`pointer-events-none absolute w-[80%] max-w-sm ${style.centered ? 'left-1/2 -translate-x-1/2' : 'left-[5%]'} ${overlayPreviewPositionClass(style.position)}`}
+      aria-hidden
+    >
+      {previewOnly ? (
+        <p className="mb-1 rounded-sm bg-black/70 px-1.5 py-0.5 text-center text-[9px] font-medium uppercase tracking-wide text-amber-200">
+          Preview only — re-render to burn in
+        </p>
+      ) : null}
+      <p
+        className="whitespace-pre-wrap font-semibold"
+        style={{
+          color: style.font_color,
+          fontSize: `${Math.max(12, Math.round(style.fontsize * 0.35))}px`,
+          lineHeight: `${Math.max(1.1, 1 + style.line_spacing / 40)}`,
+          textAlign: style.centered ? 'center' : 'left',
+          textShadow:
+            style.outline_width > 0
+              ? `0 0 ${style.outline_width}px ${style.outline_color}, 0 0 ${style.outline_width * 2}px ${style.outline_color}`
+              : undefined,
+        }}
+      >
+        {text}
+      </p>
+    </div>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  hint,
+  badge,
+  defaultOpen = false,
+  headerAction,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  badge?: string;
+  defaultOpen?: boolean;
+  headerAction?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <details
+      open={defaultOpen}
+      className="group rounded-xl border border-[var(--border)] bg-[var(--surface-2)]"
+    >
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-2 px-4 py-3 marker:content-none [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+              {title}
+            </span>
+            {badge ? (
+              <span className="rounded-sm border border-[var(--border)] bg-[var(--surface)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-[var(--text)]">
+                {badge}
+              </span>
+            ) : null}
+          </div>
+          {hint ? (
+            <p className="mt-1 text-[11px] leading-relaxed text-[var(--muted)]">{hint}</p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {headerAction}
+          <span
+            className="text-[10px] text-[var(--muted)] transition-transform group-open:rotate-180"
+            aria-hidden
+          >
+            ▼
+          </span>
+        </div>
+      </summary>
+      <div className="space-y-3 border-t border-[var(--border)] px-4 py-3">{children}</div>
+    </details>
+  );
+}
+
+function TimedOverlayCueEditor({
+  cues,
+  currentTimeSec,
+  durationSec,
+  overlayEndSec,
+  disabled,
+  onChange,
+}: {
+  cues: ReelTimedOverlayCue[];
+  currentTimeSec: number | null;
+  durationSec: number | null;
+  overlayEndSec?: number | null;
+  disabled?: boolean;
+  onChange: (cues: ReelTimedOverlayCue[]) => void;
+}) {
+  const playhead = currentTimeSec ?? 0;
+
+  const updateCue = (index: number, patch: Partial<ReelTimedOverlayCue>) => {
+    onChange(cues.map((cue, i) => (i === index ? { ...cue, ...patch } : cue)));
+  };
+
+  const removeCue = (index: number) => {
+    onChange(cues.filter((_, i) => i !== index));
+  };
+
+  return (
+    <>
+      {cues.length === 0 ? (
+        <p className="text-xs text-[var(--muted)]">
+          No timed cues yet. Scrub the rendered video and add a cue at the playhead.
+        </p>
+      ) : (
+        <ul className="space-y-3">
+          {cues.map((cue, index) => (
+            <li
+              key={`cue-${index}`}
+              className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
+                  Start
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    disabled={disabled}
+                    value={formatSecInput(cue.start_sec)}
+                    onChange={(e) =>
+                      updateCue(index, { start_sec: Number(e.target.value) || 0 })
+                    }
+                    className="w-16 rounded border border-[var(--border)] bg-[var(--surface-2)] px-1.5 py-1 text-xs tabular-nums text-[var(--text)] disabled:opacity-50"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={disabled || currentTimeSec == null}
+                  onClick={() => updateCue(index, { start_sec: +playhead.toFixed(1) })}
+                  className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+                >
+                  Use playhead
+                </button>
+                <label className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
+                  End
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    disabled={disabled}
+                    value={formatSecInput(cue.end_sec)}
+                    onChange={(e) =>
+                      updateCue(index, { end_sec: Number(e.target.value) || 0 })
+                    }
+                    className="w-16 rounded border border-[var(--border)] bg-[var(--surface-2)] px-1.5 py-1 text-xs tabular-nums text-[var(--text)] disabled:opacity-50"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={disabled || currentTimeSec == null}
+                  onClick={() => updateCue(index, { end_sec: +playhead.toFixed(1) })}
+                  className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+                >
+                  Use playhead
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => removeCue(index)}
+                  className="ml-auto rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--bad)] hover:bg-[var(--bad)]/10 disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </div>
+              <input
+                type="text"
+                disabled={disabled}
+                value={cue.text}
+                onChange={(e) => updateCue(index, { text: e.target.value })}
+                placeholder="On-screen text for this time range…"
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--muted)] disabled:opacity-50"
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {timedCueOverlapsOverlayEnd(cues, overlayEndSec) && (
+        <p className="text-xs text-[var(--warn)]">
+          A cue starts before the overlay end — both may show at once in the render.
+        </p>
+      )}
+      {currentTimeSec != null && (
+        <p className="text-[11px] tabular-nums text-[var(--muted)]">
+          Playhead: {formatSecInput(currentTimeSec)}s
+          {durationSec != null ? ` / ${formatSecInput(durationSec)}s` : ''}
+        </p>
+      )}
+    </>
+  );
+}
+
 function ReelProductionBar({
   previewUrl,
   downloadUrl,
   renderDisabled,
   renderLabel,
   renderIsReRender = false,
+  draftDiffersFromRendered = false,
   onRender,
   compact = false,
 }: {
@@ -196,6 +436,7 @@ function ReelProductionBar({
   renderDisabled: boolean;
   renderLabel: string;
   renderIsReRender?: boolean;
+  draftDiffersFromRendered?: boolean;
   onRender: () => void;
   compact?: boolean;
 }) {
@@ -213,6 +454,11 @@ function ReelProductionBar({
 
   return (
     <div className="shrink-0 border-b border-[var(--border)] bg-[var(--bg)] px-3 py-2">
+      {draftDiffersFromRendered && previewUrl ? (
+        <p className="mb-2 text-[11px] leading-snug text-[var(--warn)]">
+          Draft differs from rendered MP4 — overlay on the video is preview only until you re-render.
+        </p>
+      ) : null}
       <div className="flex items-center justify-end gap-2">
         {downloadUrl && (
           <a
@@ -249,12 +495,60 @@ function RenderedStage({
   posterUrl,
   large,
   isRenderActive = false,
+  videoRef,
+  onRegisterActivateStream,
+  draftOverlay,
+  draftOverlayEndSec,
+  draftTimedCues,
+  draftStyle,
+  overlayFallbacks,
+  draftDiffersFromRendered = false,
+  onCurrentTimeChange,
 }: {
   previewUrl: string | null;
   posterUrl: string | null;
   large?: boolean;
   isRenderActive?: boolean;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+  onRegisterActivateStream?: (activate: () => void) => void;
+  draftOverlay?: string;
+  draftOverlayEndSec?: number | null;
+  draftTimedCues?: ReelTimedOverlayCue[];
+  draftStyle?: ReelRenderTextStyle;
+  overlayFallbacks?: { titleOverlay?: string | null; hook?: string | null };
+  draftDiffersFromRendered?: boolean;
+  onCurrentTimeChange?: (timeSec: number) => void;
 }) {
+  const [currentTime, setCurrentTime] = useState(0);
+
+  const previewOverlay = useMemo(() => {
+    if (!draftStyle) return null;
+    return resolveOverlayPreviewText({
+      overlayLines: parseReelOverlayDraft(draftOverlay ?? ''),
+      overlayEndSec: draftOverlayEndSec ?? null,
+      timedCues: draftTimedCues ?? [],
+      timeSec: currentTime,
+      fallbacks: overlayFallbacks,
+    });
+  }, [
+    currentTime,
+    draftOverlay,
+    draftOverlayEndSec,
+    draftStyle,
+    draftTimedCues,
+    overlayFallbacks,
+  ]);
+
+  useEffect(() => {
+    if (!previewUrl || !onRegisterActivateStream) return;
+    onRegisterActivateStream(() => {
+      const el = videoRef?.current;
+      if (!el) return;
+      if (el.paused) void el.play().catch(() => undefined);
+      else el.pause();
+    });
+  }, [onRegisterActivateStream, previewUrl, videoRef]);
+
   const shellClass = large
     ? 'flex h-full min-h-0 w-full items-center justify-center'
     : 'flex w-full items-center justify-center';
@@ -267,20 +561,40 @@ function RenderedStage({
       <div
         className={
           large
-            ? 'flex h-full max-h-full flex-col items-center justify-center gap-3'
-            : 'w-full'
+            ? 'relative flex h-full max-h-full flex-col items-center justify-center gap-3'
+            : 'relative w-full'
         }
       >
         {previewUrl ? (
-          <video
-            key={previewUrl}
-            src={previewUrl}
-            poster={posterUrl ?? undefined}
-            controls
-            playsInline
-            className={videoClass}
-            style={large ? { aspectRatio: '9 / 16' } : undefined}
-          />
+          <>
+            <video
+              key={previewUrl}
+              ref={videoRef}
+              src={previewUrl}
+              poster={posterUrl ?? undefined}
+              controls
+              playsInline
+              className={videoClass}
+              style={large ? { aspectRatio: '9 / 16' } : undefined}
+              onTimeUpdate={(e) => {
+                const t = e.currentTarget.currentTime;
+                setCurrentTime(t);
+                onCurrentTimeChange?.(t);
+              }}
+              onLoadedMetadata={(e) => {
+                const t = e.currentTarget.currentTime;
+                setCurrentTime(t);
+                onCurrentTimeChange?.(t);
+              }}
+            />
+            {draftDiffersFromRendered && previewOverlay?.text && draftStyle && (
+              <OverlayPreviewLayer
+                text={previewOverlay.text}
+                style={draftStyle}
+                previewOnly
+              />
+            )}
+          </>
         ) : isRenderActive ? (
           <div
             className={`flex flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface-2)] text-center ${
@@ -386,10 +700,16 @@ function SourceAssetsGrid({
 function OperatorPanel({
   isClipReel,
   draftOverlay,
+  draftOverlayEndSec,
+  draftTimedCues,
   draftStyle,
   styleBusy,
   variantBusy,
+  currentTimeSec,
+  durationSec,
   onOverlayChange,
+  onOverlayEndSecChange,
+  onTimedCuesChange,
   onStyleChange,
   onCreateVariant,
   clips,
@@ -398,22 +718,41 @@ function OperatorPanel({
   ReelProductionWorkspaceProps,
   | 'isClipReel'
   | 'draftOverlay'
+  | 'draftOverlayEndSec'
+  | 'draftTimedCues'
   | 'draftStyle'
   | 'styleBusy'
   | 'variantBusy'
+  | 'durationSec'
   | 'onOverlayChange'
+  | 'onOverlayEndSecChange'
+  | 'onTimedCuesChange'
   | 'onStyleChange'
   | 'onCreateVariant'
   | 'clips'
   | 'reasoningEntries'
->) {
+> & { currentTimeSec: number | null }) {
+  const playhead = currentTimeSec ?? 0;
+  const timedCueCount = draftTimedCues.length;
+
   return (
-    <div className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-4 overflow-auto">
+    <div className="flex flex-col gap-3">
       {isClipReel && (
-        <section className="space-y-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Overlay text
-          </h3>
+        <CollapsibleSection
+          title="Text style"
+          hint="Applies to static overlay and timed cues in the rendered reel."
+          defaultOpen={false}
+        >
+          <ReelTextStyleFields style={draftStyle} onChange={onStyleChange} disabled={styleBusy} />
+        </CollapsibleSection>
+      )}
+
+      {isClipReel && (
+        <CollapsibleSection
+          title="Static overlay text"
+          hint="Leave end empty to show for the whole reel, or until timed cues replace it."
+          defaultOpen
+        >
           <textarea
             value={draftOverlay}
             disabled={styleBusy}
@@ -422,19 +761,83 @@ function OperatorPanel({
             placeholder="On-screen text for the reel…"
             className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-base leading-relaxed text-[var(--text)] placeholder:text-[var(--muted)] disabled:opacity-50"
           />
-          <ReelTextStyleFields style={draftStyle} onChange={onStyleChange} disabled={styleBusy} />
-        </section>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px] text-[var(--muted)]">
+              End at (s)
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                disabled={styleBusy}
+                value={draftOverlayEndSec != null ? formatSecInput(draftOverlayEndSec) : ''}
+                placeholder="—"
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onOverlayEndSecChange(raw === '' ? null : Number(raw) || null);
+                }}
+                className="w-20 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-1 text-xs tabular-nums text-[var(--text)] disabled:opacity-50"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={styleBusy || currentTimeSec == null}
+              onClick={() => onOverlayEndSecChange(+playhead.toFixed(1))}
+              className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+            >
+              Use playhead
+            </button>
+          </div>
+        </CollapsibleSection>
       )}
 
       {isClipReel && (
-        <section className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Variants
-          </h3>
-          <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-            Reuses pre-tagged clips. Creates a new candidate and queues a render.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
+        <CollapsibleSection
+          title="Timed text"
+          hint="Set an overlay end time to hand off to timed cues after the intro."
+          badge={timedCueCount > 0 ? `${timedCueCount} cue${timedCueCount === 1 ? '' : 's'}` : undefined}
+          defaultOpen={timedCueCount > 0 || draftOverlayEndSec != null}
+          headerAction={
+            <button
+              type="button"
+              disabled={styleBusy || timedCueCount >= REEL_TIMED_OVERLAY_MAX_CUES}
+              onClick={(e) => {
+                e.preventDefault();
+                const start = Math.max(0, playhead);
+                const end =
+                  durationSec != null ? Math.min(durationSec, start + 2) : start + 2;
+                onTimedCuesChange([
+                  ...draftTimedCues,
+                  {
+                    start_sec: +start.toFixed(1),
+                    end_sec: +Math.max(start + 0.5, end).toFixed(1),
+                    text: '',
+                  },
+                ]);
+              }}
+              className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              Add cue
+            </button>
+          }
+        >
+          <TimedOverlayCueEditor
+            cues={draftTimedCues}
+            currentTimeSec={currentTimeSec}
+            durationSec={durationSec}
+            overlayEndSec={draftOverlayEndSec}
+            disabled={styleBusy}
+            onChange={onTimedCuesChange}
+          />
+        </CollapsibleSection>
+      )}
+
+      {isClipReel && (
+        <CollapsibleSection
+          title="Variants"
+          hint="Reuses pre-tagged clips. Creates a new candidate and queues a render."
+          defaultOpen={false}
+        >
+          <div className="flex flex-wrap gap-2">
             {REEL_VARIANT_KINDS.map((kind) => (
               <button
                 key={kind}
@@ -447,15 +850,16 @@ function OperatorPanel({
               </button>
             ))}
           </div>
-        </section>
+        </CollapsibleSection>
       )}
 
       {clips && clips.length > 0 && (
-        <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Clips ({clips.length})
-          </summary>
-          <ul className="mt-3 space-y-2 text-sm text-[var(--text)]">
+        <CollapsibleSection
+          title="Clips"
+          badge={String(clips.length)}
+          defaultOpen={false}
+        >
+          <ul className="space-y-2 text-sm text-[var(--text)]">
             {clips.map((c, i) => (
               <li key={c.clip_id ?? i} className="leading-relaxed">
                 <span className="font-medium text-[var(--muted)]">#{i + 1}</span>{' '}
@@ -464,15 +868,12 @@ function OperatorPanel({
               </li>
             ))}
           </ul>
-        </details>
+        </CollapsibleSection>
       )}
 
       {reasoningEntries.length > 0 && (
-        <details className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] p-4">
-          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-            Assembly reasoning
-          </summary>
-          <dl className="mt-3 space-y-3 text-sm">
+        <CollapsibleSection title="Assembly reasoning" defaultOpen={false}>
+          <dl className="space-y-3 text-sm">
             {reasoningEntries.map(([label, text]) => (
               <div key={label}>
                 <dt className="font-medium text-[var(--text)]">{label}</dt>
@@ -480,7 +881,7 @@ function OperatorPanel({
               </div>
             ))}
           </dl>
-        </details>
+        </CollapsibleSection>
       )}
     </div>
   );
@@ -489,16 +890,20 @@ function OperatorPanel({
 function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
   const hasRendered = Boolean(props.previewUrl);
   const [stageTab, setStageTab] = useState<StageTab>('source');
+  const [renderedTimeSec, setRenderedTimeSec] = useState<number | null>(null);
   const laneTag = resolveLaneTag(props.candidate);
   const assetCount = props.media?.files?.length ?? props.clipCount;
 
   useEffect(() => {
     setStageTab('source');
+    setRenderedTimeSec(null);
   }, [props.candidate.id]);
+
+  const currentTimeSec = stageTab === 'rendered' ? renderedTimeSec : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--bg)]">
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(300px,380px)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(300px,380px)] overflow-hidden">
         <div className="flex min-h-0 flex-col border-r border-[var(--border)]">
           <div className="relative flex shrink-0 items-center justify-center border-b border-[var(--border)] bg-[var(--surface)] px-4">
             <div className="flex min-w-0">
@@ -547,6 +952,15 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                   posterUrl={props.posterUrl}
                   large
                   isRenderActive={props.isRenderActive}
+                  videoRef={props.videoRef}
+                  onRegisterActivateStream={props.onRegisterActivateStream}
+                  draftOverlay={props.draftOverlay}
+                  draftOverlayEndSec={props.draftOverlayEndSec}
+                  draftTimedCues={props.draftTimedCues}
+                  draftStyle={props.draftStyle}
+                  overlayFallbacks={props.overlayFallbacks}
+                  draftDiffersFromRendered={props.draftDiffersFromRendered}
+                  onCurrentTimeChange={setRenderedTimeSec}
                 />
               </div>
             ) : props.media ? (
@@ -563,13 +977,14 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
           </div>
         </div>
 
-        <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-[var(--border)] bg-[var(--surface)]">
           <ReelProductionBar
             previewUrl={props.previewUrl}
             downloadUrl={props.downloadUrl}
             renderDisabled={props.renderDisabled}
             renderLabel={props.renderLabel}
             renderIsReRender={props.renderIsReRender}
+            draftDiffersFromRendered={props.draftDiffersFromRendered}
             onRender={props.onRender}
           />
           {(props.loading && !props.job) || props.error || props.job?.error_message ? (
@@ -596,19 +1011,28 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
               />
             </div>
           )}
-          <div className="min-h-0 flex-1 overflow-hidden p-4">
-            <OperatorPanel
-              isClipReel={props.isClipReel}
-              draftOverlay={props.draftOverlay}
-              draftStyle={props.draftStyle}
-              styleBusy={props.styleBusy}
-              variantBusy={props.variantBusy}
-              onOverlayChange={props.onOverlayChange}
-              onStyleChange={props.onStyleChange}
-              onCreateVariant={props.onCreateVariant}
-              clips={props.clips}
-              reasoningEntries={props.reasoningEntries}
-            />
+          <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="p-4 pb-6">
+              <OperatorPanel
+                key={props.candidate.id}
+                isClipReel={props.isClipReel}
+                draftOverlay={props.draftOverlay}
+                draftOverlayEndSec={props.draftOverlayEndSec}
+                draftTimedCues={props.draftTimedCues}
+                draftStyle={props.draftStyle}
+                styleBusy={props.styleBusy}
+                variantBusy={props.variantBusy}
+                currentTimeSec={currentTimeSec}
+                durationSec={props.durationSec}
+                onOverlayChange={props.onOverlayChange}
+                onOverlayEndSecChange={props.onOverlayEndSecChange}
+                onTimedCuesChange={props.onTimedCuesChange}
+                onStyleChange={props.onStyleChange}
+                onCreateVariant={props.onCreateVariant}
+                clips={props.clips}
+                reasoningEntries={props.reasoningEntries}
+              />
+            </div>
           </div>
         </aside>
       </div>
@@ -617,9 +1041,10 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
 }
 
 function CompactLayout(props: ReelProductionWorkspaceProps) {
-  const [styleOpen, setStyleOpen] = useState(false);
+  const [renderedTimeSec, setRenderedTimeSec] = useState<number | null>(null);
   const laneTag = resolveLaneTag(props.candidate);
   const assetCount = props.media?.files?.length ?? props.clipCount;
+  const hasRenderedPreview = Boolean(props.previewUrl);
 
   return (
     <section className="shrink-0 border-b border-[var(--border)] bg-[var(--bg)]">
@@ -663,6 +1088,15 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
             previewUrl={props.previewUrl}
             posterUrl={props.posterUrl}
             isRenderActive={props.isRenderActive}
+            videoRef={props.videoRef}
+            onRegisterActivateStream={props.onRegisterActivateStream}
+            draftOverlay={props.draftOverlay}
+            draftOverlayEndSec={props.draftOverlayEndSec}
+            draftTimedCues={props.draftTimedCues}
+            draftStyle={props.draftStyle}
+            overlayFallbacks={props.overlayFallbacks}
+            draftDiffersFromRendered={props.draftDiffersFromRendered}
+            onCurrentTimeChange={setRenderedTimeSec}
           />
         ) : props.media ? (
           <SourceAssetsGrid
@@ -683,33 +1117,105 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
 
       {props.isClipReel ? (
         <div className="border-t border-[var(--border)]">
-          <div className="px-4 pt-3 pb-3 lg:px-6">
-            <details
-              open={styleOpen}
-              onToggle={(e) => setStyleOpen((e.target as HTMLDetailsElement).open)}
-              className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2"
-            >
-              <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                Text style
-              </summary>
-              <div className="mt-3 space-y-3">
-                <label className="block text-xs">
-                  <span className="text-[var(--muted)]">Overlay line(s)</span>
-                  <textarea
-                    value={props.draftOverlay}
+          <div className="scrollbar-thin max-h-[min(50vh,28rem)] space-y-3 overflow-y-auto px-4 pt-3 pb-3 lg:px-6">
+            {hasRenderedPreview && (
+              <CollapsibleSection
+                title="Timed text"
+                badge={
+                  props.draftTimedCues.length > 0
+                    ? `${props.draftTimedCues.length} cue${props.draftTimedCues.length === 1 ? '' : 's'}`
+                    : undefined
+                }
+                defaultOpen={
+                  props.draftTimedCues.length > 0 || props.draftOverlayEndSec != null
+                }
+                headerAction={
+                  <button
+                    type="button"
+                    disabled={
+                      props.styleBusy ||
+                      props.draftTimedCues.length >= REEL_TIMED_OVERLAY_MAX_CUES
+                    }
+                    onClick={(e) => {
+                      e.preventDefault();
+                      const start = Math.max(0, renderedTimeSec ?? 0);
+                      const end =
+                        props.durationSec != null
+                          ? Math.min(props.durationSec, start + 2)
+                          : start + 2;
+                      props.onTimedCuesChange([
+                        ...props.draftTimedCues,
+                        {
+                          start_sec: +start.toFixed(1),
+                          end_sec: +Math.max(start + 0.5, end).toFixed(1),
+                          text: '',
+                        },
+                      ]);
+                    }}
+                    className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+                  >
+                    Add cue
+                  </button>
+                }
+              >
+                <TimedOverlayCueEditor
+                  cues={props.draftTimedCues}
+                  currentTimeSec={renderedTimeSec}
+                  durationSec={props.durationSec}
+                  overlayEndSec={props.draftOverlayEndSec}
+                  disabled={props.styleBusy}
+                  onChange={props.onTimedCuesChange}
+                />
+              </CollapsibleSection>
+            )}
+            <CollapsibleSection title="Static overlay text" defaultOpen>
+              <textarea
+                value={props.draftOverlay}
+                disabled={props.styleBusy}
+                onChange={(e) => props.onOverlayChange(e.target.value)}
+                rows={3}
+                className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-sm text-[var(--text)] disabled:opacity-50"
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1 text-[10px] text-[var(--muted)]">
+                  End at (s)
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.1}
                     disabled={props.styleBusy}
-                    onChange={(e) => props.onOverlayChange(e.target.value)}
-                    rows={3}
-                    className="mt-1 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-sm text-[var(--text)] disabled:opacity-50"
+                    value={
+                      props.draftOverlayEndSec != null
+                        ? formatSecInput(props.draftOverlayEndSec)
+                        : ''
+                    }
+                    placeholder="—"
+                    onChange={(e) => {
+                      const raw = e.target.value.trim();
+                      props.onOverlayEndSecChange(raw === '' ? null : Number(raw) || null);
+                    }}
+                    className="w-20 rounded border border-[var(--border)] bg-[var(--surface)] px-1.5 py-1 text-xs tabular-nums text-[var(--text)] disabled:opacity-50"
                   />
                 </label>
-                <ReelTextStyleFields
-                  style={props.draftStyle}
-                  onChange={props.onStyleChange}
-                  disabled={props.styleBusy}
-                />
+                <button
+                  type="button"
+                  disabled={props.styleBusy || renderedTimeSec == null}
+                  onClick={() =>
+                    props.onOverlayEndSecChange(+(renderedTimeSec ?? 0).toFixed(1))
+                  }
+                  className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--muted)] hover:text-[var(--text)] disabled:opacity-50"
+                >
+                  Use playhead
+                </button>
               </div>
-            </details>
+            </CollapsibleSection>
+            <CollapsibleSection title="Text style" defaultOpen={false}>
+              <ReelTextStyleFields
+                style={props.draftStyle}
+                onChange={props.onStyleChange}
+                disabled={props.styleBusy}
+              />
+            </CollapsibleSection>
           </div>
           <div className="sticky bottom-0 z-10 border-t border-[var(--border)] bg-[var(--bg)]">
             <ReelProductionBar
@@ -718,6 +1224,7 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
               renderDisabled={props.renderDisabled}
               renderLabel={props.renderLabel}
               renderIsReRender={props.renderIsReRender}
+              draftDiffersFromRendered={props.draftDiffersFromRendered}
               onRender={props.onRender}
               compact
             />
@@ -731,6 +1238,7 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
             renderDisabled={props.renderDisabled}
             renderLabel={props.renderLabel}
             renderIsReRender={props.renderIsReRender}
+            draftDiffersFromRendered={props.draftDiffersFromRendered}
             onRender={props.onRender}
             compact
           />

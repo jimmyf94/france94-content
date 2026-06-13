@@ -5,9 +5,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DEFAULT_REEL_RENDER_TEXT_STYLE,
   formatReelOverlayText,
+  normalizeOverlayEndSec,
+  normalizeTimedOverlayCues,
+  parseOverlayEndSec,
   parseReelOverlayDraft,
+  parseTimedOverlayCues,
+  reelOverlayDraftDiffersFromRenderedSpec,
   resolveReelTextStyle,
   type ReelRenderTextStyle,
+  type ReelTimedOverlayCue,
 } from '@fr94/reel-text-style';
 
 import { readJsonResponse } from '@/lib/read-json-response';
@@ -39,6 +45,8 @@ type ReelSpecDto = {
     why?: string;
   }>;
   overlay_lines?: string[];
+  overlay_end_sec?: number | null;
+  timed_overlay_cues?: ReelTimedOverlayCue[];
   text_style?: Partial<ReelRenderTextStyle>;
   total_duration_sec?: number;
 };
@@ -117,6 +125,8 @@ export function ProductionJobCard({
   );
   const [draftStyle, setDraftStyle] = useState<ReelRenderTextStyle>(DEFAULT_REEL_RENDER_TEXT_STYLE);
   const [draftOverlay, setDraftOverlay] = useState('');
+  const [draftOverlayEndSec, setDraftOverlayEndSec] = useState<number | null>(null);
+  const [draftTimedCues, setDraftTimedCues] = useState<ReelTimedOverlayCue[]>([]);
 
   const reelSpec = useMemo(
     () => parseReelSpec(candidate.reel_instructions) ?? parseReelSpec(job?.reel_specification),
@@ -260,11 +270,15 @@ export function ProductionJobCard({
     const specStyle = reelSpec?.text_style ?? null;
     setDraftStyle(resolveReelTextStyle(specStyle, workspaceDefaults));
     setDraftOverlay(formatReelOverlayText(reelSpec?.overlay_lines, overlayFallbacks));
+    setDraftOverlayEndSec(parseOverlayEndSec(reelSpec?.overlay_end_sec));
+    setDraftTimedCues(parseTimedOverlayCues(reelSpec?.timed_overlay_cues));
   }, [
     candidate.id,
     isClipReel,
     overlayFallbacks,
+    reelSpec?.overlay_end_sec,
     reelSpec?.overlay_lines,
+    reelSpec?.timed_overlay_cues,
     reelSpec?.text_style,
     workspaceDefaults,
   ]);
@@ -304,7 +318,7 @@ export function ProductionJobCard({
 
   const saveStyle = useCallback(
     async (reRender: boolean) => {
-      if (!onCandidateUpdated || styleBusy) return;
+      if (styleBusy) return;
       setStyleBusy(true);
       setError(null);
       try {
@@ -315,6 +329,10 @@ export function ProductionJobCard({
           body: JSON.stringify({
             reel_instructions: {
               overlay_lines: parseReelOverlayDraft(draftOverlay),
+              overlay_end_sec: normalizeOverlayEndSec(draftOverlayEndSec, durationSec ?? 120),
+              timed_overlay_cues: normalizeTimedOverlayCues(draftTimedCues, {
+                maxDurationSec: durationSec ?? 120,
+              }),
               text_style: draftStyle,
             },
             ...(reRender ? { re_render: true } : {}),
@@ -324,13 +342,9 @@ export function ProductionJobCard({
         if (!res.ok || !json.candidate) {
           throw new Error(json.error || res.statusText);
         }
-        onCandidateUpdated(json.candidate);
+        onCandidateUpdated?.(json.candidate);
         if (reRender) {
-          try {
-            await triggerRender();
-          } catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-          }
+          await triggerRender();
         } else {
           void load();
         }
@@ -340,13 +354,20 @@ export function ProductionJobCard({
         setStyleBusy(false);
       }
     },
-    [candidate.id, draftOverlay, draftStyle, load, onCandidateUpdated, styleBusy, triggerRender],
+    [candidate.id, draftOverlay, draftOverlayEndSec, draftTimedCues, draftStyle, durationSec, load, onCandidateUpdated, styleBusy, triggerRender],
   );
 
   const startRenderNow = useCallback(async () => {
     if (renderBusy || job?.status === 'rendering' || styleBusy) return;
-    if (isClipReel && onCandidateUpdated) {
-      void saveStyle(true);
+    if (isClipReel) {
+      setRenderBusy(true);
+      try {
+        await saveStyle(true);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setRenderBusy(false);
+      }
       return;
     }
     setRenderBusy(true);
@@ -361,7 +382,6 @@ export function ProductionJobCard({
   }, [
     isClipReel,
     job?.status,
-    onCandidateUpdated,
     renderBusy,
     saveStyle,
     styleBusy,
@@ -395,6 +415,34 @@ export function ProductionJobCard({
   const renderDisabled = renderBusy || styleBusy || job?.status === 'rendering';
   const renderLabel =
     styleBusy ? 'Saving…' : renderBusy ? 'Starting…' : renderButtonLabel(job?.status);
+
+  const renderedSpec = useMemo(
+    () => parseReelSpec(job?.reel_specification),
+    [job?.reel_specification],
+  );
+
+  const draftDiffersFromRendered = useMemo(() => {
+    if (!isClipReel || job?.status !== 'produced') return false;
+    return reelOverlayDraftDiffersFromRenderedSpec({
+      draftOverlay,
+      draftOverlayEndSec,
+      draftTimedCues,
+      draftStyle,
+      renderedSpec,
+      workspaceDefaults,
+      maxDurationSec: durationSec ?? 120,
+    });
+  }, [
+    draftOverlay,
+    draftOverlayEndSec,
+    draftStyle,
+    draftTimedCues,
+    durationSec,
+    isClipReel,
+    job?.status,
+    renderedSpec,
+    workspaceDefaults,
+  ]);
 
   return (
     <div className={layout === 'workspace' ? 'flex min-h-0 flex-1 flex-col' : undefined}>
@@ -434,16 +482,22 @@ export function ProductionJobCard({
       reasoningEntries={reasoningEntries}
       isClipReel={isClipReel}
       draftOverlay={draftOverlay}
+      draftOverlayEndSec={draftOverlayEndSec}
+      draftTimedCues={draftTimedCues}
       draftStyle={draftStyle}
+      overlayFallbacks={overlayFallbacks}
       styleBusy={styleBusy}
       variantBusy={variantBusy}
       onOverlayChange={setDraftOverlay}
+      onOverlayEndSecChange={setDraftOverlayEndSec}
+      onTimedCuesChange={setDraftTimedCues}
       onStyleChange={setDraftStyle}
       onCreateVariant={(kind) => void createVariant(kind)}
       media={media}
       videoRef={videoRef}
       onRegisterActivateStream={onRegisterActivateStream}
       onRemoveReviewAsset={onRemoveReviewAsset}
+      draftDiffersFromRendered={draftDiffersFromRendered}
     />
     </div>
   );

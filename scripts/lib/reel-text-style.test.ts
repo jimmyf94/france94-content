@@ -2,16 +2,25 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import {
+  activeTimedOverlayCueAtTime,
   DEFAULT_REEL_RENDER_TEXT_STYLE,
   drawtextColorValue,
   drawtextXExpression,
   drawtextYExpression,
   formatReelOverlayText,
   mergeHookWithOverlayLines,
+  normalizeOverlayEndSec,
   normalizeReelSpecOverlay,
+  normalizeTimedOverlayCues,
+  parseOverlayEndSec,
   parsePartialReelTextStyle,
   parseReelOverlayDraft,
+  parseTimedOverlayCues,
+  resolveClipsV1ProductionSpec,
+  resolveOverlayPreviewText,
+  reelOverlayDraftDiffersFromRenderedSpec,
   resolveReelTextStyle,
+  timedCueOverlapsOverlayEnd,
   wrapOverlayLine,
   wrapOverlayLinesForRender,
 } from './reel-text-style.js';
@@ -88,6 +97,13 @@ describe('parsePartialReelTextStyle', () => {
 
   test('returns null for empty object', () => {
     assert.equal(parsePartialReelTextStyle({}), null);
+  });
+
+  test('coerces numeric strings from JSONB', () => {
+    assert.deepEqual(parsePartialReelTextStyle({ fontsize: '48', outline_width: '6' }), {
+      fontsize: 48,
+      outline_width: 6,
+    });
   });
 });
 
@@ -174,6 +190,82 @@ describe('normalizeReelSpecOverlay', () => {
   });
 });
 
+describe('resolveClipsV1ProductionSpec', () => {
+  test('prefers candidate timed cues and text_style over stale job spec', () => {
+    const spec = resolveClipsV1ProductionSpec(
+      {
+        version: 'clips-v1',
+        clips: [{ clip_id: 'c1', asset_id: 'a1', start_sec: 0, end_sec: 2 }],
+        timed_overlay_cues: [{ start_sec: 1, end_sec: 2, text: 'new cue' }],
+        text_style: { fontsize: 52, font_color: '#ff0000' },
+      },
+      {
+        version: 'clips-v1',
+        clips: [{ clip_id: 'c1', asset_id: 'a1', start_sec: 0, end_sec: 2 }],
+        overlay_lines: ['old static only'],
+        text_style: { fontsize: 38, font_color: 'white' },
+      },
+    );
+    assert.equal(spec?.version, 'clips-v1');
+    assert.deepEqual(spec?.timed_overlay_cues, [{ start_sec: 1, end_sec: 2, text: 'new cue' }]);
+    assert.deepEqual(spec?.text_style, { fontsize: 52, font_color: '#ff0000' });
+  });
+
+  test('falls back to job clips when candidate has none', () => {
+    const spec = resolveClipsV1ProductionSpec(
+      {
+        version: 'clips-v1',
+        timed_overlay_cues: [{ start_sec: 0, end_sec: 1, text: 'cue' }],
+      },
+      {
+        version: 'clips-v1',
+        clips: [{ clip_id: 'c1', asset_id: 'a1', start_sec: 0, end_sec: 2 }],
+      },
+    );
+    assert.deepEqual(spec?.clips, [{ clip_id: 'c1', asset_id: 'a1', start_sec: 0, end_sec: 2 }]);
+  });
+});
+
+describe('reelOverlayDraftDiffersFromRenderedSpec', () => {
+  test('detects timed cue changes against produced spec', () => {
+    const style = resolveReelTextStyle({ fontsize: 40 });
+    const differs = reelOverlayDraftDiffersFromRenderedSpec({
+      draftOverlay: 'intro',
+      draftOverlayEndSec: 5,
+      draftTimedCues: [{ start_sec: 10, end_sec: 16, text: 'new cue' }],
+      draftStyle: style,
+      renderedSpec: {
+        overlay_lines: ['intro'],
+        overlay_end_sec: 5,
+        timed_overlay_cues: [{ start_sec: 5, end_sec: 10, text: 'old cue' }],
+        text_style: style,
+      },
+    });
+    assert.equal(differs, true);
+  });
+
+  test('returns false when draft matches produced spec', () => {
+    const style = resolveReelTextStyle({ fontsize: 40 });
+    const cues = [
+      { start_sec: 5, end_sec: 10, text: 'mid' },
+      { start_sec: 10, end_sec: 16, text: 'end' },
+    ];
+    const differs = reelOverlayDraftDiffersFromRenderedSpec({
+      draftOverlay: 'intro',
+      draftOverlayEndSec: 5,
+      draftTimedCues: cues,
+      draftStyle: style,
+      renderedSpec: {
+        overlay_lines: ['intro'],
+        overlay_end_sec: 5,
+        timed_overlay_cues: cues,
+        text_style: style,
+      },
+    });
+    assert.equal(differs, false);
+  });
+});
+
 describe('wrapOverlayLine', () => {
   test('wraps long POV lines for 1080px frame', () => {
     const long =
@@ -198,5 +290,130 @@ describe('wrapOverlayLinesForRender', () => {
       { fontsize: 38 },
     );
     assert.ok(out.includes('\n'));
+  });
+});
+
+describe('parseTimedOverlayCues', () => {
+  test('parses valid cue rows', () => {
+    assert.deepEqual(
+      parseTimedOverlayCues([
+        { start_sec: 0, end_sec: 2.5, text: 'hook line' },
+        { start_sec: 2.5, end_sec: 8, text: 'body line' },
+      ]),
+      [
+        { start_sec: 0, end_sec: 2.5, text: 'hook line' },
+        { start_sec: 2.5, end_sec: 8, text: 'body line' },
+      ],
+    );
+  });
+
+  test('drops invalid rows', () => {
+    assert.deepEqual(
+      parseTimedOverlayCues([
+        { start_sec: -1, end_sec: 2, text: 'bad' },
+        { start_sec: 1, end_sec: 1, text: 'zero duration' },
+        { start_sec: 2, end_sec: 5, text: '  ok  ' },
+      ]),
+      [{ start_sec: 2, end_sec: 5, text: 'ok' }],
+    );
+  });
+});
+
+describe('normalizeTimedOverlayCues', () => {
+  test('sorts and clamps to max duration', () => {
+    assert.deepEqual(
+      normalizeTimedOverlayCues(
+        [
+          { start_sec: 5, end_sec: 10, text: 'second' },
+          { start_sec: 0, end_sec: 3, text: 'first' },
+        ],
+        { maxDurationSec: 8 },
+      ),
+      [
+        { start_sec: 0, end_sec: 3, text: 'first' },
+        { start_sec: 5, end_sec: 8, text: 'second' },
+      ],
+    );
+  });
+});
+
+describe('activeTimedOverlayCueAtTime', () => {
+  test('returns cue for half-open interval', () => {
+    const cues = [
+      { start_sec: 0, end_sec: 2, text: 'a' },
+      { start_sec: 2, end_sec: 5, text: 'b' },
+    ];
+    assert.equal(activeTimedOverlayCueAtTime(cues, 0)?.text, 'a');
+    assert.equal(activeTimedOverlayCueAtTime(cues, 1.9)?.text, 'a');
+    assert.equal(activeTimedOverlayCueAtTime(cues, 2)?.text, 'b');
+    assert.equal(activeTimedOverlayCueAtTime(cues, 5), null);
+  });
+});
+
+describe('parseOverlayEndSec', () => {
+  test('parses positive numbers and rejects invalid', () => {
+    assert.equal(parseOverlayEndSec(3.2), 3.2);
+    assert.equal(parseOverlayEndSec(null), null);
+    assert.equal(parseOverlayEndSec(0), null);
+  });
+});
+
+describe('normalizeOverlayEndSec', () => {
+  test('clamps to max duration', () => {
+    assert.equal(normalizeOverlayEndSec(15, 10), 10);
+    assert.equal(normalizeOverlayEndSec(null, 10), null);
+  });
+});
+
+describe('resolveOverlayPreviewText', () => {
+  test('prefers active cue over static overlay', () => {
+    const result = resolveOverlayPreviewText({
+      overlayLines: ['hook'],
+      overlayEndSec: 5,
+      timedCues: [{ start_sec: 2, end_sec: 4, text: 'cue text' }],
+      timeSec: 3,
+    });
+    assert.deepEqual(result, { text: 'cue text', source: 'cue' });
+  });
+
+  test('shows static overlay before end when handoff is set', () => {
+    const result = resolveOverlayPreviewText({
+      overlayLines: ['hook'],
+      overlayEndSec: 3,
+      timedCues: [{ start_sec: 3, end_sec: 6, text: 'later' }],
+      timeSec: 1,
+    });
+    assert.deepEqual(result, { text: 'hook', source: 'static' });
+  });
+
+  test('hides static when timed cues exist without overlay end', () => {
+    const result = resolveOverlayPreviewText({
+      overlayLines: ['hook'],
+      timedCues: [{ start_sec: 0, end_sec: 2, text: 'cue' }],
+      timeSec: 2.5,
+    });
+    assert.deepEqual(result, { text: null, source: null });
+  });
+
+  test('shows static for whole reel when no cues', () => {
+    const result = resolveOverlayPreviewText({
+      overlayLines: ['hook'],
+      timedCues: [],
+      timeSec: 8,
+    });
+    assert.deepEqual(result, { text: 'hook', source: 'static' });
+  });
+});
+
+describe('timedCueOverlapsOverlayEnd', () => {
+  test('detects overlap before overlay end', () => {
+    assert.equal(
+      timedCueOverlapsOverlayEnd([{ start_sec: 1, end_sec: 4, text: 'x' }], 3),
+      true,
+    );
+    assert.equal(
+      timedCueOverlapsOverlayEnd([{ start_sec: 3, end_sec: 5, text: 'x' }], 3),
+      false,
+    );
   });
 });

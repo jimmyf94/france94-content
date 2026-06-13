@@ -93,6 +93,140 @@ describe('renderReel multi-segment overlay', () => {
     }
   });
 
+  test('renders two clips with timed overlay cues', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fr94-reel-test-'));
+    try {
+      const srcPath = path.join(dir, 'src.mp4');
+      createTinyMp4(srcPath, 2);
+      const buffer = fs.readFileSync(srcPath);
+      const assetId = 'asset-test-3';
+
+      const result = await renderReel({
+        sourceVideos: [buffer],
+        sourceAssetIds: [assetId],
+        instructions: {
+          version: 'clips-v1',
+          clips: [
+            { asset_id: assetId, start_sec: 0, end_sec: 0.8, clip_id: 'c1' },
+            { asset_id: assetId, start_sec: 1, end_sec: 1.8, clip_id: 'c2' },
+          ],
+          timed_overlay_cues: [
+            { start_sec: 0, end_sec: 0.5, text: 'first cue' },
+            { start_sec: 0.9, end_sec: 1.5, text: 'second cue' },
+          ],
+          text_style: {
+            font_color: '#ffffff',
+            outline_color: '#000000',
+          },
+        },
+      });
+
+      assert.ok(result.mp4.length > 0);
+      assert.equal(result.log.segments, 2);
+      assert.equal(result.log.timed_overlay_cues, 2);
+      assert.equal(result.log.overlay_lines, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('renders static overlay handoff with timed cues', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fr94-reel-test-'));
+    try {
+      const srcPath = path.join(dir, 'src.mp4');
+      createTinyMp4(srcPath, 2);
+      const buffer = fs.readFileSync(srcPath);
+      const assetId = 'asset-test-4';
+
+      const result = await renderReel({
+        sourceVideos: [buffer],
+        sourceAssetIds: [assetId],
+        instructions: {
+          version: 'clips-v1',
+          clips: [
+            { asset_id: assetId, start_sec: 0, end_sec: 0.8, clip_id: 'c1' },
+            { asset_id: assetId, start_sec: 1, end_sec: 1.8, clip_id: 'c2' },
+          ],
+          overlay_lines: ['intro hook'],
+          overlay_end_sec: 0.6,
+          timed_overlay_cues: [
+            { start_sec: 0.7, end_sec: 1.4, text: 'second beat' },
+          ],
+          text_style: {
+            font_color: '#ffffff',
+            outline_color: '#000000',
+          },
+        },
+      });
+
+      assert.ok(result.mp4.length > 0);
+      assert.equal(result.log.overlay_lines, 1);
+      assert.equal(result.log.overlay_end_sec, 0.6);
+      assert.equal(result.log.timed_overlay_cues, 1);
+      assert.equal(result.log.static_overlay_mode, 'windowed_intro');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('logs static 0..5 handoff and timed cues 5..16 on one reel', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fr94-reel-test-'));
+    try {
+      const srcPath = path.join(dir, 'src.mp4');
+      createTinyMp4(srcPath, 20);
+      const buffer = fs.readFileSync(srcPath);
+      const assetId = 'asset-test-5';
+
+      const result = await renderReel({
+        sourceVideos: [buffer],
+        sourceAssetIds: [assetId],
+        instructions: {
+          version: 'clips-v1',
+          clips: [{ asset_id: assetId, start_sec: 0, end_sec: 16, clip_id: 'c1' }],
+          overlay_lines: ['intro static'],
+          overlay_end_sec: 5,
+          timed_overlay_cues: [
+            { start_sec: 5, end_sec: 10, text: 'mid cue' },
+            { start_sec: 10, end_sec: 16, text: 'end cue' },
+          ],
+          text_style: {
+            fontsize: 44,
+            font_color: '#ffffff',
+            outline_color: '#000000',
+          },
+        },
+      });
+
+      assert.ok(result.mp4.length > 0);
+      assert.equal(result.log.static_overlay_mode, 'windowed_intro');
+      assert.equal(result.log.timed_overlay_cues, 2);
+      assert.equal(result.log.overlay_end_sec, 5);
+
+      const segmentOverlays = result.log.segment_overlays as Array<{
+        static_window: { start_sec: number; end_sec: number } | null;
+        timed_cues: Array<{ start_sec: number; end_sec: number }>;
+      }>;
+      assert.ok(Array.isArray(segmentOverlays));
+      assert.equal(segmentOverlays.length, 1);
+      assert.deepEqual(segmentOverlays[0]!.static_window, { start_sec: 0, end_sec: 5 });
+      assert.deepEqual(
+        segmentOverlays[0]!.timed_cues.map((c) => ({
+          start_sec: c.start_sec,
+          end_sec: c.end_sec,
+        })),
+        [
+          { start_sec: 5, end_sec: 10 },
+          { start_sec: 10, end_sec: 16 },
+        ],
+      );
+
+      const style = result.log.text_style as { fontsize?: number };
+      assert.equal(style.fontsize, 44);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('renders single segment without overlay when overlay lines empty', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fr94-reel-test-'));
     try {

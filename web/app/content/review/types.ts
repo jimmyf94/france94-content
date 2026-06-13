@@ -127,7 +127,7 @@ export type StatusTab =
   | 'needs_review'
   | 'needs_rewrite'
   | 'approved'
-  | 'ready_to_publish'
+  | 'publishing'
   | 'rejected';
 
 export type DetailTab = 'caption' | 'structure' | 'transcript' | 'debug';
@@ -138,6 +138,6 @@ export const STATUS_TAB_LABEL: Record<StatusTab, string> = {
   needs_review: 'Needs review',
   needs_rewrite: 'Needs rewrite',
   approved: 'Approved',
-  ready_to_publish: 'Ready to publish',
+  publishing: 'Publishing',
   rejected: 'Rejected',
 };
