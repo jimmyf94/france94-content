@@ -184,6 +184,50 @@ function normalizeOverlayLineList(raw: unknown): string[] {
 }
 
 /**
+ * Merge hook into overlay_lines when the hook extends the first line (common LLM drift).
+ * Drops continuation lines already present in the hook so a two-line hook does not duplicate
+ * overlay_lines[1] when it was stored both inside hook and as a separate array entry.
+ */
+export function mergeHookWithOverlayLines(
+  overlayLines: string[] | null | undefined,
+  hook: string | null | undefined,
+): string[] {
+  const lines = normalizeOverlayLineList(overlayLines);
+  const hookTrim = hook?.trim() ?? '';
+  if (!hookTrim) {
+    return dedupeMultilineOverlayFirstLine(lines).slice(0, 3);
+  }
+  if (lines.length === 0) return [hookTrim].slice(0, 3);
+
+  const first = lines[0]!;
+  const hookLines = hookTrim.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  if (hookTrim.length > first.length && hookTrim.startsWith(first)) {
+    if (hookLines.length > 1) return hookLines.slice(0, 3);
+    const rest = lines.slice(1).filter((l) => {
+      const t = l.trim();
+      return t && !hookTrim.includes(t);
+    });
+    return [hookTrim, ...rest].slice(0, 3);
+  }
+
+  return dedupeMultilineOverlayFirstLine(lines).slice(0, 3);
+}
+
+/** Split overlay_lines[0] when it already contains embedded newlines and drop duplicate tails. */
+function dedupeMultilineOverlayFirstLine(lines: string[]): string[] {
+  if (lines.length === 0) return [];
+  const first = lines[0]!;
+  if (!first.includes('\n')) return lines;
+  const firstSplit = first.split('\n').map((l) => l.trim()).filter(Boolean);
+  const rest = lines.slice(1).filter((l) => {
+    const t = l.trim();
+    return t && !first.includes(t);
+  });
+  return [...firstSplit, ...rest];
+}
+
+/**
  * Text shown in review UI and written to FFmpeg (newline-separated overlay lines).
  * When hook extends the first overlay line (common LLM drift), prefer the full hook.
  */
@@ -191,16 +235,9 @@ export function formatReelOverlayText(
   overlayLines: string[] | null | undefined,
   fallbacks?: { titleOverlay?: string | null; hook?: string | null },
 ): string {
-  const lines = normalizeOverlayLineList(overlayLines);
-  const hook = fallbacks?.hook?.trim() ?? '';
-  if (lines.length > 0) {
-    const joined = lines.join('\n');
-    if (hook && hook.length > lines[0]!.length && hook.startsWith(lines[0]!)) {
-      return hook;
-    }
-    return joined;
-  }
-  return fallbacks?.titleOverlay?.trim() || hook || '';
+  const merged = mergeHookWithOverlayLines(overlayLines, fallbacks?.hook);
+  if (merged.length > 0) return merged.join('\n');
+  return fallbacks?.titleOverlay?.trim() || fallbacks?.hook?.trim() || '';
 }
 
 /** Split a textarea draft into overlay_lines for storage (max 3 lines). */
@@ -218,17 +255,12 @@ export function normalizeReelSpecOverlay(
   hook: string | null | undefined,
 ): Record<string, unknown> {
   if (spec.version !== 'clips-v1') return spec;
-  const hookTrim = hook?.trim() ?? '';
-  const lines = normalizeOverlayLineList(spec.overlay_lines);
-  if (!hookTrim) return spec;
-  if (lines.length === 0) {
-    return { ...spec, overlay_lines: [hookTrim] };
-  }
-  if (hookTrim.length > lines[0]!.length && hookTrim.startsWith(lines[0]!)) {
-    return {
-      ...spec,
-      overlay_lines: [hookTrim, ...lines.slice(1).filter((l) => l !== hookTrim)].slice(0, 3),
-    };
-  }
-  return spec;
+  const merged = mergeHookWithOverlayLines(
+    spec.overlay_lines as string[] | null | undefined,
+    hook,
+  );
+  const prev = normalizeOverlayLineList(spec.overlay_lines);
+  if (merged.length === prev.length && merged.every((l, i) => l === prev[i])) return spec;
+  if (merged.length === 0) return spec;
+  return { ...spec, overlay_lines: merged };
 }

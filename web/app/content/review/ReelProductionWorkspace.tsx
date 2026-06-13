@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { ReelRenderTextStyle } from '@fr94/reel-text-style';
 
@@ -247,18 +247,12 @@ function ReelProductionBar({
 function RenderedStage({
   previewUrl,
   posterUrl,
-  hookText,
   large,
-  candidate,
-  media,
   isRenderActive = false,
 }: {
   previewUrl: string | null;
   posterUrl: string | null;
-  hookText: string | null;
   large?: boolean;
-  candidate?: PostCandidate;
-  media?: CandidateMediaState;
   isRenderActive?: boolean;
 }) {
   const shellClass = large
@@ -267,12 +261,6 @@ function RenderedStage({
   const videoClass = large
     ? 'h-full max-h-full w-auto max-w-full rounded-xl border border-[var(--border)] bg-black object-contain shadow-lg'
     : 'max-h-80 w-full max-w-sm rounded-md border border-[var(--border)] bg-black';
-  const frameClass = large
-    ? 'flex h-full max-h-full w-auto max-w-full items-center justify-center overflow-hidden rounded-xl border border-[var(--border)] bg-black shadow-lg'
-    : 'w-full max-w-sm overflow-hidden rounded-md border border-[var(--border)] bg-black';
-
-  const firstSourceFile = media?.files?.[0] ?? null;
-  const showSourceFallback = !previewUrl && !posterUrl && firstSourceFile && candidate;
 
   return (
     <div className={shellClass}>
@@ -293,35 +281,6 @@ function RenderedStage({
             className={videoClass}
             style={large ? { aspectRatio: '9 / 16' } : undefined}
           />
-        ) : posterUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            key={posterUrl}
-            src={posterUrl}
-            alt="Reel thumbnail"
-            className={
-              large
-                ? 'h-full max-h-full w-auto max-w-full rounded-xl border border-[var(--border)] object-cover shadow-lg'
-                : 'max-h-48 w-full max-w-sm rounded-md border border-[var(--border)] object-cover'
-            }
-            style={large ? { aspectRatio: '9 / 16' } : undefined}
-          />
-        ) : showSourceFallback ? (
-          <div
-            className={`flex flex-col items-center gap-3 ${large ? 'h-full max-h-full' : 'w-full'}`}
-          >
-            <div
-              className={frameClass}
-              style={large ? { aspectRatio: '9 / 16', maxHeight: '100%' } : undefined}
-            >
-              <MainMediaPreview
-                file={firstSourceFile}
-                candidateId={candidate.id}
-                compact={!large}
-              />
-            </div>
-            <p className="text-xs text-[var(--muted)]">Source preview — not the final render</p>
-          </div>
         ) : isRenderActive ? (
           <div
             className={`flex flex-col items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--surface-2)] text-center ${
@@ -338,10 +297,7 @@ function RenderedStage({
             }`}
           >
             <p className="text-sm font-medium text-[var(--text)]">No render yet</p>
-            <p className="mt-1 text-xs text-[var(--muted)]">Use Render in the panel to create the final MP4</p>
-            {hookText && (
-              <p className="mt-4 max-w-xs text-sm leading-relaxed text-[var(--muted)]">{hookText}</p>
-            )}
+            <p className="mt-1 text-xs text-[var(--muted)]">Use Render to create the final MP4</p>
           </div>
         )}
       </div>
@@ -349,7 +305,16 @@ function RenderedStage({
   );
 }
 
-function SourceClipsPanel({
+function sourceGridColsClass(n: number): string {
+  if (n <= 1) return 'grid-cols-1';
+  if (n === 2) return 'grid-cols-2';
+  if (n === 3) return 'grid-cols-3';
+  if (n === 4) return 'grid-cols-2';
+  if (n <= 9) return 'grid-cols-3';
+  return 'grid-cols-4';
+}
+
+function SourceAssetsGrid({
   candidate,
   media,
   videoRef,
@@ -364,10 +329,11 @@ function SourceClipsPanel({
 }) {
   const { files, loading, error } = media;
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
-  const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
+  const canDetachSource =
+    (candidate.source_asset_ids?.length ?? 0) > 0 && Boolean(candidate.review_drive_folder_id);
 
   if (loading) {
-    return <p className="text-sm text-[var(--muted)]">Loading source clips…</p>;
+    return <p className="text-sm text-[var(--muted)]">Loading source assets…</p>;
   }
   if (error) {
     return <p className="text-sm text-[var(--bad)]">{error}</p>;
@@ -375,7 +341,7 @@ function SourceClipsPanel({
   if (files.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-8 text-sm text-[var(--muted)]">
-        <p>No media in review folder.</p>
+        <p>No source assets linked to this reel.</p>
         {candidate.review_drive_folder_url && (
           <a
             href={candidate.review_drive_folder_url}
@@ -391,11 +357,13 @@ function SourceClipsPanel({
   }
 
   return (
-    <div className="scrollbar-thin flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
+    <div
+      className={`grid h-full w-full auto-rows-fr gap-3 ${sourceGridColsClass(files.length)}`}
+    >
       {files.map((f, i) => (
         <div
           key={f.id}
-          className="relative flex min-h-[200px] shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-black/40 p-2"
+          className="relative flex min-h-0 min-w-0 items-center justify-center"
         >
           {onRemoveReviewAsset && canDetachSource && (
             <ReviewMediaTrashButton file={f} onRemove={onRemoveReviewAsset} />
@@ -404,8 +372,10 @@ function SourceClipsPanel({
             file={f}
             candidateId={candidate.id}
             videoRef={i === firstVideoIdx ? videoRef : undefined}
-            onRegisterActivateStream={i === firstVideoIdx ? onRegisterActivateStream : undefined}
-            compact={files.length > 1}
+            onRegisterActivateStream={
+              i === firstVideoIdx ? onRegisterActivateStream : undefined
+            }
+            compact
           />
         </div>
       ))}
@@ -517,9 +487,14 @@ function OperatorPanel({
 }
 
 function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
-  const [stageTab, setStageTab] = useState<StageTab>('rendered');
+  const hasRendered = Boolean(props.previewUrl);
+  const [stageTab, setStageTab] = useState<StageTab>('source');
   const laneTag = resolveLaneTag(props.candidate);
   const assetCount = props.media?.files?.length ?? props.clipCount;
+
+  useEffect(() => {
+    setStageTab('source');
+  }, [props.candidate.id]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--bg)]">
@@ -527,17 +502,6 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
         <div className="flex min-h-0 flex-col border-r border-[var(--border)]">
           <div className="relative flex shrink-0 items-center justify-center border-b border-[var(--border)] bg-[var(--surface)] px-4">
             <div className="flex min-w-0">
-              <button
-                type="button"
-                onClick={() => setStageTab('rendered')}
-                className={`border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-                  stageTab === 'rendered'
-                    ? 'border-[var(--accent)] text-[var(--text)]'
-                    : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
-                }`}
-              >
-                Rendered
-              </button>
               <button
                 type="button"
                 onClick={() => setStageTab('source')}
@@ -549,6 +513,22 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
               >
                 Source clips
               </button>
+              <button
+                type="button"
+                onClick={() => setStageTab('rendered')}
+                className={`border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                  stageTab === 'rendered'
+                    ? 'border-[var(--accent)] text-[var(--text)]'
+                    : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
+                } ${!hasRendered && stageTab !== 'rendered' ? 'opacity-70' : ''}`}
+              >
+                Rendered
+                {hasRendered ? null : (
+                  <span className="ml-1.5 text-[10px] font-normal text-[var(--muted)]">
+                    (empty)
+                  </span>
+                )}
+              </button>
             </div>
             <div className="absolute right-4 top-1/2 -translate-y-1/2">
               <ReelPreviewStats
@@ -559,18 +539,18 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
               />
             </div>
           </div>
-          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <div className="flex min-h-0 flex-1 flex-col p-4 lg:p-6">
             {stageTab === 'rendered' ? (
-              <RenderedStage
-                previewUrl={props.previewUrl}
-                posterUrl={props.posterUrl}
-                hookText={props.hookText}
-                large
-                candidate={props.candidate}
-                media={props.media}
-              />
+              <div className="flex min-h-0 flex-1 items-center justify-center">
+                <RenderedStage
+                  previewUrl={props.previewUrl}
+                  posterUrl={props.posterUrl}
+                  large
+                  isRenderActive={props.isRenderActive}
+                />
+              </div>
             ) : props.media ? (
-              <SourceClipsPanel
+              <SourceAssetsGrid
                 candidate={props.candidate}
                 media={props.media}
                 videoRef={props.videoRef}
@@ -578,7 +558,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                 onRemoveReviewAsset={props.onRemoveReviewAsset}
               />
             ) : (
-              <p className="text-sm text-[var(--muted)]">Source clips unavailable</p>
+              <p className="text-sm text-[var(--muted)]">Source assets unavailable</p>
             )}
           </div>
         </div>
@@ -678,14 +658,27 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
             jobUpdatedAt={props.job.updated_at}
           />
         )}
-        <RenderedStage
-          previewUrl={props.previewUrl}
-          posterUrl={props.posterUrl}
-          hookText={props.hookText}
-          candidate={props.candidate}
-          media={props.media}
-          isRenderActive={props.isRenderActive}
-        />
+        {props.previewUrl ? (
+          <RenderedStage
+            previewUrl={props.previewUrl}
+            posterUrl={props.posterUrl}
+            isRenderActive={props.isRenderActive}
+          />
+        ) : props.media ? (
+          <SourceAssetsGrid
+            candidate={props.candidate}
+            media={props.media}
+            videoRef={props.videoRef}
+            onRegisterActivateStream={props.onRegisterActivateStream}
+            onRemoveReviewAsset={props.onRemoveReviewAsset}
+          />
+        ) : (
+          <RenderedStage
+            previewUrl={null}
+            posterUrl={null}
+            isRenderActive={props.isRenderActive}
+          />
+        )}
       </div>
 
       {props.isClipReel ? (

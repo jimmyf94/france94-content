@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { isCandidateDriveFileAllowed, loadCandidateDriveAccess } from '@/lib/candidate-drive-file-access';
 import { getDriveClient } from '@/lib/google-drive-server';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import {
@@ -29,20 +30,9 @@ export async function GET(
   }
 
   const supabase = getSupabaseServiceRole();
-  const { data: row, error: dbErr } = await supabase
-    .from('post_candidates')
-    .select('review_drive_folder_id')
-    .eq('id', candidateId)
-    .maybeSingle();
-
-  if (dbErr) {
-    console.error('[drive-file poster]', dbErr);
-    return NextResponse.json({ error: dbErr.message }, { status: 500 });
-  }
-
-  const folderId = row?.review_drive_folder_id?.trim();
-  if (!folderId) {
-    return NextResponse.json({ error: 'Candidate has no review folder' }, { status: 400 });
+  const access = await loadCandidateDriveAccess(supabase, candidateId);
+  if (!access) {
+    return NextResponse.json({ error: 'Candidate not found' }, { status: 404 });
   }
 
   try {
@@ -55,8 +45,8 @@ export async function GET(
     });
 
     const parents = meta.data.parents ?? [];
-    if (!parents.includes(folderId)) {
-      return NextResponse.json({ error: 'File is not in candidate review folder' }, { status: 403 });
+    if (!isCandidateDriveFileAllowed(access, fileId, parents)) {
+      return NextResponse.json({ error: 'File is not an allowed candidate source' }, { status: 403 });
     }
 
     const mime = meta.data.mimeType ?? '';

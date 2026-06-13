@@ -292,8 +292,16 @@ export async function mediaPublish(igUserId: string, creationId: string): Promis
 
 /** Best-effort permalink for a published media id. */
 export async function getMediaPermalink(mediaId: string): Promise<string | null> {
-  const r = await igGet(`${mediaId}?fields=permalink`);
-  return typeof r.permalink === 'string' && r.permalink.trim() ? r.permalink.trim() : null;
+  const r = await igGet(
+    `${mediaId}?fields=permalink,shortcode,media_type,media_product_type`,
+  );
+  return buildInstagramPermalink({
+    permalink: typeof r.permalink === 'string' ? r.permalink : null,
+    shortcode: typeof r.shortcode === 'string' ? r.shortcode : null,
+    media_product_type:
+      typeof r.media_product_type === 'string' ? r.media_product_type : null,
+    media_type: typeof r.media_type === 'string' ? r.media_type : null,
+  });
 }
 
 export async function sleep(ms: number): Promise<void> {
@@ -364,6 +372,7 @@ export type InstagramMediaItem = {
   caption: string | null;
   media_type: string | null;
   media_product_type: string | null;
+  shortcode: string | null;
   permalink: string | null;
   timestamp: string | null;
   thumbnail_url: string | null;
@@ -453,6 +462,40 @@ function parseOptionalNumber(v: unknown): number | null {
   return null;
 }
 
+/** Extract Instagram shortcode from API field or permalink URL. */
+export function extractInstagramShortcode(
+  permalink: string | null | undefined,
+  shortcode?: string | null,
+): string | null {
+  const fromField = shortcode?.trim();
+  if (fromField) return fromField;
+  const url = permalink?.trim();
+  if (!url) return null;
+  const match = url.match(/instagram\.com\/(?:p|reels?|tv)\/([^/?#]+)/i);
+  return match?.[1] ?? null;
+}
+
+/** Canonical public URL for an IG media item (reels → /reels/{code}/, feed → /p/{code}/). */
+export function buildInstagramPermalink(item: {
+  permalink?: string | null;
+  shortcode?: string | null;
+  media_product_type?: string | null;
+  media_type?: string | null;
+}): string | null {
+  const product = (item.media_product_type ?? '').toUpperCase();
+  const media = (item.media_type ?? '').toUpperCase();
+  const code = extractInstagramShortcode(item.permalink, item.shortcode);
+  if (!code) return item.permalink?.trim() || null;
+
+  if (product === 'REELS' || media === 'REELS') {
+    return `https://www.instagram.com/reels/${code}/`;
+  }
+  if (product === 'STORY' || media === 'STORY') {
+    return item.permalink?.trim() || null;
+  }
+  return `https://www.instagram.com/p/${code}/`;
+}
+
 function parseMediaItem(raw: Record<string, unknown>): InstagramMediaItem {
   return {
     id: typeof raw.id === 'string' ? raw.id : String(raw.id ?? ''),
@@ -460,6 +503,7 @@ function parseMediaItem(raw: Record<string, unknown>): InstagramMediaItem {
     media_type: typeof raw.media_type === 'string' ? raw.media_type : null,
     media_product_type:
       typeof raw.media_product_type === 'string' ? raw.media_product_type : null,
+    shortcode: typeof raw.shortcode === 'string' ? raw.shortcode : null,
     permalink: typeof raw.permalink === 'string' ? raw.permalink : null,
     timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : null,
     thumbnail_url: typeof raw.thumbnail_url === 'string' ? raw.thumbnail_url : null,
@@ -474,7 +518,7 @@ export async function getUserMedia(opts?: { limit?: number }): Promise<Instagram
   const { igUserId } = requireInstagramEnv();
   const limit = Math.min(50, Math.max(1, opts?.limit ?? 25));
   const fields =
-    'id,caption,media_type,media_product_type,permalink,timestamp,thumbnail_url,media_url,like_count,comments_count';
+    'id,caption,media_type,media_product_type,shortcode,permalink,timestamp,thumbnail_url,media_url,like_count,comments_count';
   const raw = await igGet(`${igUserId}/media?fields=${fields}&limit=${limit}`);
   const data = raw.data;
   if (!Array.isArray(data)) return [];

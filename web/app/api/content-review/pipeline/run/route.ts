@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -15,35 +16,10 @@ const runBodySchema = z.object({
   stage: z.enum(['full', 'candidates_only']),
 });
 
-function resolveGhRepository(): string | null {
-  const explicit = process.env.GH_REPOSITORY?.trim();
-  if (explicit) return explicit;
-  const owner = process.env.VERCEL_GIT_REPO_OWNER?.trim();
-  const slug = process.env.VERCEL_GIT_REPO_SLUG?.trim();
-  if (owner && slug) return `${owner}/${slug}`;
-  return null;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const denied = assertReviewAuthorized(req);
     if (denied) return denied;
-
-    const token = process.env.GH_DISPATCH_TOKEN?.trim();
-    if (!token) {
-      return NextResponse.json(
-        { error: 'GH_DISPATCH_TOKEN is not configured (fine-scoped PAT with actions:write)' },
-        { status: 503 },
-      );
-    }
-
-    const repo = resolveGhRepository();
-    if (!repo) {
-      return NextResponse.json(
-        { error: 'GH_REPOSITORY is not configured (owner/repo)' },
-        { status: 503 },
-      );
-    }
 
     const json: unknown = await req.json().catch(() => null);
     const parsed = runBodySchema.safeParse(json);
@@ -51,31 +27,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
-    const ref = process.env.GH_DISPATCH_REF?.trim() || 'main';
-    const dispatchRes = await fetch(
-      `https://api.github.com/repos/${repo}/actions/workflows/auto-ingest.yml/dispatches`,
-      {
-        method: 'POST',
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-        body: JSON.stringify({
-          ref,
-          inputs: { stage: parsed.data.stage },
-        }),
-      },
-    );
-
-    if (!dispatchRes.ok) {
-      const body = await dispatchRes.text().catch(() => '');
-      console.error('[pipeline/run] GitHub dispatch failed', dispatchRes.status, body);
-      return NextResponse.json(
-        { error: `GitHub dispatch failed (${dispatchRes.status})` },
-        { status: 502 },
-      );
+    const dispatch = await dispatchGithubWorkflow('auto-ingest.yml', { stage: parsed.data.stage });
+    if (!dispatch.ok) {
+      return NextResponse.json({ error: dispatch.error }, { status: dispatch.status });
     }
 
     const supabase = getSupabaseServiceRole();

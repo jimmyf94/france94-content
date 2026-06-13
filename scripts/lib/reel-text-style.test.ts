@@ -6,6 +6,7 @@ import {
   drawtextXExpression,
   drawtextYExpression,
   formatReelOverlayText,
+  mergeHookWithOverlayLines,
   normalizeReelSpecOverlay,
   parsePartialReelTextStyle,
   parseReelOverlayDraft,
@@ -69,6 +70,47 @@ describe('parsePartialReelTextStyle', () => {
 
   test('returns null for empty object', () => {
     assert.equal(parsePartialReelTextStyle({}), null);
+  });
+});
+
+describe('mergeHookWithOverlayLines', () => {
+  test('uses hook lines when hook is multiline and extends first overlay line', () => {
+    const hook =
+      "pov : tu t'es dit que traverser la France\nen 94 triathlons était une bonne idée";
+    assert.deepEqual(
+      mergeHookWithOverlayLines(
+        ['pov : tu t\'es dit que traverser la France', 'en 94 triathlons était une bonne idée'],
+        hook,
+      ),
+      [
+        "pov : tu t'es dit que traverser la France",
+        'en 94 triathlons était une bonne idée',
+      ],
+    );
+  });
+
+  test('drops continuation line already contained in single-line hook', () => {
+    const hook =
+      "pov : tu t'es dit que traverser la France en 94 triathlons était une bonne idée";
+    assert.deepEqual(
+      mergeHookWithOverlayLines(
+        ['pov : tu t\'es dit que traverser la France', 'en 94 triathlons était une bonne idée'],
+        hook,
+      ),
+      [hook],
+    );
+  });
+
+  test('dedupes when overlay_lines[0] already embeds newlines', () => {
+    const embedded =
+      "pov : tu t'es dit que traverser la France\nen 94 triathlons était une bonne idée";
+    assert.deepEqual(
+      mergeHookWithOverlayLines([embedded, 'en 94 triathlons était une bonne idée'], null),
+      [
+        "pov : tu t'es dit que traverser la France",
+        'en 94 triathlons était une bonne idée',
+      ],
+    );
   });
 });
 

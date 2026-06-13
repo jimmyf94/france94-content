@@ -22,6 +22,7 @@ import {
 import { loadReelRenderDefaults } from './reel-render-defaults.js';
 import {
   DEFAULT_REEL_RENDER_TEXT_STYLE,
+  mergeHookWithOverlayLines,
   parsePartialReelTextStyle,
   resolveReelTextStyle,
   type ReelRenderTextStyle,
@@ -467,17 +468,12 @@ export async function assembleReelFromClips(params: {
   }
 
   const hook = out.hook.trim();
-  const overlayLines = out.overlay_lines.map((l) => l.trim()).filter(Boolean);
-  if (overlayLines.length === 0) {
-    overlayLines.push(hook);
-  } else if (hook.length > overlayLines[0]!.length && hook.startsWith(overlayLines[0]!)) {
-    overlayLines[0] = hook;
-  }
+  const overlayLines = mergeHookWithOverlayLines(out.overlay_lines, hook).slice(0, 2);
 
   const spec: ReelSpecification = {
     version: 'clips-v1',
     clips: validated.clips,
-    overlay_lines: overlayLines.slice(0, 2),
+    overlay_lines: overlayLines,
     keep_audio: true,
     text_style: workspaceTextStyle,
     total_duration_sec: validated.totalSec,

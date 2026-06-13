@@ -10,12 +10,15 @@ import {
 
 import { PublishingCalendarCard } from './PublishingCalendarCard';
 import { PublishingQueueRow } from './PublishingQueueRow';
+import { postedItemsForDay } from './publishingPostedFeed';
 import {
   formatScheduledTime,
   groupScheduledByDay,
   scheduledItemsForDay,
   splitPublishingQueueItems,
 } from './publishingQueueSplit';
+import { RecentlyPostedColumn } from './RecentlyPostedColumn';
+import { useFeedbackPosts } from './useFeedbackPosts';
 import { usePublishingScheduleQueue } from './usePublishingScheduleQueue';
 
 function sameDay(a: Date, b: Date): boolean {
@@ -42,6 +45,13 @@ export function PublishingCalendarView() {
     unstagePublish,
     publishNow,
   } = usePublishingScheduleQueue();
+
+  const {
+    posts: postedPosts,
+    loading: postedLoading,
+    error: postedError,
+    load: loadPosted,
+  } = useFeedbackPosts(50);
 
   const { scheduled, unscheduled } = useMemo(
     () => splitPublishingQueueItems(items),
@@ -154,8 +164,34 @@ export function PublishingCalendarView() {
           {error}
         </p>
       )}
+      {postedError && !error && (
+        <p className="shrink-0 border-b border-[var(--border)] px-5 py-2 text-xs text-[var(--bad)]">
+          {postedError}
+        </p>
+      )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(260px,300px)_minmax(0,1fr)_minmax(280px,360px)]">
+        {/* Desktop recently posted column */}
+        <aside className="hidden min-h-0 flex-col border-b border-[var(--border)] bg-[var(--surface)] lg:flex lg:border-r lg:border-b-0">
+          <RecentlyPostedColumn
+            posts={postedPosts}
+            loading={postedLoading}
+            error={postedError}
+            onRefresh={() => void loadPosted()}
+          />
+        </aside>
+
+        {/* Mobile recently posted */}
+        <section className="flex max-h-64 min-h-0 flex-col border-b border-[var(--border)] bg-[var(--surface)] lg:hidden">
+          <RecentlyPostedColumn
+            posts={postedPosts}
+            loading={postedLoading}
+            error={postedError}
+            onRefresh={() => void loadPosted()}
+            compact
+          />
+        </section>
+
         {/* Desktop month calendar */}
         <section className="hidden min-h-0 flex-col border-b border-[var(--border)] lg:flex lg:border-r lg:border-b-0">
           <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-5 py-3">
@@ -186,6 +222,7 @@ export function PublishingCalendarView() {
                 }
 
                 const dayItems = scheduledItemsForDay(scheduled, day);
+                const dayPosted = postedItemsForDay(postedPosts, day);
                 const isToday = sameDay(day, today);
                 const inMonth = day.getMonth() === viewMonth;
 
@@ -206,12 +243,53 @@ export function PublishingCalendarView() {
                       >
                         {day.getDate()}
                       </span>
-                      {dayItems.length > 0 && (
-                        <span className="text-[10px] tabular-nums text-[var(--muted)]">
-                          {dayItems.length}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {dayPosted.length > 0 && (
+                          <span
+                            className="text-[10px] tabular-nums text-[var(--good)]"
+                            title={`${dayPosted.length} posted`}
+                          >
+                            {dayPosted.length} posted
+                          </span>
+                        )}
+                        {dayItems.length > 0 && (
+                          <span
+                            className="text-[10px] tabular-nums text-[var(--muted)]"
+                            title={`${dayItems.length} scheduled`}
+                          >
+                            {dayItems.length} sched
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    {dayPosted.length > 0 && (
+                      <div className="mb-1.5 flex flex-wrap gap-0.5">
+                        {dayPosted.slice(0, 3).map((post) =>
+                          post.thumbnailUrl ? (
+                            <a
+                              key={post.id}
+                              href={post.permalink ?? undefined}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="h-5 w-5 overflow-hidden rounded border border-[var(--border)]"
+                              title={`Posted: ${post.postTypeLabel}`}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={post.thumbnailUrl}
+                                alt=""
+                                className="h-full w-full object-cover"
+                              />
+                            </a>
+                          ) : null,
+                        )}
+                        {dayPosted.length > 3 && (
+                          <span className="flex h-5 w-5 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface-2)] text-[8px] text-[var(--muted)]">
+                            +{dayPosted.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       {dayItems.map((item) => (
                         <PublishingCalendarCard

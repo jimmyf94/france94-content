@@ -2,60 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import {
+  formatAvgWatchTime,
+  formatFeedbackDate,
+  formatFeedbackNumber,
+  getFeedbackThumbnailBadge,
+} from '@/lib/feedback-format';
+import type { FeedbackPostRow, FeedbackResponse } from '@/lib/feedback-types';
 import { readJsonResponse } from '@/lib/read-json-response';
-
-type FeedbackPostRow = {
-  id: string;
-  postedAt: string | null;
-  thumbnailUrl: string | null;
-  mediaType: string | null;
-  mediaProductType: string | null;
-  postTypeLabel: string;
-  permalink: string | null;
-  likeCount: number | null;
-  commentsCount: number | null;
-  views: number | null;
-  shares: number | null;
-  avgWatchTimeMs: number | null;
-};
-
-type FeedbackResponse = {
-  posts?: FeedbackPostRow[];
-  insightsAvailable?: boolean;
-  insightsPermissionDenied?: boolean;
-  error?: string;
-};
-
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-function formatNumber(n: number | null): string {
-  if (n == null) return '—';
-  return n.toLocaleString();
-}
-
-function formatAvgWatchTime(ms: number | null): string {
-  if (ms == null) return '—';
-  const sec = ms / 1000;
-  if (sec < 60) return `${sec.toFixed(1)}s`;
-  const min = Math.floor(sec / 60);
-  const rem = Math.round(sec % 60);
-  return `${min}m ${rem}s`;
-}
-
-function isVideoType(row: FeedbackPostRow): boolean {
-  const product = (row.mediaProductType ?? '').toUpperCase();
-  const media = (row.mediaType ?? '').toUpperCase();
-  return product === 'REELS' || media === 'VIDEO' || media === 'CAROUSEL_ALBUM';
-}
 
 export function FeedbackTable() {
   const [posts, setPosts] = useState<FeedbackPostRow[]>([]);
@@ -166,7 +120,9 @@ export function FeedbackTable() {
                 </tr>
               </thead>
               <tbody>
-                {posts.map((row) => (
+                {posts.map((row) => {
+                  const badge = getFeedbackThumbnailBadge(row);
+                  return (
                   <tr key={row.id} className="border-b border-[var(--border)]">
                     <td className="h-12 w-20 p-1">
                       {row.thumbnailUrl ? (
@@ -183,9 +139,9 @@ export function FeedbackTable() {
                             alt=""
                             className="h-12 w-20 object-cover"
                           />
-                          {isVideoType(row) ? (
+                          {badge ? (
                             <span className="absolute bottom-0.5 right-0.5 rounded bg-black/70 px-1 text-[9px] text-white">
-                              {row.postTypeLabel === 'Reel' ? 'Reel' : 'Video'}
+                              {badge}
                             </span>
                           ) : null}
                         </a>
@@ -196,20 +152,20 @@ export function FeedbackTable() {
                       )}
                     </td>
                     <td className="whitespace-nowrap p-2 text-[var(--text)]">
-                      {formatDate(row.postedAt)}
+                      {formatFeedbackDate(row.postedAt)}
                     </td>
                     <td className="p-2 text-[var(--muted)]">{row.postTypeLabel}</td>
                     <td className="p-2 tabular-nums text-[var(--text)]">
-                      {formatNumber(row.views)}
+                      {formatFeedbackNumber(row.views)}
                     </td>
                     <td className="p-2 tabular-nums text-[var(--text)]">
-                      {formatNumber(row.shares)}
+                      {formatFeedbackNumber(row.shares)}
                     </td>
                     <td className="p-2 tabular-nums text-[var(--text)]">
-                      {formatNumber(row.likeCount)}
+                      {formatFeedbackNumber(row.likeCount)}
                     </td>
                     <td className="p-2 tabular-nums text-[var(--text)]">
-                      {formatNumber(row.commentsCount)}
+                      {formatFeedbackNumber(row.commentsCount)}
                     </td>
                     <td className="p-2 tabular-nums text-[var(--text)]">
                       {formatAvgWatchTime(row.avgWatchTimeMs)}
@@ -229,7 +185,8 @@ export function FeedbackTable() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

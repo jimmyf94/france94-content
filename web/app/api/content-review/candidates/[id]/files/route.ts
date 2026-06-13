@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { enrichReviewDriveFiles } from '@/lib/enrich-review-drive-files';
 import { getDriveClient } from '@/lib/google-drive-server';
+import { listCandidateSourceReviewFiles } from '@/lib/list-candidate-source-files';
 import { listReviewFolderFiles, mapDriveFileToReviewDto } from '@/lib/list-review-folder';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { warmReviewVideoPosters } from '@/lib/review-video-poster-cache';
@@ -21,7 +22,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const supabase = getSupabaseServiceRole();
   const { data: row, error: dbErr } = await supabase
     .from('post_candidates')
-    .select('id, review_drive_folder_id')
+    .select(
+      'id, review_drive_folder_id, source_asset_ids, source_drive_file_ids, reel_instructions',
+    )
     .eq('id', id)
     .maybeSingle();
 
@@ -35,19 +38,22 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   }
 
   const folderId = row.review_drive_folder_id?.trim();
-  if (!folderId) {
-    return NextResponse.json({
-      files: [],
-      warning: 'No review_drive_folder_id for this candidate.',
-    });
-  }
 
   try {
     const drive = await getDriveClient();
-    const files = await listReviewFolderFiles(drive, folderId);
-    const mapped = files.map(mapDriveFileToReviewDto);
+    let mapped: Awaited<ReturnType<typeof mapDriveFileToReviewDto>>[];
+
+    if (folderId) {
+      const files = await listReviewFolderFiles(drive, folderId);
+      mapped = files.map(mapDriveFileToReviewDto);
+    } else {
+      mapped = await listCandidateSourceReviewFiles(supabase, drive, row);
+    }
+
     const enriched = await enrichReviewDriveFiles(drive, mapped, id);
-    warmReviewVideoPosters(drive, enriched, id, folderId);
+    if (folderId) {
+      warmReviewVideoPosters(drive, enriched, id, folderId);
+    }
     return NextResponse.json({ files: enriched });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

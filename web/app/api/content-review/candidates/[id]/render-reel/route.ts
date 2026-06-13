@@ -1,18 +1,12 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-
 import { NextRequest, NextResponse } from 'next/server';
 
 import { normalizeReelSpecOverlay } from '@fr94/reel-text-style';
 
+import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
-
-function repoRootFromWebCwd(): string {
-  return path.resolve(process.cwd(), '..');
-}
 
 function isRenderableReel(candidate: {
   post_type?: string | null;
@@ -34,21 +28,6 @@ function isRenderableReel(candidate: {
     ? candidate.source_asset_ids.filter((id) => typeof id === 'string' && id.trim())
     : [];
   return sa.length > 0;
-}
-
-function spawnRenderWorker(candidateId: string): Promise<void> {
-  const repoRoot = repoRootFromWebCwd();
-  return new Promise((resolve, reject) => {
-    const child = spawn('npm', ['run', 'render:reels', '--', `--candidate-id=${candidateId}`], {
-      cwd: repoRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: process.env,
-    });
-    child.on('error', reject);
-    child.unref();
-    resolve();
-  });
 }
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -131,12 +110,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     console.warn('[render-reel] clear candidate thumbnail', thumbClearErr.message);
   }
 
-  try {
-    await spawnRenderWorker(id);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[render-reel] spawn', e);
-    return NextResponse.json({ error: `Could not start render worker: ${msg}` }, { status: 500 });
+  const dispatch = await dispatchGithubWorkflow('render-reels.yml');
+  if (!dispatch.ok) {
+    console.warn('[render-reel] dispatch failed', dispatch.error);
   }
 
   const { data: job, error: jobErr } = await supabase
@@ -153,7 +129,10 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
   return NextResponse.json({
     ok: true,
-    message: 'Render started',
+    message: dispatch.ok
+      ? 'Render started'
+      : 'Render queued; scheduled worker will pick it up within ~10 minutes',
+    dispatched: dispatch.ok,
     candidate_id: id,
     job,
   });

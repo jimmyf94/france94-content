@@ -379,9 +379,8 @@ export function ProductionJobCard({
   const downloadUrl = previewUrl
     ? `/api/content-review/production-jobs/by-candidate/${encodeURIComponent(candidate.id)}/download?filename=${encodeURIComponent(reelDownloadFilename(candidate))}`
     : null;
-  const rawPoster = !isRenderActive
-    ? job?.thumbnail_url ?? candidate.cover_thumbnail_url ?? null
-    : null;
+  const rawPoster =
+    previewUrl && job?.status === 'produced' ? job.thumbnail_url ?? null : null;
   const posterUrl = rawPoster ? withCacheBust(rawPoster, job?.updated_at) : null;
 
   const reasoningEntries: Array<[string, string]> = [

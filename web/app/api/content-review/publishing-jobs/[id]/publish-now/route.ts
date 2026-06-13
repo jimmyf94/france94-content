@@ -1,10 +1,8 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-
 import { NextRequest, NextResponse } from 'next/server';
 
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 
+import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -18,10 +16,6 @@ const PUBLISH_NOW_STATUSES = new Set([
   'ready_to_publish',
   'scheduled',
 ]);
-
-function repoRootFromWebCwd(): string {
-  return path.resolve(process.cwd(), '..');
-}
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = assertReviewAuthorized(_req);
@@ -67,22 +61,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  const repoRoot = repoRootFromWebCwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'publish-scheduled-jobs.ts');
-  const tsxPath = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
-
-  try {
-    const child = spawn(tsxPath, [scriptPath, `--job-id=${id}`], {
-      cwd: repoRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: process.env,
-    });
-    child.unref();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[publish now] spawn', e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+  const dispatch = await dispatchGithubWorkflow('publish-scheduled.yml');
+  if (!dispatch.ok) {
+    console.warn('[publish now] dispatch failed', dispatch.error);
   }
 
   const { data: updated, error: uErr } = await supabase
@@ -96,7 +77,10 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
   return NextResponse.json({
     ok: true,
-    message: 'Publish pipeline started',
+    message: dispatch.ok
+      ? 'Publish pipeline started'
+      : 'Publish scheduled; worker will pick it up within ~5 minutes',
+    dispatched: dispatch.ok,
     job: updated,
   });
 }

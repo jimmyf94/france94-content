@@ -1,28 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import {
+  buildInstagramPermalink,
   getMediaInsights,
   getUserMedia,
   probeInsightsPermission,
   type InstagramMediaItem,
 } from '@fr94/publishing/instagram-graph';
 
+import type { FeedbackPostRow } from '@/lib/feedback-types';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 
-export type FeedbackPostRow = {
-  id: string;
-  postedAt: string | null;
-  thumbnailUrl: string | null;
-  mediaType: string | null;
-  mediaProductType: string | null;
-  postTypeLabel: string;
-  permalink: string | null;
-  likeCount: number | null;
-  commentsCount: number | null;
-  views: number | null;
-  shares: number | null;
-  avgWatchTimeMs: number | null;
-};
+export type { FeedbackPostRow };
 
 function formatPostTypeLabel(item: InstagramMediaItem): string {
   const product = (item.media_product_type ?? '').toUpperCase();
@@ -83,7 +72,12 @@ export async function GET(req: NextRequest) {
           mediaType: item.media_type,
           mediaProductType: item.media_product_type,
           postTypeLabel: formatPostTypeLabel(item),
-          permalink: item.permalink,
+          permalink: buildInstagramPermalink({
+            permalink: item.permalink,
+            shortcode: item.shortcode,
+            media_product_type: item.media_product_type,
+            media_type: item.media_type,
+          }),
           likeCount: item.like_count,
           commentsCount: item.comments_count,
           views: insights.views,

@@ -1,20 +1,14 @@
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-
 import { NextRequest, NextResponse } from 'next/server';
 
 import { isStageableCandidateStatus } from '@fr94/publishing/staging-gates';
 
+import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
 
 const STAGEABLE_JOB_STATUSES = ['draft', 'failed'];
-
-function repoRootFromWebCwd(): string {
-  return path.resolve(process.cwd(), '..');
-}
 
 function canPreparePublishing(
   candidateStatus: string,
@@ -92,22 +86,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: gate.error }, { status: gate.status });
   }
 
-  const repoRoot = repoRootFromWebCwd();
-  const scriptPath = path.join(repoRoot, 'scripts', 'prepare-publishing-jobs.ts');
-  const tsxPath = path.join(repoRoot, 'node_modules', '.bin', 'tsx');
-
-  try {
-    const child = spawn(tsxPath, [scriptPath, `--candidate-id=${id}`, '--validate-only'], {
-      cwd: repoRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: process.env,
-    });
-    child.unref();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[prepare-publishing] spawn', e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+  const dispatch = await dispatchGithubWorkflow('prepare-publishing.yml', { candidate_id: id });
+  if (!dispatch.ok) {
+    return NextResponse.json({ error: dispatch.error }, { status: dispatch.status });
   }
 
   return NextResponse.json({

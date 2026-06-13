@@ -90,7 +90,8 @@ function MediaGrid({
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
 }) {
   const firstVideoIdx = files.findIndex((f) => f.mimeType.startsWith('video/'));
-  const canDetachSource = (candidate.source_asset_ids?.length ?? 0) > 0;
+  const canDetachSource =
+    (candidate.source_asset_ids?.length ?? 0) > 0 && Boolean(candidate.review_drive_folder_id);
   return (
     <div
       className={`grid h-full w-full auto-rows-fr gap-3 ${gridColsClass(files.length)}`}

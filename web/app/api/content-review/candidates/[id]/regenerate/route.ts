@@ -11,6 +11,7 @@ import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 const CANDIDATE_COLUMNS_FOR_LOAD = [
   'id',
