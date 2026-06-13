@@ -14,7 +14,10 @@ const nextConfig: NextConfig = {
   // Allow file tracing to reach repo-root `scripts/prompts/` (outside `web/`).
   outputFileTracingRoot: repoRoot,
   outputFileTracingIncludes: {
-    'app/api/content-review/**': ['../scripts/prompts/**/*.txt'],
+    'app/api/content-review/**': [
+      '../scripts/prompts/**/*.txt',
+      '../prompts/**/*.md',
+    ],
   },
   serverExternalPackages: ['googleapis', 'undici'],
   // Shared `scripts/lib/ai` uses NodeNext-style `.js` import specifiers; map them to `.ts` sources.
