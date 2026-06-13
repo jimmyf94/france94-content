@@ -13,6 +13,7 @@ export function ActiveCandidateWorkspace({
   onRegisterActivateStream,
   onRemoveReviewAsset,
   onCarouselAssetsAdded,
+  onReorderCarouselSlides,
   onCandidateUpdated,
   onVariantCreated,
   onDecide,
@@ -31,6 +32,7 @@ export function ActiveCandidateWorkspace({
   onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onCarouselAssetsAdded?: (c: PostCandidate) => void;
+  onReorderCarouselSlides?: (orderedAssetIds: string[]) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onVariantCreated?: (c: PostCandidate) => void;
   onDecide?: (s: DecisionStatus) => void;
@@ -87,6 +89,7 @@ export function ActiveCandidateWorkspace({
           onRegisterActivateStream={onRegisterActivateStream}
           onRemoveReviewAsset={onRemoveReviewAsset}
           onCarouselAssetsAdded={onCarouselAssetsAdded}
+          onReorderCarouselSlides={onReorderCarouselSlides}
         />
       )}
     </div>

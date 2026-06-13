@@ -24,6 +24,7 @@ export function QuickCaptionEdit({
   onCandidateUpdated?: (c: PostCandidate) => void;
 }) {
   const [fr, setFr] = useState(candidate.caption_fr ?? '');
+  const [en, setEn] = useState(candidate.caption_en ?? '');
   const [tagsRaw, setTagsRaw] = useState(() =>
     (candidate.hashtags ?? [])
       .map((h) => (String(h).startsWith('#') ? String(h).slice(1) : String(h)))
@@ -34,13 +35,14 @@ export function QuickCaptionEdit({
 
   useEffect(() => {
     setFr(candidate.caption_fr ?? '');
+    setEn(candidate.caption_en ?? '');
     setTagsRaw(
       (candidate.hashtags ?? [])
         .map((h) => (String(h).startsWith('#') ? String(h).slice(1) : String(h)))
         .join('\n'),
     );
     setError(null);
-  }, [candidate.id, candidate.caption_fr, candidate.hashtags]);
+  }, [candidate.id, candidate.caption_fr, candidate.caption_en, candidate.hashtags]);
 
   const savedTagsStr = useMemo(
     () =>
@@ -50,7 +52,10 @@ export function QuickCaptionEdit({
     [candidate.hashtags],
   );
 
-  const dirty = fr !== (candidate.caption_fr ?? '') || tagsRaw !== savedTagsStr;
+  const dirty =
+    fr !== (candidate.caption_fr ?? '') ||
+    en !== (candidate.caption_en ?? '') ||
+    tagsRaw !== savedTagsStr;
 
   const save = async () => {
     if (!onCandidateUpdated) return;
@@ -64,6 +69,7 @@ export function QuickCaptionEdit({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           caption_fr: fr.trim() === '' ? null : fr,
+          caption_en: en.trim() === '' ? null : en,
           hashtags: hashtags.length === 0 ? null : hashtags,
         }),
       });
@@ -79,15 +85,25 @@ export function QuickCaptionEdit({
 
   return (
     <section className="cockpit-card space-y-2 p-3">
-      <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-        Caption
-      </h3>
       {error && <p className="text-xs text-[var(--bad)]">{error}</p>}
+      <label className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+        Caption FR
+      </label>
       <textarea
         value={fr}
         onChange={(e) => setFr(e.target.value)}
-        placeholder="Caption FR…"
-        rows={6}
+        placeholder="Caption (French)…"
+        rows={5}
+        className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2.5 text-sm leading-relaxed placeholder:text-[var(--muted)]"
+      />
+      <label className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+        Caption EN
+      </label>
+      <textarea
+        value={en}
+        onChange={(e) => setEn(e.target.value)}
+        placeholder="Caption (English)…"
+        rows={5}
         className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg)] p-2.5 text-sm leading-relaxed placeholder:text-[var(--muted)]"
       />
       <label className="block text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">

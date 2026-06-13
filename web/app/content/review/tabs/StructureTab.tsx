@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { readJsonResponse } from '@/lib/read-json-response';
+import { buildCarouselPublishOrderRows } from '@/lib/carousel-publish-order-display';
 
-import type { PostCandidate } from '../types';
+import type { PostCandidate, ReviewDriveFile } from '../types';
 
 type StructureRow = { time: string; instruction: string };
 
@@ -274,28 +275,58 @@ function StoryFrames({ frames }: { frames: unknown[] }) {
   );
 }
 
-function CarouselView({ slides }: { slides: unknown[] }) {
+function CarouselView({
+  candidate,
+  mediaFiles,
+}: {
+  candidate: PostCandidate;
+  mediaFiles?: ReviewDriveFile[];
+}) {
+  const rows = buildCarouselPublishOrderRows({
+    source_asset_ids: candidate.source_asset_ids,
+    carousel_slides: candidate.carousel_slides,
+    mediaFiles,
+  });
+
+  const notes = rows.filter((r) => r.headline || r.body);
+
   return (
-    <ol className="space-y-2">
-      {slides.map((raw, i) => {
-        const s = (raw ?? {}) as Record<string, unknown>;
-        const headline = typeof s.headline === 'string' ? s.headline : '';
-        const body = typeof s.body === 'string' ? s.body : '';
-        const hasAsset = s.asset_id != null;
-        return (
-          <li key={i} className="rounded border border-[var(--border)] p-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--accent)]">
-              Slide {i + 1}
-              {hasAsset && (
-                <span className="ml-2 font-normal text-[var(--muted)]">· Asset #{i + 1}</span>
-              )}
-            </div>
-            {headline && <p className="mt-1 font-medium">{headline}</p>}
-            {body && <p className="mt-1 whitespace-pre-wrap">{body}</p>}
+    <div className="space-y-3 text-sm">
+      <p className="text-[var(--muted)]">
+        Order matters. Caption is one per carousel. Slide notes are not posted to Instagram.
+      </p>
+      <ol className="space-y-1">
+        {rows.map((row) => (
+          <li
+            key={row.assetId}
+            className="flex items-start gap-2 rounded border border-[var(--border)] px-2 py-1.5 text-xs"
+          >
+            <span className="shrink-0 pt-0.5 font-semibold tabular-nums text-[var(--accent)]">
+              {row.slide}
+            </span>
+            <span className="min-w-0 break-all text-[var(--text)]">{row.label}</span>
           </li>
-        );
-      })}
-    </ol>
+        ))}
+      </ol>
+      {notes.length > 0 && (
+        <details className="rounded border border-[var(--border)] p-2">
+          <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Internal notes ({notes.length})
+          </summary>
+          <ul className="mt-2 space-y-2">
+            {notes.map((row) => (
+              <li key={row.assetId} className="rounded border border-[var(--border)] p-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--accent)]">
+                  Slide {row.slide} · {row.label}
+                </p>
+                {row.headline && <p className="mt-1 font-medium">{row.headline}</p>}
+                {row.body && <p className="mt-1 whitespace-pre-wrap text-[var(--muted)]">{row.body}</p>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -404,9 +435,11 @@ function ClipsV1ReelSummary({ candidate }: { candidate: PostCandidate }) {
 
 export function StructureTab({
   candidate,
+  mediaFiles,
   onCandidateUpdated,
 }: {
   candidate: PostCandidate;
+  mediaFiles?: ReviewDriveFile[];
   onCandidateUpdated?: (c: PostCandidate) => void;
 }) {
   const t = candidate.post_type;
@@ -431,8 +464,8 @@ export function StructureTab({
   }
   if (t === 'carousel' && Array.isArray(candidate.carousel_slides)) {
     return (
-      <SectionWrap title="Carousel slides">
-        <CarouselView slides={candidate.carousel_slides} />
+      <SectionWrap title="Carousel publish order">
+        <CarouselView candidate={candidate} mediaFiles={mediaFiles} />
       </SectionWrap>
     );
   }

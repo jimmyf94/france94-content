@@ -82,6 +82,21 @@ function listRowToFallbackPostCandidate(row: CandidateListItem): PostCandidate {
   };
 }
 
+/** Keep JSONB detail fields when merging list row refreshes into loaded detail. */
+function mergeSelectedCandidate(row: CandidateListItem, detail: PostCandidate): PostCandidate {
+  return {
+    ...listRowToFallbackPostCandidate(row),
+    ...detail,
+    ...row,
+    story_frames: detail.story_frames,
+    reel_instructions: detail.reel_instructions,
+    carousel_slides: detail.carousel_slides,
+    static_post_instructions: detail.static_post_instructions,
+    llm_raw: detail.llm_raw,
+    previous_versions: detail.previous_versions,
+  };
+}
+
 export function ReviewDashboard() {
   const sp = useSearchParams();
 
@@ -227,7 +242,7 @@ export function ReviewDashboard() {
           if (!prev) return prev;
           const row = list.find((r) => r.id === prev.id);
           if (!row) return null;
-          return { ...prev, ...row } as PostCandidate;
+          return mergeSelectedCandidate(row, prev);
         });
         setPublishingQueueNonce((n) => n + 1);
       } catch (e) {
@@ -427,7 +442,7 @@ export function ReviewDashboard() {
     const row = candidates.find((c) => c.id === selectedId);
     if (!row) return null;
     if (selectedDetail?.id === selectedId) {
-      return { ...selectedDetail, ...row };
+      return mergeSelectedCandidate(row, selectedDetail);
     }
     return listRowToFallbackPostCandidate(row);
   }, [candidates, selectedId, selectedDetail]);
@@ -514,6 +529,42 @@ export function ReviewDashboard() {
       setToast({ kind: 'good', msg: 'Added slide(s) from library' });
     },
     [handleCandidateUpdated],
+  );
+
+  const handleReorderCarouselSlides = useCallback(
+    (orderedAssetIds: string[]) => {
+      if (!selected) return;
+      const cid = selected.id;
+      void (async () => {
+        try {
+          const res = await fetch(`/api/content-review/candidates/${cid}`, {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              carousel_slides: orderedAssetIds.map((asset_id, i) => ({
+                slide: i + 1,
+                asset_id,
+              })),
+            }),
+          });
+          const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+          if (!res.ok) throw new Error(json.error || res.statusText);
+          invalidateCandidateMediaCache(cid);
+          setMediaReloadNonce((n) => n + 1);
+          if (json.candidate) {
+            handleCandidateUpdated(json.candidate);
+          }
+          setToast({ kind: 'good', msg: 'Carousel order updated' });
+        } catch (e) {
+          setToast({
+            kind: 'bad',
+            msg: e instanceof Error ? e.message : 'Reorder failed',
+          });
+        }
+      })();
+    },
+    [selected, handleCandidateUpdated],
   );
 
   const decide = useCallback(
@@ -882,6 +933,7 @@ export function ReviewDashboard() {
           onRegisterActivateStream={registerActivatePrimaryVideo}
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onCarouselAssetsAdded={handleCarouselAssetsAdded}
+          onReorderCarouselSlides={handleReorderCarouselSlides}
           onCandidateUpdated={handleCandidateUpdated}
           onVariantCreated={handleVariantCreated}
           onDecide={decide}
@@ -903,6 +955,7 @@ export function ReviewDashboard() {
         />
         <CandidateDecisionPanel
           candidate={selected}
+          mediaFiles={selectedMedia.files}
           notes={selected ? (draftNotes[selected.id] ?? '') : ''}
           savedNotes={selected?.reviewer_notes ?? ''}
           onChangeNotes={setNotes}

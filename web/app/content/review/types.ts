@@ -119,6 +119,8 @@ export type ReviewDriveFile = {
   size: string | null;
   createdTime: string | null;
   modifiedTime: string | null;
+  /** Resolved from source_asset_ids when listing carousel review media. */
+  sourceAssetId?: string | null;
 };
 
 export type StatusTab =

@@ -4,7 +4,7 @@ import { RewriteChips } from './decision/RewriteChips';
 import { PublishingPrepCard } from './PublishingPrepCard';
 import { QuickCaptionEdit } from './QuickCaptionEdit';
 import { CandidateTabs } from './tabs/CandidateTabs';
-import type { PostCandidate } from './types';
+import type { PostCandidate, ReviewDriveFile } from './types';
 
 function appendNote(notes: string, chip: string): string {
   return notes.trim() ? `${notes.trim()} · ${chip}` : chip;
@@ -80,6 +80,7 @@ function WarningBanner({ candidate }: { candidate: PostCandidate }) {
 
 export function CandidateDecisionPanel({
   candidate,
+  mediaFiles,
   notes,
   savedNotes,
   onChangeNotes,
@@ -92,6 +93,7 @@ export function CandidateDecisionPanel({
   onChangeTab,
 }: {
   candidate: PostCandidate | null;
+  mediaFiles?: ReviewDriveFile[];
   notes: string;
   savedNotes: string;
   onChangeNotes: (v: string) => void;
@@ -186,6 +188,7 @@ export function CandidateDecisionPanel({
 
       <CandidateTabs
         candidate={candidate}
+        mediaFiles={mediaFiles}
         active={activeTab}
         onChange={onChangeTab}
         onCandidateUpdated={onCandidateUpdated}

@@ -19,6 +19,7 @@ import { buildPublishingCaption } from '@fr94/publishing/caption';
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 import { normalizeReelSpecOverlay, resolveReelTextStyle } from '@fr94/reel-text-style';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
+import { reorderCandidateCarouselSlides } from '@/lib/reorder-candidate-carousel-slides';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -54,6 +55,13 @@ const reelInstructionsPatchSchema = z
     { message: 'Provide at least one reel_instructions field' },
   );
 
+const carouselSlidePatchRowSchema = z.object({
+  asset_id: z.string().uuid(),
+  slide: z.number().int().positive().optional(),
+  headline: z.string().optional(),
+  body: z.string().optional(),
+});
+
 const patchSchema = z
   .object({
     status: z.enum(['approved', 'rejected', 'needs_rewrite']).optional(),
@@ -63,6 +71,7 @@ const patchSchema = z
     caption_en: z.string().optional().nullable(),
     hashtags: z.array(z.string()).optional().nullable(),
     reel_instructions: reelInstructionsPatchSchema.optional(),
+    carousel_slides: z.array(carouselSlidePatchRowSchema).min(1).max(10).optional(),
     re_render: z.boolean().optional(),
   })
   .refine(
@@ -73,6 +82,7 @@ const patchSchema = z
       v.caption_en !== undefined ||
       v.hashtags !== undefined ||
       v.reel_instructions !== undefined ||
+      v.carousel_slides !== undefined ||
       v.re_render === true,
     { message: 'Provide at least one field to update' },
   );
@@ -156,6 +166,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     caption_en,
     hashtags,
     reel_instructions,
+    carousel_slides,
     re_render,
   } = parsed.data;
   const now = new Date().toISOString();
@@ -301,6 +312,39 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       ? (mergedReel.overlay_lines as string[])[0]?.trim()
       : '';
     if (overlay0) update.title_overlay = overlay0;
+  }
+
+  if (carousel_slides !== undefined) {
+    const { data: existingCarousel, error: carouselReadErr } = await supabase
+      .from('post_candidates')
+      .select('post_type, source_asset_ids, carousel_slides')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (carouselReadErr) {
+      console.error('[candidate patch] read carousel', carouselReadErr);
+      return NextResponse.json({ error: carouselReadErr.message }, { status: 500 });
+    }
+    if (!existingCarousel) {
+      return NextResponse.json({ error: 'Candidate not found' }, { status: 404 });
+    }
+    if ((existingCarousel as { post_type?: string }).post_type !== 'carousel') {
+      return NextResponse.json(
+        { error: 'Only carousel candidates support carousel_slides updates' },
+        { status: 400 },
+      );
+    }
+
+    const orderedAssetIds = carousel_slides.map((s) => s.asset_id);
+    const reorderResult = reorderCandidateCarouselSlides({
+      source_asset_ids: (existingCarousel as { source_asset_ids?: unknown }).source_asset_ids,
+      carousel_slides: (existingCarousel as { carousel_slides?: unknown }).carousel_slides,
+      orderedAssetIds,
+    });
+    if ('error' in reorderResult) {
+      return NextResponse.json({ error: reorderResult.error }, { status: 400 });
+    }
+    update.carousel_slides = reorderResult.carousel_slides;
   }
 
   const { data, error } = await supabase

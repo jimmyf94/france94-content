@@ -1,6 +1,6 @@
 'use client';
 
-import type { DetailTab, PostCandidate } from '../types';
+import type { DetailTab, PostCandidate, ReviewDriveFile } from '../types';
 
 import { CaptionTab } from './CaptionTab';
 import { DebugTab } from './DebugTab';
@@ -16,6 +16,7 @@ const ALL_TABS: { id: DetailTab; label: string }[] = [
 
 export function CandidateTabs({
   candidate,
+  mediaFiles,
   active,
   onChange,
   onCandidateUpdated,
@@ -23,6 +24,7 @@ export function CandidateTabs({
   hideCaption = false,
 }: {
   candidate: PostCandidate;
+  mediaFiles?: ReviewDriveFile[];
   active: DetailTab;
   onChange: (t: DetailTab) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
@@ -62,7 +64,11 @@ export function CandidateTabs({
           <CaptionTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
         )}
         {effectiveActive === 'structure' && (
-          <StructureTab candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
+          <StructureTab
+            candidate={candidate}
+            mediaFiles={mediaFiles}
+            onCandidateUpdated={onCandidateUpdated}
+          />
         )}
         {effectiveActive === 'transcript' && <TranscriptTab candidate={candidate} />}
         {effectiveActive === 'debug' && <DebugTab candidate={candidate} />}

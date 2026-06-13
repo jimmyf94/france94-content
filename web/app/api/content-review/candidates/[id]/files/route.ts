@@ -4,7 +4,9 @@ import { enrichReviewDriveFiles } from '@/lib/enrich-review-drive-files';
 import { getDriveClient } from '@/lib/google-drive-server';
 import { listCandidateSourceReviewFiles } from '@/lib/list-candidate-source-files';
 import { listReviewFolderFiles, mapDriveFileToReviewDto } from '@/lib/list-review-folder';
+import { orderCarouselReviewFiles } from '@/lib/order-carousel-review-files';
 import { assertReviewAuthorized } from '@/lib/review-auth';
+import type { AssetNameRow } from '@/lib/review-folder-asset-match';
 import { warmReviewVideoPosters } from '@/lib/review-video-poster-cache';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -23,7 +25,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const { data: row, error: dbErr } = await supabase
     .from('post_candidates')
     .select(
-      'id, review_drive_folder_id, source_asset_ids, source_drive_file_ids, reel_instructions',
+      'id, post_type, review_drive_folder_id, source_asset_ids, source_drive_file_ids, reel_instructions, carousel_slides',
     )
     .eq('id', id)
     .maybeSingle();
@@ -51,10 +53,33 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     }
 
     const enriched = await enrichReviewDriveFiles(drive, mapped, id);
-    if (folderId) {
-      warmReviewVideoPosters(drive, enriched, id, folderId);
+    let filesOut = enriched;
+
+    if ((row as { post_type?: string }).post_type === 'carousel' && folderId) {
+      const sourceAssetIds = Array.isArray(row.source_asset_ids)
+        ? row.source_asset_ids.filter((x): x is string => typeof x === 'string' && x.length > 0)
+        : [];
+      let assetRows: AssetNameRow[] = [];
+      if (sourceAssetIds.length > 0) {
+        const { data: assetData } = await supabase
+          .from('content_assets')
+          .select('id, final_filename, current_filename, original_filename')
+          .in('id', sourceAssetIds);
+        assetRows = (assetData ?? []) as AssetNameRow[];
+      }
+      filesOut = orderCarouselReviewFiles({
+        files: enriched,
+        source_asset_ids: row.source_asset_ids,
+        source_drive_file_ids: row.source_drive_file_ids,
+        carousel_slides: row.carousel_slides,
+        assetRows,
+      });
     }
-    return NextResponse.json({ files: enriched });
+
+    if (folderId) {
+      warmReviewVideoPosters(drive, filesOut, id, folderId);
+    }
+    return NextResponse.json({ files: filesOut });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[files drive]', msg);

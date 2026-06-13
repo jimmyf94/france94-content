@@ -170,6 +170,11 @@ export function CaptionTab({
 
   return (
     <div className="space-y-4 text-sm">
+      {candidate.post_type === 'carousel' && (
+        <p className="rounded border border-[var(--border)] bg-[var(--surface)]/40 px-3 py-2 text-xs text-[var(--muted)]">
+          This caption applies to the whole carousel post, not to individual slides.
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <CopyButton getText={() => allText} label="Copy all" />
       </div>

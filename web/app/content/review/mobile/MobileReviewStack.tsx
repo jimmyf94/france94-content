@@ -292,7 +292,11 @@ export function MobileReviewStack({
             </nav>
             <div className="scrollbar-thin flex-1 overflow-auto p-4">
               {sheetTab === 'structure' && (
-                <StructureTab candidate={selected} onCandidateUpdated={onCandidateUpdated} />
+                <StructureTab
+                  candidate={selected}
+                  mediaFiles={media.files}
+                  onCandidateUpdated={onCandidateUpdated}
+                />
               )}
               {sheetTab === 'transcript' && <TranscriptTab candidate={selected} />}
               {sheetTab === 'debug' && <DebugTab candidate={selected} />}
