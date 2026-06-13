@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { refreshCandidateAssetConflicts } from '@fr94/asset-usage';
 import { getDriveClient } from '@/lib/google-drive-server';
+import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import {
   resolveReviewFolderFileSourceIndex,
   type AssetNameRow,
@@ -179,7 +181,26 @@ export async function DELETE(
       return NextResponse.json({ error: 'Candidate not found after update' }, { status: 404 });
     }
 
-    return NextResponse.json({ candidate: updated });
+    if (removedAssetId) {
+      try {
+        await refreshCandidateAssetConflicts(supabase, candidateId);
+      } catch (e) {
+        console.error('[review-assets delete] refresh conflicts', e);
+      }
+    }
+
+    const { data: fresh, error: readBackErr } = await supabase
+      .from('post_candidates')
+      .select(POST_CANDIDATE_DETAIL_COLUMNS)
+      .eq('id', candidateId)
+      .maybeSingle();
+
+    if (readBackErr) {
+      console.error('[review-assets delete] read-back', readBackErr);
+      return NextResponse.json({ error: readBackErr.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ candidate: fresh ?? updated });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[review-assets delete]', msg);
