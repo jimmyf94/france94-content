@@ -11,7 +11,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { getDriveClient } from './ingest-drive-content.js';
 import { fetchDriveFileMedia, maxPublishingFileBytes } from './lib/drive-media-download.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
-import { renderReel } from './lib/production/render-reel.js';
+import { renderReel, resolveFfmpegBin } from './lib/production/render-reel.js';
 import { loadReelRenderDefaults } from './lib/reel-render-defaults.js';
 import {
   createRenderProgressPatch,
@@ -367,6 +367,14 @@ async function main(): Promise<void> {
     return;
   }
   console.log(`[render:reels]\tqueued jobs: ${list.length}`);
+
+  try {
+    const probe = resolveFfmpegBin(true);
+    console.log(`[render:reels]\tffmpeg drawtext: ${probe.bin} (available=${probe.drawtextAvailable})`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[render:reels]\tffmpeg drawtext probe failed: ${msg}`);
+  }
 
   const defaultTextStyle = await loadReelRenderDefaults(supabase);
   const drive = await getDriveClient();

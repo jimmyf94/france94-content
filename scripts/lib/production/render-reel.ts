@@ -1,10 +1,11 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import ffmpegPathDefault from 'ffmpeg-static';
 
 import {
+  drawtextColorValue,
   drawtextXExpression,
   drawtextYExpression,
   parsePartialReelTextStyle,
@@ -24,13 +25,58 @@ const TARGET_W = 1080;
 const TARGET_H = 1920;
 const AUDIO_RATE = 48000;
 
-function ffmpegBin(): string {
-  const p =
-    (typeof ffmpegPathDefault === 'string' ? ffmpegPathDefault : null) ??
-    process.env.FFMPEG_PATH ??
-    null;
-  if (!p) throw new Error('ffmpeg binary not found (ffmpeg-static).');
-  return p;
+const FFMPEG_STATIC_PATH =
+  typeof ffmpegPathDefault === 'string' ? ffmpegPathDefault : null;
+
+function ffmpegCandidatePaths(needsDrawtext: boolean): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [
+    process.env.FFMPEG_PATH,
+    '/usr/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+    ...(needsDrawtext ? [] : [FFMPEG_STATIC_PATH]),
+  ]) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+function hasDrawtextFilter(bin: string): boolean {
+  try {
+    if (!fs.existsSync(bin)) return false;
+    const result = spawnSync(bin, ['-h', 'filter=drawtext'], { encoding: 'utf8' });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    if (result.status !== 0) return false;
+    return /drawtext/i.test(output) && !/Unknown filter/i.test(output);
+  } catch {
+    return false;
+  }
+}
+
+function resolveFfmpegBin(needsDrawtext: boolean): { bin: string; drawtextAvailable: boolean } {
+  const candidates = ffmpegCandidatePaths(needsDrawtext);
+  if (needsDrawtext) {
+    for (const bin of candidates) {
+      if (hasDrawtextFilter(bin)) {
+        return { bin, drawtextAvailable: true };
+      }
+    }
+    throw new Error(
+      'Reel overlay text requires ffmpeg with the drawtext filter. ' +
+        'Install ffmpeg (e.g. brew install ffmpeg or apt install ffmpeg) and set FFMPEG_PATH, ' +
+        'or use a build compiled with libfreetype/libfontconfig.',
+    );
+  }
+
+  for (const bin of candidates) {
+    if (fs.existsSync(bin)) {
+      return { bin, drawtextAvailable: hasDrawtextFilter(bin) };
+    }
+  }
+  throw new Error('ffmpeg binary not found (ffmpeg-static).');
 }
 
 function pickFontFile(): string | null {
@@ -50,9 +96,9 @@ function pickFontFile(): string | null {
   return null;
 }
 
-async function runFfmpeg(args: string[], cwd?: string): Promise<string> {
+async function runFfmpeg(bin: string, args: string[], cwd?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegBin(), args, {
+    const child = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd,
     });
@@ -184,12 +230,12 @@ function overlayFilter(params: {
   const { style } = params;
   const border =
     style.outline_width > 0
-      ? `:borderw=${style.outline_width}:bordercolor=${style.outline_color}`
+      ? `:borderw=${style.outline_width}:bordercolor=${drawtextColorValue(style.outline_color)}`
       : '';
   return (
     `,drawtext=fontfile='${escapeDrawtextPath(params.font)}'` +
     `:textfile='${escapeDrawtextPath(params.textFileAbs)}':reload=1` +
-    `:fontsize=${style.fontsize}:fontcolor=${style.font_color}${border}` +
+    `:fontsize=${style.fontsize}:fontcolor=${drawtextColorValue(style.font_color)}${border}` +
     `:x=${drawtextXExpression(style.centered)}:y=${drawtextYExpression(style.position)}` +
     `:line_spacing=${style.line_spacing}${enable}`
   );
@@ -233,6 +279,8 @@ export async function renderReel(params: {
   }
 
   const font = pickFontFile();
+  const needsDrawtext = Boolean(font && (overlayLines.length > 0 || includeOutro));
+  const { bin: ffmpegPath, drawtextAvailable } = resolveFfmpegBin(needsDrawtext);
   const log: Record<string, unknown> = {
     target: `${TARGET_W}x${TARGET_H}`,
     segments: segments.length,
@@ -241,6 +289,8 @@ export async function renderReel(params: {
     include_outro: includeOutro,
     keep_audio: true,
     text_style: textStyle,
+    ffmpeg_path: ffmpegPath,
+    drawtext_available: drawtextAvailable,
   };
 
   return withTempDir('fr94-reel-', async (dir) => {
@@ -335,7 +385,7 @@ export async function renderReel(params: {
         segOut,
       );
 
-      const err = await runFfmpeg(args, dir);
+      const err = await runFfmpeg(ffmpegPath, args, dir);
       stderrTails.push(err.trim().slice(-400));
       segmentPaths.push(segOut);
       params.onProgress?.(progressForEncode(segmentPaths.length, segmentTotal));
@@ -354,6 +404,7 @@ export async function renderReel(params: {
 
     const bodyPath = path.join(dir, 'body.mp4');
     await runFfmpeg(
+      ffmpegPath,
       ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', bodyPath],
       dir,
     );
@@ -397,10 +448,11 @@ export async function renderReel(params: {
         ...AUDIO_ENC,
         outroPath,
       ];
-      await runFfmpeg(outroArgs, dir);
+      await runFfmpeg(ffmpegPath, outroArgs, dir);
 
       const withOutroPath = path.join(dir, 'with_outro.mp4');
       await runFfmpeg(
+        ffmpegPath,
         [
           '-y',
           '-loglevel',
@@ -435,6 +487,7 @@ export async function renderReel(params: {
 
     const outMp4 = path.join(dir, 'out_faststart.mp4');
     await runFfmpeg(
+      ffmpegPath,
       ['-y', '-loglevel', 'error', '-i', finalPath, '-c', 'copy', '-movflags', '+faststart', outMp4],
       dir,
     );
@@ -450,6 +503,7 @@ export async function renderReel(params: {
       params.onProgress?.(progressForStage('thumbnail'));
       const thumbPath = path.join(dir, 'thumb.jpg');
       await runFfmpeg(
+        ffmpegPath,
         ['-y', '-loglevel', 'error', '-ss', '0.5', '-i', outMp4, '-frames:v', '1', '-q:v', '3', thumbPath],
         dir,
       );
@@ -466,3 +520,5 @@ export async function renderReel(params: {
     };
   });
 }
+
+export { hasDrawtextFilter, resolveFfmpegBin };

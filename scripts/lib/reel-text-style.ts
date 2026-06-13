@@ -46,6 +46,21 @@ function parseColor(v: unknown, fallback: string): string {
   return s.length > 0 ? s : fallback;
 }
 
+/** Normalize a color for FFmpeg drawtext filter strings (#hex → 0xRRGGBB). */
+export function drawtextColorValue(color: string): string {
+  const s = color.trim();
+  const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(s);
+  if (!hexMatch) return s;
+  let hex = hexMatch[1]!;
+  if (hex.length === 3) {
+    hex = hex
+      .split('')
+      .map((c) => c + c)
+      .join('');
+  }
+  return `0x${hex.toUpperCase()}`;
+}
+
 /** Merge workspace defaults, then per-spec overrides, then hardcoded fallbacks. */
 export function resolveReelTextStyle(
   specStyle?: Partial<ReelRenderTextStyle> | null,

@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 
 import {
   DEFAULT_REEL_RENDER_TEXT_STYLE,
+  drawtextColorValue,
   drawtextXExpression,
   drawtextYExpression,
   formatReelOverlayText,
@@ -39,6 +40,23 @@ describe('resolveReelTextStyle', () => {
   test('ignores invalid position', () => {
     const s = resolveReelTextStyle({ position: 'bottom' as 'top' });
     assert.equal(s.position, 'top_third');
+  });
+});
+
+describe('drawtextColorValue', () => {
+  test('converts 6-digit hex to 0xRRGGBB', () => {
+    assert.equal(drawtextColorValue('#ffffff'), '0xFFFFFF');
+    assert.equal(drawtextColorValue('#000000'), '0x000000');
+  });
+
+  test('converts 3-digit hex to 0xRRGGBB', () => {
+    assert.equal(drawtextColorValue('#fff'), '0xFFFFFF');
+    assert.equal(drawtextColorValue('#000'), '0x000000');
+  });
+
+  test('passes through named colors', () => {
+    assert.equal(drawtextColorValue('white'), 'white');
+    assert.equal(drawtextColorValue('black'), 'black');
   });
 });
 

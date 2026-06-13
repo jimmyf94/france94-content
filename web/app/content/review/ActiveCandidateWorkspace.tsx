@@ -12,6 +12,7 @@ export function ActiveCandidateWorkspace({
   videoRef,
   onRegisterActivateStream,
   onRemoveReviewAsset,
+  onCarouselAssetsAdded,
   onCandidateUpdated,
   onVariantCreated,
   onDecide,
@@ -29,6 +30,7 @@ export function ActiveCandidateWorkspace({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
+  onCarouselAssetsAdded?: (c: PostCandidate) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onVariantCreated?: (c: PostCandidate) => void;
   onDecide?: (s: DecisionStatus) => void;
@@ -84,6 +86,7 @@ export function ActiveCandidateWorkspace({
           media={media}
           onRegisterActivateStream={onRegisterActivateStream}
           onRemoveReviewAsset={onRemoveReviewAsset}
+          onCarouselAssetsAdded={onCarouselAssetsAdded}
         />
       )}
     </div>

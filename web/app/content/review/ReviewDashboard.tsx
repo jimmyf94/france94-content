@@ -506,6 +506,16 @@ export function ReviewDashboard() {
     [selected, handleCandidateUpdated],
   );
 
+  const handleCarouselAssetsAdded = useCallback(
+    (updated: PostCandidate) => {
+      invalidateCandidateMediaCache(updated.id);
+      setMediaReloadNonce((n) => n + 1);
+      handleCandidateUpdated(updated);
+      setToast({ kind: 'good', msg: 'Added slide(s) from library' });
+    },
+    [handleCandidateUpdated],
+  );
+
   const decide = useCallback(
     async (status: DecisionStatus, opts?: { overrideCollision?: boolean }) => {
       if (!selected) return;
@@ -871,6 +881,7 @@ export function ReviewDashboard() {
           videoRef={videoRef}
           onRegisterActivateStream={registerActivatePrimaryVideo}
           onRemoveReviewAsset={handleRemoveReviewAsset}
+          onCarouselAssetsAdded={handleCarouselAssetsAdded}
           onCandidateUpdated={handleCandidateUpdated}
           onVariantCreated={handleVariantCreated}
           onDecide={decide}
