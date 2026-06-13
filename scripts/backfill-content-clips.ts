@@ -110,20 +110,31 @@ async function loadTargetAssets(assetIds: string[], limit: number): Promise<Asse
       .filter(Boolean) as string[],
   );
 
-  const { data, error } = await supabase
-    .from('content_assets')
-    .select(
-      'id, drive_file_id, mime_type, file_size, original_filename, current_filename, status',
-    )
-    .eq('media_type', 'video')
-    .in('status', ['processed', 'analyzed', 'ready_for_planning'])
-    .not('drive_file_id', 'is', null)
-    .order('processed_at', { ascending: true, nullsFirst: false })
-    .limit(Math.max(limit * 4, limit));
+  const pageSize = 50;
+  const results: AssetRow[] = [];
+  for (let offset = 0; results.length < limit; offset += pageSize) {
+    const { data, error } = await supabase
+      .from('content_assets')
+      .select(
+        'id, drive_file_id, mime_type, file_size, original_filename, current_filename, status',
+      )
+      .eq('media_type', 'video')
+      .in('status', ['processed', 'analyzed', 'ready_for_planning'])
+      .not('drive_file_id', 'is', null)
+      .order('processed_at', { ascending: true, nullsFirst: false })
+      .range(offset, offset + pageSize - 1);
 
-  if (error) throw new Error(error.message);
+    if (error) throw new Error(error.message);
 
-  return ((data ?? []) as AssetRow[]).filter((r) => !hasClips.has(r.id)).slice(0, limit);
+    const page = (data ?? []) as AssetRow[];
+    for (const row of page) {
+      if (!hasClips.has(row.id)) results.push(row);
+      if (results.length >= limit) break;
+    }
+    if (page.length < pageSize) break;
+  }
+
+  return results.slice(0, limit);
 }
 
 async function backfillContentClips(): Promise<void> {
