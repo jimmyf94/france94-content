@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { reconcileAllStaleApprovedReservations } from '@fr94/asset-usage';
+import {
+  reconcileAllStaleApprovedReservations,
+  reconcileStaleSuggestedUsageSummaries,
+} from '@fr94/asset-usage';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -20,12 +23,16 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getSupabaseServiceRole();
     const { repairedCandidateIds } = await reconcileAllStaleApprovedReservations(supabase);
+    const { repairedAssetIds } = await reconcileStaleSuggestedUsageSummaries(supabase);
     const maxIds = 200;
     return NextResponse.json(
       {
         repairedCount: repairedCandidateIds.length,
         repairedCandidateIds: repairedCandidateIds.slice(0, maxIds),
         repairedCandidateIdsTruncated: repairedCandidateIds.length > maxIds,
+        repairedAssetSummaryCount: repairedAssetIds.length,
+        repairedAssetIds: repairedAssetIds.slice(0, maxIds),
+        repairedAssetIdsTruncated: repairedAssetIds.length > maxIds,
       },
       { headers: noStore },
     );

@@ -266,13 +266,19 @@ export function ReviewDashboard() {
       });
       const json = await readJsonResponse<{
         repairedCount?: number;
+        repairedAssetSummaryCount?: number;
         error?: string;
       }>(res);
       if (!res.ok) throw new Error(json.error || res.statusText);
-      const n = json.repairedCount ?? 0;
+      const candidateCount = json.repairedCount ?? 0;
+      const assetSummaryCount = json.repairedAssetSummaryCount ?? 0;
+      const msg =
+        candidateCount === 0 && assetSummaryCount === 0
+          ? 'Asset ledger was already clean'
+          : `Released stale reservations for ${candidateCount} candidate(s); repaired ${assetSummaryCount} asset summary flag(s)`;
       setToast({
         kind: 'good',
-        msg: n === 0 ? 'Asset ledger was already clean' : `Released stale reservations for ${n} candidate(s)`,
+        msg,
       });
       await silentReloadCandidates();
     } catch (e) {

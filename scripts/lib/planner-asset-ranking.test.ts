@@ -47,6 +47,15 @@ test('scoreAssetForPlanner prefers fresh unused assets over committed ones', () 
   assert.ok(freshUnused > committed);
 });
 
+test('scoreAssetForPlanner penalizes needs_review assets without excluding them', () => {
+  const ctx = { committedAssetIds: new Set<string>(), rejectedAssetIds: new Set<string>() };
+  const eligible = scoreAssetForPlanner(makeSummary({ candidate_eligibility: 'eligible' }), ctx);
+  const needsReview = scoreAssetForPlanner(makeSummary({ candidate_eligibility: 'needs_review' }), ctx);
+
+  assert.ok(Number.isFinite(needsReview));
+  assert.ok(eligible > needsReview);
+});
+
 test('rankAndCapPlannerAssets caps to maxAssets', () => {
   const summaries = [
     makeSummary({ id: 'a', quality_score: 9 }),

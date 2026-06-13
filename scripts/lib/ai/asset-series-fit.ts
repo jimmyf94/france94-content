@@ -87,7 +87,7 @@ function buildTargetPlanningPrompt(
     enabled_post_types: enabledPostTypes,
     bundle_guidance: {
       carousel: '3-6 image/video assets (max 10)',
-      story_sequence: '3-5 fresh assets (is_fresh_for_story=true)',
+      story_sequence: '3-5 assets; prefer fresh, or older assets only for explicit recap/throwback framing',
       reel: '1 video asset',
       static_post: '1 asset',
       sponsor_post: '1 asset',
@@ -206,7 +206,8 @@ export function clampBundleForType(
     }
     case 'story_sequence': {
       const fresh = resolved.filter((a) => a.is_fresh_for_story);
-      const capped = fresh.slice(0, opts.storyMax);
+      const storyAssets = fresh.length >= 2 ? fresh : resolved.filter((a) => isImageOrVideo(a.media_type));
+      const capped = storyAssets.slice(0, opts.storyMax);
       return capped.length >= 2 ? capped.map((a) => a.id) : [];
     }
     case 'reel': {

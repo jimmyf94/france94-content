@@ -693,6 +693,49 @@ export async function reconcileAllStaleApprovedReservations(
   return { repairedCandidateIds: repaired };
 }
 
+/**
+ * Clear `content_assets.usage_status = suggested` when no active suggested
+ * ledger row exists. This repairs historical summary drift without releasing
+ * real approved/scheduled/published locks.
+ */
+export async function reconcileStaleSuggestedUsageSummaries(
+  supabase: SupabaseClient,
+): Promise<{ repairedAssetIds: string[] }> {
+  const pageSize = 1000;
+  const candidateAssetIds: string[] = [];
+  const repairedAssetIds: string[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const { data: page, error } = await supabase
+      .from('content_assets')
+      .select('id')
+      .eq('usage_status', 'suggested')
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`reconcileStaleSuggestedUsageSummaries(assets): ${error.message}`);
+
+    const rows = page ?? [];
+    for (const row of rows) {
+      const assetId = (row as { id?: string | null }).id;
+      if (assetId) candidateAssetIds.push(assetId);
+    }
+
+    if (rows.length < pageSize) break;
+  }
+
+  for (const assetId of candidateAssetIds) {
+    const active = await fetchActiveEvents(supabase, assetId);
+    const hasSuggested = active.some((e: { usage_stage?: string | null }) => {
+      return (e.usage_stage ?? '').trim() === 'suggested';
+    });
+    if (hasSuggested) continue;
+
+    await updateAssetUsageSummary(supabase, assetId);
+    repairedAssetIds.push(assetId);
+  }
+
+  return { repairedAssetIds };
+}
+
 async function hasScheduledEventsForJob(supabase: SupabaseClient, jobId: string): Promise<boolean> {
   const { data, error } = await supabase
     .from('asset_usage_events')

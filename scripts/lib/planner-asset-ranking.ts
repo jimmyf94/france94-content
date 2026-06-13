@@ -9,6 +9,7 @@ export type PlannerAssetSummary = {
   visual_summary: string | null;
   semantic_summary: string | null;
   suggested_title: string | null;
+  candidate_eligibility?: string | null;
 };
 
 /** Assets the planner must not use (matches generate_candidate.md rules). */
@@ -48,6 +49,7 @@ export function scoreAssetForPlanner(
   if (summary.visual_summary?.trim() || summary.semantic_summary?.trim()) score += 2;
   if (summary.suggested_title?.trim()) score += 1;
 
+  if ((summary.candidate_eligibility ?? '').trim() === 'needs_review') score -= 8;
   if (ctx.committedAssetIds.has(summary.id)) score -= 20;
   if (ctx.rejectedAssetIds.has(summary.id)) score -= 5;
 

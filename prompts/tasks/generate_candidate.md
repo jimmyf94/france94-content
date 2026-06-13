@@ -19,7 +19,8 @@ A dynamic JSON payload follows this prompt. It contains:
   activity, content_lane (asset-level format hint), visual_summary,
   semantic_summary, transcript_excerpt, audio_transcript_excerpt,
   tags, location_guess, postal_code, duration_seconds,
-  `is_fresh_for_story` (boolean), `usage_status` (string).
+  `is_fresh_for_story` (boolean), `usage_status` (string),
+  `candidate_eligibility` (string, where `needs_review` means usable but lower confidence).
 
 ## What to produce
 

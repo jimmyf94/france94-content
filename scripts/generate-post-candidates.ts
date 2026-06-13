@@ -131,6 +131,7 @@ export type CandidateSourceAsset = {
   usage_status?: string | null;
   hard_locked?: boolean | null;
   reuse_allowed_after?: string | null;
+  candidate_eligibility?: string | null;
 };
 
 export type AssetSummaryForLLM = {
@@ -158,6 +159,7 @@ export type AssetSummaryForLLM = {
   /** True when asset effective date is within STORY_FRESHNESS_HOURS (for planner hints). */
   is_fresh_for_story: boolean;
   usage_status: string;
+  candidate_eligibility?: string;
 };
 
 export type ValidatedPostCandidate = z.infer<typeof llmCandidateSchema> & {
@@ -289,15 +291,14 @@ export function buildAssetSummaryForLLM(asset: CandidateSourceAsset, excerptLen 
     drive_review_link: asset.drive_web_view_link?.trim() || null,
     is_fresh_for_story: isFreshForStory(asset),
     usage_status: (asset.usage_status ?? 'unused').trim() || 'unused',
+    candidate_eligibility: (asset.candidate_eligibility ?? 'eligible').trim() || 'eligible',
   };
 }
 
 export async function getCandidateSourceAssets(
   supabase: SupabaseClient,
-  params: { batchDays: number; maxAssets: number },
+  params: { maxAssets: number },
 ): Promise<CandidateSourceAsset[]> {
-  const cutoff = new Date(Date.now() - params.batchDays * 24 * 60 * 60 * 1000);
-  const cutoffIso = cutoff.toISOString();
   const fetchLimit = Math.min(Math.max(params.maxAssets * 4, params.maxAssets), 500);
 
   const { data, error } = await supabase
@@ -338,9 +339,8 @@ export async function getCandidateSourceAssets(
     )
     .eq('status', 'processed')
     .eq('analysis_status', 'complete')
-    .eq('candidate_eligibility', 'eligible')
+    .in('candidate_eligibility', ['eligible', 'needs_review'])
     .not('quality_score', 'is', null)
-    .gte('processed_at', cutoffIso)
     .or('content_lane.is.null,content_lane.neq.archive')
     .order('processed_at', { ascending: false })
     .limit(fetchLimit);
@@ -1379,8 +1379,8 @@ export async function generatePostCandidates(): Promise<void> {
   const drive = await getDriveClient();
   const enabledPostTypes = [...(await loadEnabledPostTypes(supabase))];
 
-  const assets = await getCandidateSourceAssets(supabase, { batchDays, maxAssets });
-  console.log(`source assets (processed, last ${batchDays}d, max ${maxAssets}): ${assets.length}`);
+  const assets = await getCandidateSourceAssets(supabase, { maxAssets });
+  console.log(`source assets (processed, relaxed pool, max ${maxAssets}, batch hint ${batchDays}d): ${assets.length}`);
 
   const recentLedger = await loadRecentLedgerContext(supabase);
   const committedRecentPosts = recentLedger.map(toCommittedPostForPrompt);

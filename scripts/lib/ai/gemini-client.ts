@@ -98,7 +98,10 @@ function ensureGeminiFetchPatch(ms: number): void {
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = resolveFetchUrl(input);
     if (url.includes('generativelanguage.googleapis.com')) {
-      return undiciFetch(input, { ...init, dispatcher: longAgent } as Parameters<typeof undiciFetch>[1]);
+      return undiciFetch(
+        input as Parameters<typeof undiciFetch>[0],
+        { ...init, dispatcher: longAgent } as Parameters<typeof undiciFetch>[1],
+      );
     }
     return nativeFetch!(input, init);
   }) as typeof fetch;

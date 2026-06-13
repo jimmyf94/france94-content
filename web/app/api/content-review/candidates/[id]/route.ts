@@ -412,7 +412,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   if (re_render === true && candidateOut) {
-    const c = candidateOut as {
+    const c = candidateOut as unknown as {
       id: string;
       post_type?: string;
       hook?: string | null;

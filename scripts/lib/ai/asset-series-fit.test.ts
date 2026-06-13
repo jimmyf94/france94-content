@@ -143,7 +143,7 @@ test('clampBundleForType carousel requires >=2 image/video and caps max', () => 
   );
 });
 
-test('clampBundleForType story_sequence requires fresh assets', () => {
+test('clampBundleForType story_sequence prefers fresh assets but allows recap bundles', () => {
   const assetsById = new Map<string, FitScoringAsset>([
     [ASSET_A, makeAsset({ id: ASSET_A, is_fresh_for_story: true })],
     [ASSET_B, makeAsset({ id: ASSET_B, is_fresh_for_story: false })],
@@ -152,11 +152,23 @@ test('clampBundleForType story_sequence requires fresh assets', () => {
 
   assert.deepEqual(
     clampBundleForType('story_sequence', [ASSET_A, ASSET_B], assetsById, defaultBundleOpts),
-    [],
+    [ASSET_A, ASSET_B],
   );
   assert.deepEqual(
     clampBundleForType('story_sequence', [ASSET_A, ASSET_C], assetsById, defaultBundleOpts),
     [ASSET_A, ASSET_C],
+  );
+});
+
+test('clampBundleForType story_sequence falls back to older image/video assets', () => {
+  const assetsById = new Map<string, FitScoringAsset>([
+    [ASSET_A, makeAsset({ id: ASSET_A, is_fresh_for_story: false })],
+    [ASSET_B, makeAsset({ id: ASSET_B, is_fresh_for_story: false, media_type: 'video' })],
+  ]);
+
+  assert.deepEqual(
+    clampBundleForType('story_sequence', [ASSET_A, ASSET_B], assetsById, defaultBundleOpts),
+    [ASSET_A, ASSET_B],
   );
 });
 

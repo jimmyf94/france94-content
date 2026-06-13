@@ -16,7 +16,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     'app/api/content-review/**': ['../scripts/prompts/**/*.txt'],
   },
-  serverExternalPackages: ['googleapis'],
+  serverExternalPackages: ['googleapis', 'undici'],
   // Shared `scripts/lib/ai` uses NodeNext-style `.js` import specifiers; map them to `.ts` sources.
   webpack: (config) => {
     config.resolve = config.resolve ?? {};
