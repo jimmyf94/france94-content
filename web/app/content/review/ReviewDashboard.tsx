@@ -1086,7 +1086,7 @@ export function ReviewDashboard() {
           hideHeaderWhenExpanded
         >
           <CandidateQueueSidebar
-            candidates={candidates}
+            queueCandidates={visible}
             counts={counts}
             activeTab={activeStatusTab}
             onChangeTab={setActiveStatusTab}
@@ -1162,7 +1162,7 @@ export function ReviewDashboard() {
       {/* Mobile stack */}
       <div className="flex min-h-0 flex-1 flex-col lg:hidden">
         <MobileReviewStack
-          candidates={candidates}
+          queueCandidates={visible}
           counts={counts}
           activeStatusTab={activeStatusTab}
           onChangeStatusTab={setActiveStatusTab}

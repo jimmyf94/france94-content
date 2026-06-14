@@ -90,7 +90,7 @@ function MetaChip({ children }: { children: React.ReactNode }) {
 }
 
 export function MobileReviewStack({
-  candidates,
+  queueCandidates,
   counts,
   activeStatusTab,
   onChangeStatusTab,
@@ -140,7 +140,7 @@ export function MobileReviewStack({
   onUnstagePublish,
   onRefreshPublishing,
 }: {
-  candidates: CandidateListItem[];
+  queueCandidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
   activeStatusTab: StatusTab;
   onChangeStatusTab: (t: StatusTab) => void;
@@ -284,7 +284,7 @@ export function MobileReviewStack({
         title="Queue"
       >
         <CandidateQueueSidebar
-          candidates={candidates}
+          queueCandidates={queueCandidates}
           counts={counts}
           activeTab={activeStatusTab}
           onChangeTab={onChangeStatusTab}

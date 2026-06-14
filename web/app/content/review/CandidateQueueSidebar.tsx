@@ -1,7 +1,5 @@
 'use client';
 
-import { useMemo } from 'react';
-
 import type { PublishingQueueItem } from '@/lib/publishing-types';
 import type { PublishNowFeedback } from '@/lib/publishing-publish-feedback';
 
@@ -34,7 +32,7 @@ type PublishingSidebarProps = {
 };
 
 export function CandidateQueueSidebar({
-  candidates,
+  queueCandidates,
   counts,
   activeTab,
   onChangeTab,
@@ -58,7 +56,7 @@ export function CandidateQueueSidebar({
   onUnstagePublish,
   onRefreshPublishing,
 }: {
-  candidates: CandidateListItem[];
+  queueCandidates: CandidateListItem[];
   counts: Record<StatusTab, number>;
   activeTab: StatusTab;
   onChangeTab: (t: StatusTab) => void;
@@ -74,17 +72,7 @@ export function CandidateQueueSidebar({
 } & PublishingSidebarProps) {
   const isPublishingTab = activeTab === 'publishing';
 
-  const visible = useMemo(
-    () =>
-      candidates.filter((c) =>
-        activeTab === 'approved'
-          ? c.status === 'approved' || c.status === 'produced'
-          : c.status === activeTab,
-      ),
-    [candidates, activeTab],
-  );
-
-  const listCount = isPublishingTab ? publishingItems.length : visible.length;
+  const listCount = isPublishingTab ? publishingItems.length : queueCandidates.length;
   const listLoading = isPublishingTab ? publishingLoading : loading;
 
   const scheduledCount = publishingItems.filter((i) => i.status === 'scheduled').length;
@@ -187,12 +175,12 @@ export function CandidateQueueSidebar({
             ))}
           </ul>
         )}
-        {!isPublishingTab && visible.length > 0 && (
+        {!isPublishingTab && queueCandidates.length > 0 && (
           <ul
             className="scrollbar-thin flex min-h-0 flex-1 list-none flex-col gap-1 overflow-auto p-2"
             role="list"
           >
-            {visible.map((c) => (
+            {queueCandidates.map((c) => (
               <li key={c.id} className="[content-visibility:auto]">
                 <QueueRow
                   candidate={c}
