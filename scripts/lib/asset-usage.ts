@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 /** Cooldown before story-used assets may be suggested again (days). */
 export const STORY_REUSE_COOLDOWN_DAYS = 14;
 /** Lane-level cooldown after approval (days). */
-export const LANE_COOLDOWN_DAYS_REEL = 7;
+export const LANE_COOLDOWN_DAYS_REEL = 1;
 export const LANE_COOLDOWN_DAYS_STORY = 2;
 export const LANE_COOLDOWN_DAYS_DEFAULT = 5;
 

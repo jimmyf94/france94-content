@@ -43,7 +43,9 @@ export function ScheduleControls({
 
   const savedLocal = scheduledAt ? isoToDatetimeLocalValue(scheduledAt) : '';
   const isFuture = isDatetimeLocalInFuture(localDt);
-  const canSave = Boolean(localDt.trim()) && localDt !== savedLocal && isFuture;
+  const scheduleEdited = localDt !== savedLocal;
+  const canSave = Boolean(localDt.trim()) && scheduleEdited && isFuture;
+  const showPastScheduleError = Boolean(localDt.trim()) && scheduleEdited && !isFuture;
   const isQueue = layout === 'queue';
 
   const btnPrimary = compact
@@ -86,7 +88,7 @@ export function ScheduleControls({
             compact={compact}
           />
 
-          {localDt && !isFuture && (
+          {showPastScheduleError && (
             <p className="text-[11px] text-[var(--bad)]">Pick a date and time in the future.</p>
           )}
         </div>

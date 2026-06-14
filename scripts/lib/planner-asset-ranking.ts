@@ -16,7 +16,6 @@ export type PlannerAssetSummary = {
 const BLOCKED_USAGE_STATUSES = new Set([
   'published',
   'hard_locked',
-  'scheduled',
   'approved_pending',
 ]);
 
