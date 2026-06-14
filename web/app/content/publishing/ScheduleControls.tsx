@@ -16,6 +16,7 @@ export function ScheduleControls({
   canUnschedule,
   canPublishNow,
   acting,
+  publishActing = false,
   compact = false,
   layout = 'stack',
   onSchedule,
@@ -27,6 +28,7 @@ export function ScheduleControls({
   canUnschedule: boolean;
   canPublishNow: boolean;
   acting: boolean;
+  publishActing?: boolean;
   compact?: boolean;
   layout?: 'stack' | 'queue';
   onSchedule: (iso: string) => void | Promise<void>;
@@ -126,7 +128,7 @@ export function ScheduleControls({
               }}
               className={`${btnPublish} min-w-0 flex-1`}
             >
-              Publish now
+              {publishActing ? 'Publishing…' : 'Publish now'}
             </button>
           )}
         </div>

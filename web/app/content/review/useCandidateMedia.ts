@@ -16,7 +16,7 @@ function prefetchVideoPosters(files: ReviewDriveFile[]) {
 }
 
 /** Bump when ReviewDriveFile shape or enrichment changes (e.g. posterUrl on all videos). */
-const MEDIA_CACHE_VERSION = 2;
+const MEDIA_CACHE_VERSION = 3;
 const cache = new Map<string, ReviewDriveFile[]>();
 
 function cacheKey(candidateId: string) {

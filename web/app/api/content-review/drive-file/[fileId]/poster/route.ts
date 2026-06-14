@@ -40,7 +40,7 @@ export async function GET(
 
     const meta = await drive.files.get({
       fileId,
-      fields: 'parents, mimeType, name',
+      fields: 'parents, mimeType, name, thumbnailLink',
       supportsAllDrives: true,
     });
 
@@ -68,6 +68,7 @@ export async function GET(
     const jpeg = await generateReviewVideoPoster(drive, candidateId, fileId, {
       mimeType: mime,
       name: meta.data.name,
+      thumbnailLink: meta.data.thumbnailLink,
     });
 
     if (!jpeg || jpeg.length === 0) {

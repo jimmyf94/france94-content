@@ -1,7 +1,9 @@
 import type { drive_v3 } from 'googleapis';
 
+import { getDriveFileThumbnailLink } from '@fr94/review-folder-thumbnail';
 import { extractDriveVideoPosterJpeg } from '@fr94/drive-video-poster';
 
+import { fetchDriveThumbnailJpeg } from '@/lib/fetch-drive-thumbnail-jpeg';
 import {
   singleFlightPoster,
   withDriveRetry,
@@ -45,7 +47,7 @@ export async function generateReviewVideoPoster(
   drive: drive_v3.Drive,
   candidateId: string,
   fileId: string,
-  params: { mimeType: string; name?: string | null },
+  params: { mimeType: string; name?: string | null; thumbnailLink?: string | null },
 ): Promise<Buffer | null> {
   const cached = getCachedReviewPoster(candidateId, fileId);
   if (cached) return cached;
@@ -54,15 +56,28 @@ export async function generateReviewVideoPoster(
     const again = getCachedReviewPoster(candidateId, fileId);
     if (again) return again;
 
-    const jpeg = await withPosterGenerationSlot(() =>
-      withDriveRetry(() =>
+    const jpeg = await withPosterGenerationSlot(async () => {
+      let thumbLink = params.thumbnailLink?.trim() || null;
+      if (!thumbLink) {
+        thumbLink = await withDriveRetry(() => getDriveFileThumbnailLink(drive, fileId));
+      }
+
+      if (thumbLink) {
+        const fromDrive = await fetchDriveThumbnailJpeg(thumbLink, 800);
+        if (fromDrive && fromDrive.length > 0) {
+          setCachedReviewPoster(candidateId, fileId, fromDrive);
+          return fromDrive;
+        }
+      }
+
+      return withDriveRetry(() =>
         extractDriveVideoPosterJpeg(drive, fileId, {
           mimeType: params.mimeType,
           name: params.name,
           maxWidth: 800,
         }),
-      ),
-    );
+      );
+    });
 
     if (jpeg && jpeg.length > 0) {
       setCachedReviewPoster(candidateId, fileId, jpeg);
@@ -86,6 +101,7 @@ export function warmReviewVideoPosters(
   for (const f of files) {
     if (warmed >= MAX_WARM_VIEWPORT_VIDEOS) break;
     if (!f.id || !isVideoMime(f.mimeType)) continue;
+    if (f.thumbnailLink?.trim()) continue;
     if (getCachedReviewPoster(candidateId, f.id)) continue;
     warmed += 1;
 
@@ -94,7 +110,7 @@ export function warmReviewVideoPosters(
         const meta = await withDriveRetry(() =>
           drive.files.get({
             fileId: f.id,
-            fields: 'parents, mimeType, name',
+            fields: 'parents, mimeType, name, thumbnailLink',
             supportsAllDrives: true,
           }),
         );
@@ -104,6 +120,7 @@ export function warmReviewVideoPosters(
         await generateReviewVideoPoster(drive, candidateId, f.id, {
           mimeType: meta.data.mimeType ?? f.mimeType,
           name: meta.data.name ?? f.name,
+          thumbnailLink: meta.data.thumbnailLink ?? f.thumbnailLink,
         });
       } catch {
         /* best-effort warm */

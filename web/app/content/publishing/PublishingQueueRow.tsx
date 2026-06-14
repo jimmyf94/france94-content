@@ -3,6 +3,12 @@
 import { useEffect, useState } from 'react';
 
 import type { PublishingQueueItem } from '@/lib/publishing-types';
+import type { PublishNowFeedback } from '@/lib/publishing-publish-feedback';
+import {
+  isPublishPipelineInProgress,
+  isPublishPipelineTerminal,
+  publishPipelineProgressLabel,
+} from '@/lib/publishing-publish-feedback';
 
 import { BottomSheet } from '../review/mobile/BottomSheet';
 import { PublishingCaptionEditor } from './PublishingCaptionEditor';
@@ -33,7 +39,10 @@ function postTypeInitial(type: string): string {
 
 function statusTone(status: string): string {
   if (status === 'ready_to_publish' || status === 'scheduled') return 'text-[var(--good)]';
-  if (status === 'publishing') return 'text-[var(--warn)]';
+  if (status === 'published') return 'text-[var(--good)]';
+  if (status === 'publishing' || status === 'processing' || status === 'containers_created') {
+    return 'text-[var(--warn)]';
+  }
   if (status === 'failed') return 'text-[var(--bad)]';
   return 'text-[var(--muted)]';
 }
@@ -88,6 +97,8 @@ export function PublishingQueueRow({
   selected = false,
   onContentUpdated,
   showScheduledTime,
+  publishFeedback,
+  publishActing = false,
 }: {
   item: PublishingQueueItem;
   acting: boolean;
@@ -102,6 +113,8 @@ export function PublishingQueueRow({
   selected?: boolean;
   onContentUpdated?: () => void;
   showScheduledTime?: string;
+  publishFeedback?: PublishNowFeedback | null;
+  publishActing?: boolean;
 }) {
   const [editOpen, setEditOpen] = useState(false);
   const { detail, loading: detailLoading, load, invalidate } = usePublishingJobDetail(item.id);
@@ -145,6 +158,15 @@ export function PublishingQueueRow({
 
   const actionBtnClass =
     'min-h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs font-semibold transition-colors disabled:opacity-50 sm:min-h-0 sm:px-2 sm:py-1 sm:text-[10px]';
+
+  const showPublishProgress =
+    publishActing ||
+    Boolean(
+      publishFeedback &&
+        !isPublishPipelineTerminal(item.status) &&
+        (isPublishPipelineInProgress(item.status) || item.status === 'draft'),
+    );
+  const progressLabel = publishPipelineProgressLabel(item.status, publishFeedback, publishActing);
 
   return (
     <>
@@ -211,7 +233,18 @@ export function PublishingQueueRow({
               )}
             </div>
             <p className="mt-1 text-[11px] text-[var(--muted)]">
-              {item.status === 'scheduled' ? (
+              {showPublishProgress ? (
+                <span className="text-[var(--warn)]">{progressLabel}</span>
+              ) : item.status === 'published' && item.instagram_permalink ? (
+                <a
+                  href={item.instagram_permalink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[var(--good)] underline hover:opacity-80"
+                >
+                  Published — open on Instagram
+                </a>
+              ) : item.status === 'scheduled' ? (
                 <span>Scheduled — change time or cancel below</span>
               ) : item.status === 'ready_to_publish' ? (
                 <span>Ready — set a go-live time below</span>
@@ -232,6 +265,7 @@ export function PublishingQueueRow({
               canUnschedule={canUnschedule}
               canPublishNow={canPublishNow}
               acting={acting}
+              publishActing={publishActing}
               compact={compact}
               layout="queue"
               onSchedule={(iso) => void onSchedule(item.id, iso)}

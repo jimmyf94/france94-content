@@ -130,6 +130,8 @@ export function MobileReviewStack({
   publishingItems = [],
   publishingLoading = false,
   publishingActingJobId = null,
+  publishingFeedbackByJobId = {},
+  publishingPublishActingJobId = null,
   onSchedulePublish,
   onUnschedulePublish,
   onPublishNow,
@@ -176,6 +178,8 @@ export function MobileReviewStack({
   publishingItems?: PublishingQueueItem[];
   publishingLoading?: boolean;
   publishingActingJobId?: string | null;
+  publishingFeedbackByJobId?: Record<string, import('@/lib/publishing-publish-feedback').PublishNowFeedback>;
+  publishingPublishActingJobId?: string | null;
   onSchedulePublish?: (jobId: string, iso: string) => void | Promise<void>;
   onUnschedulePublish?: (jobId: string) => void | Promise<void>;
   onPublishNow?: (jobId: string) => void | Promise<void>;
@@ -285,6 +289,8 @@ export function MobileReviewStack({
           publishingItems={publishingItems}
           publishingLoading={publishingLoading}
           publishingActingJobId={publishingActingJobId}
+          publishingFeedbackByJobId={publishingFeedbackByJobId}
+          publishingPublishActingJobId={publishingPublishActingJobId}
           onSchedulePublish={onSchedulePublish}
           onUnschedulePublish={onUnschedulePublish}
           onPublishNow={onPublishNow}

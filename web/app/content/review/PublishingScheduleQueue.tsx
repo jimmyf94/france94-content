@@ -27,6 +27,8 @@ export function PublishingScheduleQueue({
     loading,
     error,
     actingJobId,
+    publishActingJobId,
+    publishFeedbackByJobId,
     load,
     schedulePublish,
     unschedulePublish,
@@ -142,6 +144,8 @@ export function PublishingScheduleQueue({
                 key={item.id}
                 item={item}
                 acting={actingJobId === item.id}
+                publishActing={publishActingJobId === item.id}
+                publishFeedback={publishFeedbackByJobId[item.id] ?? null}
                 onSchedule={handleSchedule}
                 onUnschedule={handleUnschedule}
                 onPublishNow={handlePublishNow}

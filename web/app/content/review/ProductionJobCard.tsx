@@ -19,7 +19,7 @@ import {
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { ReelProductionWorkspace } from './ReelProductionWorkspace';
-import type { PostCandidate, ReelReasoning, ReelVariantKind, ReviewDriveFile } from './types';
+import type { PostCandidate, ReelHookLabOption, ReelReasoning, ReelVariantKind, ReviewDriveFile } from './types';
 import type { CandidateMediaState } from './useCandidateMedia';
 
 type ProductionJobDto = {
@@ -118,6 +118,10 @@ export function ProductionJobCard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [variantBusy, setVariantBusy] = useState<ReelVariantKind | null>(null);
+  const [hookLabOptions, setHookLabOptions] = useState<ReelHookLabOption[]>([]);
+  const [hookLabSelected, setHookLabSelected] = useState<string[]>([]);
+  const [hookLabBusy, setHookLabBusy] = useState<'generate' | 'apply' | 'variants' | null>(null);
+  const [hookLabError, setHookLabError] = useState<string | null>(null);
   const [styleBusy, setStyleBusy] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [workspaceDefaults, setWorkspaceDefaults] = useState<ReelRenderTextStyle>(
@@ -247,6 +251,12 @@ export function ProductionJobCard({
   }, [candidate.id, pollUntilRenderSettled, refreshCandidate]);
 
   useEffect(() => {
+    setHookLabOptions([]);
+    setHookLabSelected([]);
+    setHookLabError(null);
+  }, [candidate.id]);
+
+  useEffect(() => {
     void load();
   }, [load]);
 
@@ -315,6 +325,120 @@ export function ProductionJobCard({
     },
     [candidate.id, onVariantCreated, variantBusy],
   );
+
+  const generateHookLab = useCallback(async () => {
+    if (hookLabBusy) return;
+    setHookLabBusy('generate');
+    setHookLabError(null);
+    try {
+      const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate', option_count: 30 }),
+      });
+      const json = await readJsonResponse<{
+        options?: ReelHookLabOption[];
+        error?: string;
+      }>(res);
+      if (!res.ok || !json.options) {
+        throw new Error(json.error || res.statusText);
+      }
+      setHookLabOptions(json.options);
+      setHookLabSelected([]);
+    } catch (e) {
+      setHookLabError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHookLabBusy(null);
+    }
+  }, [candidate.id, hookLabBusy]);
+
+  const toggleHookLabSelection = useCallback((hook: string) => {
+    setHookLabSelected((prev) =>
+      prev.includes(hook) ? prev.filter((h) => h !== hook) : [...prev, hook],
+    );
+  }, []);
+
+  const selectAllHookLab = useCallback(() => {
+    setHookLabSelected(hookLabOptions.map((o) => o.hook));
+  }, [hookLabOptions]);
+
+  const clearHookLabSelection = useCallback(() => {
+    setHookLabSelected([]);
+  }, []);
+
+  const applyHookLab = useCallback(
+    async (hook: string) => {
+      if (hookLabBusy) return;
+      setHookLabBusy('apply');
+      setHookLabError(null);
+      try {
+        const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'apply', hook }),
+        });
+        const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+        if (!res.ok || !json.candidate) {
+          throw new Error(json.error || res.statusText);
+        }
+        onCandidateUpdated?.(json.candidate);
+        const ri = json.candidate.reel_instructions;
+        const overlayLines =
+          ri != null &&
+          typeof ri === 'object' &&
+          !Array.isArray(ri) &&
+          Array.isArray((ri as Record<string, unknown>).overlay_lines)
+            ? ((ri as Record<string, unknown>).overlay_lines as string[])
+            : undefined;
+        setDraftOverlay(
+          formatReelOverlayText(overlayLines, {
+            titleOverlay: json.candidate.title_overlay,
+            hook: json.candidate.hook,
+          }),
+        );
+      } catch (e) {
+        setHookLabError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setHookLabBusy(null);
+      }
+    },
+    [candidate.id, hookLabBusy, onCandidateUpdated],
+  );
+
+  const createHookLabVariants = useCallback(async () => {
+    if (hookLabBusy || hookLabSelected.length === 0) return;
+    setHookLabBusy('variants');
+    setHookLabError(null);
+    try {
+      const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create_variants', hooks: hookLabSelected }),
+      });
+      const json = await readJsonResponse<{
+        created?: Array<{ candidate?: PostCandidate; hook: string }>;
+        errors?: string[];
+        error?: string;
+      }>(res);
+      if (!res.ok) {
+        throw new Error(json.error || res.statusText);
+      }
+      for (const item of json.created ?? []) {
+        if (item.candidate) onVariantCreated?.(item.candidate);
+      }
+      if (json.errors && json.errors.length > 0) {
+        setHookLabError(json.errors.join('\n'));
+      }
+      setHookLabSelected([]);
+    } catch (e) {
+      setHookLabError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHookLabBusy(null);
+    }
+  }, [candidate.id, hookLabBusy, hookLabSelected, onVariantCreated]);
 
   const saveStyle = useCallback(
     async (reRender: boolean) => {
@@ -493,6 +617,16 @@ export function ProductionJobCard({
       onTimedCuesChange={setDraftTimedCues}
       onStyleChange={setDraftStyle}
       onCreateVariant={(kind) => void createVariant(kind)}
+      hookLabOptions={hookLabOptions}
+      hookLabSelected={hookLabSelected}
+      hookLabBusy={hookLabBusy}
+      hookLabError={hookLabError}
+      onGenerateHookLab={() => void generateHookLab()}
+      onToggleHookLabSelection={toggleHookLabSelection}
+      onSelectAllHookLab={selectAllHookLab}
+      onClearHookLabSelection={clearHookLabSelection}
+      onApplyHookLab={(hook) => void applyHookLab(hook)}
+      onCreateHookLabVariants={() => void createHookLabVariants()}
       media={media}
       videoRef={videoRef}
       onRegisterActivateStream={onRegisterActivateStream}

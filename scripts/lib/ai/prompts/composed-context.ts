@@ -17,6 +17,7 @@ export const TASK_PROMPT_KEYS = [
   'task_reel_caption_overlay',
   'task_collision_check',
   'task_reel_reasoning',
+  'task_reel_hook_lab',
 ] as const;
 
 export type StableContextKey = (typeof STABLE_CONTEXT_KEYS)[number];
@@ -36,6 +37,7 @@ const TASK_FILE_REL: Record<TaskPromptKey, string> = {
   task_reel_caption_overlay: path.join('prompts', 'tasks', 'reel_caption_overlay.md'),
   task_collision_check: path.join('prompts', 'tasks', 'collision_check.md'),
   task_reel_reasoning: path.join('prompts', 'tasks', 'reel_reasoning.md'),
+  task_reel_hook_lab: path.join('prompts', 'tasks', 'reel_hook_lab.md'),
 };
 
 function envOverridePath(key: string): string | null {

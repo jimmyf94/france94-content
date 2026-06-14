@@ -27,6 +27,7 @@
       "@fr94/video-preprocess": ["../scripts/lib/video-preprocess"],
       "@fr94/content-series": ["../scripts/lib/content-series"],
       "@fr94/reel-assembly": ["../scripts/lib/reel-assembly"],
+      "@fr94/reel-hook-lab": ["../scripts/lib/reel-hook-lab"],
       "@fr94/reel-text-style": ["../scripts/lib/reel-text-style"],
       "@fr94/reel-render-progress": ["../scripts/lib/reel-render-progress"],
       "@fr94/reel-render-defaults": ["../scripts/lib/reel-render-defaults"],

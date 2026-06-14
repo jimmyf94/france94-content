@@ -1,40 +1,81 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { PublishingJobDto, PublishingQueueItem } from '@/lib/publishing-types';
+import {
+  defaultPublishNowMessage,
+  isPublishPipelineTerminal,
+  type PublishNowFeedback,
+} from '@/lib/publishing-publish-feedback';
 import { readJsonResponse } from '@/lib/read-json-response';
 
 import { notifyScheduleQueueChanged } from '../schedule-events';
+
+const POLL_INTERVAL_MS = 3000;
 
 export function usePublishingScheduleQueue(reloadNonce = 0) {
   const [items, setItems] = useState<PublishingQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actingJobId, setActingJobId] = useState<string | null>(null);
+  const [publishActingJobId, setPublishActingJobId] = useState<string | null>(null);
+  const [publishFeedbackByJobId, setPublishFeedbackByJobId] = useState<
+    Record<string, PublishNowFeedback>
+  >({});
+
+  const syncPublishFeedback = useCallback(
+    (nextItems: PublishingQueueItem[], prevFeedback: Record<string, PublishNowFeedback>) => {
+      const nextFeedback = { ...prevFeedback };
+      for (const [jobId] of Object.entries(prevFeedback)) {
+        const item = nextItems.find((row) => row.id === jobId);
+        if (!item || isPublishPipelineTerminal(item.status)) {
+          delete nextFeedback[jobId];
+        }
+      }
+      return nextFeedback;
+    },
+    [],
+  );
+
+  const loadItems = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent ?? false;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const res = await fetch('/api/content-review/publishing-jobs', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        const json = await readJsonResponse<{ items?: PublishingQueueItem[]; error?: string }>(res);
+        if (!res.ok) throw new Error(json.error || res.statusText);
+        const nextItems = json.items ?? [];
+        setItems(nextItems);
+        setPublishFeedbackByJobId((prev) => syncPublishFeedback(nextItems, prev));
+      } catch (e) {
+        if (!silent) {
+          setError(e instanceof Error ? e.message : String(e));
+          setItems([]);
+        }
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [syncPublishFeedback],
+  );
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/content-review/publishing-jobs', {
-        credentials: 'include',
-        cache: 'no-store',
-      });
-      const json = await readJsonResponse<{ items?: PublishingQueueItem[]; error?: string }>(res);
-      if (!res.ok) throw new Error(json.error || res.statusText);
-      setItems(json.items ?? []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    await loadItems();
+  }, [loadItems]);
 
   useEffect(() => {
-    void load();
-  }, [load, reloadNonce]);
+    void loadItems();
+  }, [loadItems, reloadNonce]);
 
   const patchJobFromResponse = (job: PublishingJobDto) => {
     setItems((prev) =>
@@ -54,8 +95,25 @@ export function usePublishingScheduleQueue(reloadNonce = 0) {
 
   const refreshAll = useCallback(async () => {
     notifyScheduleQueueChanged();
-    await load();
-  }, [load]);
+    await loadItems();
+  }, [loadItems]);
+
+  const pollingJobIds = useMemo(
+    () =>
+      Object.keys(publishFeedbackByJobId).filter((jobId) => {
+        const item = items.find((row) => row.id === jobId);
+        return item != null && !isPublishPipelineTerminal(item.status);
+      }),
+    [publishFeedbackByJobId, items],
+  );
+
+  useEffect(() => {
+    if (pollingJobIds.length === 0) return undefined;
+    const timer = window.setInterval(() => {
+      void loadItems({ silent: true });
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadItems, pollingJobIds.length]);
 
   const schedulePublish = async (jobId: string, scheduledPublishAt: string) => {
     setActingJobId(jobId);
@@ -108,23 +166,46 @@ export function usePublishingScheduleQueue(reloadNonce = 0) {
 
   const publishNow = async (jobId: string) => {
     setActingJobId(jobId);
+    setPublishActingJobId(jobId);
     setError(null);
     try {
       const res = await fetch(
         `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/publish-now`,
         { method: 'POST', credentials: 'include' },
       );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
+      const json = await readJsonResponse<{
+        job?: PublishingJobDto;
+        error?: unknown;
+        message?: string;
+        dispatched?: boolean;
+      }>(res);
       if (!res.ok) {
         const err = json.error;
         throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
       }
+
+      const dispatched = json.dispatched ?? false;
+      const message =
+        typeof json.message === 'string' && json.message.trim()
+          ? json.message.trim()
+          : defaultPublishNowMessage(dispatched);
+
+      setPublishFeedbackByJobId((prev) => ({
+        ...prev,
+        [jobId]: {
+          message,
+          dispatched,
+          startedAt: new Date().toISOString(),
+        },
+      }));
+
       if (json.job) patchJobFromResponse(json.job);
-      await refreshAll();
+      await loadItems({ silent: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setActingJobId(null);
+      setPublishActingJobId(null);
     }
   };
 
@@ -141,6 +222,11 @@ export function usePublishingScheduleQueue(reloadNonce = 0) {
         const err = json.error;
         throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
       }
+      setPublishFeedbackByJobId((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
       await refreshAll();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -154,6 +240,8 @@ export function usePublishingScheduleQueue(reloadNonce = 0) {
     loading,
     error,
     actingJobId,
+    publishActingJobId,
+    publishFeedbackByJobId,
     load,
     schedulePublish,
     unschedulePublish,

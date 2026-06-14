@@ -23,6 +23,14 @@ export const REEL_VARIANT_LABELS: Record<ReelVariantKind, string> = {
   different_series: 'D · Different series',
 };
 
+export type ReelHookLabOption = {
+  hook: string;
+  angle: string;
+  why_it_could_work: string;
+  discovery_fit: string;
+  risk?: string;
+};
+
 export type PostCandidate = {
   id: string;
   candidate_date: string | null;

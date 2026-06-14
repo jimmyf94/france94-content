@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 
 import type { PublishingQueueItem } from '@/lib/publishing-types';
+import type { PublishNowFeedback } from '@/lib/publishing-publish-feedback';
 
 import { PublishingQueueRow } from '../publishing/PublishingQueueRow';
 import type { ReviewFilters } from './FilterDrawer';
@@ -23,6 +24,8 @@ type PublishingSidebarProps = {
   publishingItems?: PublishingQueueItem[];
   publishingLoading?: boolean;
   publishingActingJobId?: string | null;
+  publishingFeedbackByJobId?: Record<string, PublishNowFeedback>;
+  publishingPublishActingJobId?: string | null;
   onSchedulePublish?: (jobId: string, iso: string) => void | Promise<void>;
   onUnschedulePublish?: (jobId: string) => void | Promise<void>;
   onPublishNow?: (jobId: string) => void | Promise<void>;
@@ -47,6 +50,8 @@ export function CandidateQueueSidebar({
   publishingItems = [],
   publishingLoading = false,
   publishingActingJobId = null,
+  publishingFeedbackByJobId = {},
+  publishingPublishActingJobId = null,
   onSchedulePublish,
   onUnschedulePublish,
   onPublishNow,
@@ -169,6 +174,8 @@ export function CandidateQueueSidebar({
                 <PublishingQueueRow
                   item={item}
                   acting={publishingActingJobId === item.id}
+                  publishActing={publishingPublishActingJobId === item.id}
+                  publishFeedback={publishingFeedbackByJobId[item.id] ?? null}
                   onSchedule={(jobId, iso) => void onSchedulePublish?.(jobId, iso)}
                   onUnschedule={(jobId) => void onUnschedulePublish?.(jobId)}
                   onPublishNow={(jobId) => void onPublishNow?.(jobId)}

@@ -39,6 +39,8 @@ export function PublishingCalendarView() {
     loading,
     error,
     actingJobId,
+    publishActingJobId,
+    publishFeedbackByJobId,
     load,
     schedulePublish,
     unschedulePublish,
@@ -144,6 +146,8 @@ export function PublishingCalendarView() {
                 key={item.id}
                 item={item}
                 acting={actingJobId === item.id}
+                publishActing={publishActingJobId === item.id}
+                publishFeedback={publishFeedbackByJobId[item.id] ?? null}
                 onSchedule={schedulePublish}
                 onUnschedule={unschedulePublish}
                 onPublishNow={publishNow}
@@ -354,6 +358,8 @@ export function PublishingCalendarView() {
                           key={item.id}
                           item={item}
                           acting={actingJobId === item.id}
+                          publishActing={publishActingJobId === item.id}
+                          publishFeedback={publishFeedbackByJobId[item.id] ?? null}
                           onSchedule={schedulePublish}
                           onUnschedule={unschedulePublish}
                           onPublishNow={publishNow}

@@ -21,7 +21,7 @@ export async function enrichReviewDriveFiles(
     }
 
     let posterUrl: string | null = null;
-    if (isVideoMime(f.mimeType)) {
+    if (isVideoMime(f.mimeType) && !thumbnailLink?.trim()) {
       posterUrl = reviewDriveVideoPosterUrl(f.id, candidateId);
     }
 

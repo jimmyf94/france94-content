@@ -14,7 +14,8 @@ export type StablePromptKey =
   | 'task_story_sequence'
   | 'task_reel_caption_overlay'
   | 'task_collision_check'
-  | 'task_reel_reasoning';
+  | 'task_reel_reasoning'
+  | 'task_reel_hook_lab';
 
 export type PromptGroupKey = 'context' | 'task_wired' | 'task_unwired' | 'analysis';
 
@@ -63,6 +64,7 @@ export const STABLE_PROMPT_KEY_LIST = [
   'task_reel_caption_overlay',
   'task_collision_check',
   'task_reel_reasoning',
+  'task_reel_hook_lab',
   'direct_media_analysis',
   'video_sampled_analysis',
   'video_full_analysis',
@@ -157,6 +159,13 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
     key: 'task_reel_reasoning',
     title: 'Task · Reel assembly + reasoning',
     hint: 'Wired into the clip-based reel generation path: selects clips/hook from pre-tagged content_clips and explains why the reel works.',
+    group: 'task_wired',
+    wired: true,
+  },
+  {
+    key: 'task_reel_hook_lab',
+    title: 'Task · Reel hook lab',
+    hint: 'Wired into the review UI hook lab: generates 20–30 discovery POV hook options for a fixed clip-based reel candidate.',
     group: 'task_wired',
     wired: true,
   },

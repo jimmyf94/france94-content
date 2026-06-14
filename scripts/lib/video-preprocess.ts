@@ -280,6 +280,49 @@ export async function extractFrames(
   return out;
 }
 
+/** Single poster frame with a fast seek first, then accurate seek for moov-at-end MOV. */
+export async function extractPosterFrame(
+  filePath: string,
+  timestampSec: number,
+  outDir: string,
+  maxWidth: number,
+): Promise<string | null> {
+  const ffmpeg = requireFfmpeg();
+  const framePath = path.join(outDir, 'poster.jpg');
+  const scaleFilter = `scale='min(${maxWidth},iw)':-2`;
+  const tail = ['-frames:v', '1', '-vf', scaleFilter, '-q:v', '3', framePath];
+
+  const attempts: string[][] = [
+    ['-y', '-loglevel', 'error', '-ss', String(timestampSec), '-i', filePath, ...tail],
+    [
+      '-y',
+      '-loglevel',
+      'error',
+      '-probesize',
+      '32M',
+      '-analyzeduration',
+      '32M',
+      '-i',
+      filePath,
+      '-ss',
+      String(timestampSec),
+      ...tail,
+    ],
+  ];
+
+  for (const args of attempts) {
+    try {
+      if (fs.existsSync(framePath)) fs.unlinkSync(framePath);
+      await runProcess(ffmpeg, args);
+      if (fs.existsSync(framePath)) return framePath;
+    } catch {
+      /* try next strategy */
+    }
+  }
+
+  return null;
+}
+
 export async function extractAudio(filePath: string, outPath: string): Promise<void> {
   const ffmpeg = requireFfmpeg();
   await runProcess(ffmpeg, [

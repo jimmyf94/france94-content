@@ -13,6 +13,7 @@ import { readJsonResponse } from '@/lib/read-json-response';
 import { ActiveCandidateWorkspace } from './ActiveCandidateWorkspace';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
 import { CandidateQueueSidebar } from './CandidateQueueSidebar';
+import { CollapsibleColumnFrame, columnGridWidth } from './CollapsibleColumnFrame';
 import type { ReviewFilters } from './FilterDrawer';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
 import { usePublishingScheduleQueue } from '../publishing/usePublishingScheduleQueue';
@@ -129,6 +130,8 @@ export function ReviewDashboard() {
     items: publishingItems,
     loading: publishingLoading,
     actingJobId: publishingActingJobId,
+    publishActingJobId: publishingPublishActingJobId,
+    publishFeedbackByJobId: publishingFeedbackByJobId,
     schedulePublish,
     unschedulePublish,
     publishNow,
@@ -177,6 +180,10 @@ export function ReviewDashboard() {
   }, [selectedId]);
 
   const [includeBlocked, setIncludeBlocked] = useState(false);
+  const [shellColumnsCollapsed, setShellColumnsCollapsed] = useState({
+    inbox: false,
+    decision: false,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -968,12 +975,23 @@ export function ReviewDashboard() {
     publishingItems,
     publishingLoading,
     publishingActingJobId,
+    publishingFeedbackByJobId,
+    publishingPublishActingJobId,
     onSchedulePublish: handlePublishingSchedule,
     onUnschedulePublish: handlePublishingUnschedule,
     onPublishNow: handlePublishingPublishNow,
     onUnstagePublish: handlePublishingUnstage,
     onRefreshPublishing: refreshPublishingQueue,
   };
+
+  const inboxListCount =
+    activeStatusTab === 'publishing' ? publishingItems.length : counts[activeStatusTab];
+
+  const desktopGridTemplate = [
+    columnGridWidth(shellColumnsCollapsed.inbox, 'minmax(260px,320px)'),
+    'minmax(0,1fr)',
+    columnGridWidth(shellColumnsCollapsed.decision, 'minmax(300px,380px)'),
+  ].join(' ');
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -991,8 +1009,19 @@ export function ReviewDashboard() {
       )}
 
       {/* Desktop operator cockpit */}
-      <div className="hidden min-h-0 flex-1 lg:grid lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)_minmax(300px,380px)]">
-        <div className="flex min-h-0 flex-col border-r border-[var(--border)]">
+      <div
+        className="hidden min-h-0 flex-1 lg:grid"
+        style={{ gridTemplateColumns: desktopGridTemplate }}
+      >
+        <CollapsibleColumnFrame
+          label="Inbox"
+          badge={inboxListCount}
+          collapsed={shellColumnsCollapsed.inbox}
+          onToggleCollapsed={() =>
+            setShellColumnsCollapsed((prev) => ({ ...prev, inbox: !prev.inbox }))
+          }
+          hideHeaderWhenExpanded
+        >
           <CandidateQueueSidebar
             candidates={candidates}
             counts={counts}
@@ -1009,7 +1038,7 @@ export function ReviewDashboard() {
             onCloseFilters={() => setFiltersOpen(false)}
             {...publishingSidebarProps}
           />
-        </div>
+        </CollapsibleColumnFrame>
         <ActiveCandidateWorkspace
           candidate={selected}
           media={selectedMedia}
@@ -1037,23 +1066,34 @@ export function ReviewDashboard() {
           }}
           onStageError={(message) => setToast({ kind: 'bad', msg: message })}
         />
-        <CandidateDecisionPanel
-          candidate={selected}
-          mediaFiles={selectedMedia.files}
-          notes={selected ? (draftNotes[selected.id] ?? '') : ''}
-          savedNotes={selected?.reviewer_notes ?? ''}
-          onChangeNotes={setNotes}
-          onSaveNotes={saveNotes}
-          activeTab={activeDetailTab}
-          onChangeTab={setActiveDetailTab}
-          onCandidateUpdated={handleCandidateUpdated}
-          onRegenerate={regenerate}
-          regenerating={regenerating}
-          onRefreshQueue={() => {
-            void silentReloadCandidates();
-            setPublishingQueueNonce((n) => n + 1);
-          }}
-        />
+        <CollapsibleColumnFrame
+          label="Details"
+          collapsed={shellColumnsCollapsed.decision}
+          togglePlacement="start"
+          onToggleCollapsed={() =>
+            setShellColumnsCollapsed((prev) => ({ ...prev, decision: !prev.decision }))
+          }
+          borderSide="left"
+          hideHeaderWhenExpanded
+        >
+          <CandidateDecisionPanel
+            candidate={selected}
+            mediaFiles={selectedMedia.files}
+            notes={selected ? (draftNotes[selected.id] ?? '') : ''}
+            savedNotes={selected?.reviewer_notes ?? ''}
+            onChangeNotes={setNotes}
+            onSaveNotes={saveNotes}
+            activeTab={activeDetailTab}
+            onChangeTab={setActiveDetailTab}
+            onCandidateUpdated={handleCandidateUpdated}
+            onRegenerate={regenerate}
+            regenerating={regenerating}
+            onRefreshQueue={() => {
+              void silentReloadCandidates();
+              setPublishingQueueNonce((n) => n + 1);
+            }}
+          />
+        </CollapsibleColumnFrame>
       </div>
 
       {/* Mobile stack */}

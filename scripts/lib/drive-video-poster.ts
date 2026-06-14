@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { drive_v3 } from 'googleapis';
 
 import { fetchDriveFileMedia } from './drive-media-download.js';
-import { extractFrames, probeVideo, withTempDir } from './video-preprocess.js';
+import { extractPosterFrame, probeVideo, withTempDir } from './video-preprocess.js';
 
 function envInt(name: string, defaultValue: number): number {
   const raw = process.env[name]?.trim();
@@ -58,12 +58,13 @@ export async function extractDriveVideoPosterJpeg(
           ? Math.min(Math.max(duration * 0.1, 0.25), Math.max(duration - 0.1, 0.25))
           : 0.5;
 
-      const frames = await extractFrames(inputPath, [t], dir, maxWidth);
-      const framePath = frames[0];
+      const framePath = await extractPosterFrame(inputPath, t, dir, maxWidth);
       if (!framePath || !fs.existsSync(framePath)) return null;
       return fs.readFileSync(framePath);
     });
-  } catch {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[drive-video-poster] ${id}: ${msg}`);
     return null;
   }
 }
