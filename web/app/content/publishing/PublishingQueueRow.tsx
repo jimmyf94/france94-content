@@ -169,15 +169,14 @@ export function PublishingQueueRow({
   const progressLabel = publishPipelineProgressLabel(item.status, publishFeedback, publishActing);
 
   return (
-    <>
-      <li
-        className={`rounded-xl border p-3 transition-colors ${
-          selected
-            ? 'border-[var(--accent)] bg-[var(--accent-muted)]'
-            : 'border-[var(--border)] bg-[var(--surface-2)]/60'
-        }`}
-      >
-        <div className="flex gap-3">
+    <li
+      className={`[content-visibility:auto] rounded-xl border p-3 transition-colors ${
+        selected
+          ? 'border-[var(--accent)] bg-[var(--accent-muted)]'
+          : 'border-[var(--border)] bg-[var(--surface-2)]/60'
+      }`}
+    >
+      <div className="flex gap-3">
           <QueueThumbnail item={item} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
@@ -274,7 +273,6 @@ export function PublishingQueueRow({
             />
           </div>
         )}
-      </li>
 
       <BottomSheet open={editOpen} onClose={closeEdit} title="Edit post">
         <div className="scrollbar-thin overflow-auto p-4">
@@ -292,7 +290,7 @@ export function PublishingQueueRow({
           )}
         </div>
       </BottomSheet>
-    </>
+    </li>
   );
 }
 

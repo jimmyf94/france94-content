@@ -170,21 +170,20 @@ export function CandidateQueueSidebar({
             role="list"
           >
             {publishingItems.map((item) => (
-              <li key={item.id} className="[content-visibility:auto]">
-                <PublishingQueueRow
-                  item={item}
-                  acting={publishingActingJobId === item.id}
-                  publishActing={publishingPublishActingJobId === item.id}
-                  publishFeedback={publishingFeedbackByJobId[item.id] ?? null}
-                  onSchedule={(jobId, iso) => void onSchedulePublish?.(jobId, iso)}
-                  onUnschedule={(jobId) => void onUnschedulePublish?.(jobId)}
-                  onPublishNow={(jobId) => void onPublishNow?.(jobId)}
-                  onUnstage={(jobId) => void onUnstagePublish?.(jobId)}
-                  compact
-                  onSelectCandidate={onSelect}
-                  selected={selectedId === item.post_candidate_id}
-                />
-              </li>
+              <PublishingQueueRow
+                key={item.id}
+                item={item}
+                acting={publishingActingJobId === item.id}
+                publishActing={publishingPublishActingJobId === item.id}
+                publishFeedback={publishingFeedbackByJobId[item.id] ?? null}
+                onSchedule={(jobId, iso) => void onSchedulePublish?.(jobId, iso)}
+                onUnschedule={(jobId) => void onUnschedulePublish?.(jobId)}
+                onPublishNow={(jobId) => void onPublishNow?.(jobId)}
+                onUnstage={(jobId) => void onUnstagePublish?.(jobId)}
+                compact
+                onSelectCandidate={onSelect}
+                selected={selectedId === item.post_candidate_id}
+              />
             ))}
           </ul>
         )}

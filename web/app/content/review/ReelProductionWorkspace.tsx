@@ -16,7 +16,7 @@ import { CollapsibleColumnFrame, ColumnPanelToggle, columnGridWidth } from './Co
 import { ReelRenderProgress } from './ReelRenderProgress';
 import { ReelTextStyleFields } from './ReelTextStyleFields';
 import { ReviewMediaTrashButton } from './ReviewMediaTrashButton';
-import type { PostCandidate, ReelHookLabOption, ReelVariantKind, ReviewDriveFile } from './types';
+import type { PostCandidate, ReelHookLabPersistedOption, ReelVariantKind, ReviewDriveFile } from './types';
 import { REEL_VARIANT_KINDS, REEL_VARIANT_LABELS } from './types';
 import type { CandidateMediaState } from './useCandidateMedia';
 
@@ -69,14 +69,19 @@ export type ReelProductionWorkspaceProps = {
   onTimedCuesChange: (cues: ReelTimedOverlayCue[]) => void;
   onStyleChange: (s: ReelRenderTextStyle) => void;
   onCreateVariant: (kind: ReelVariantKind) => void;
-  hookLabOptions: ReelHookLabOption[];
+  hookLabPending: ReelHookLabPersistedOption[];
+  hookLabAccepted: ReelHookLabPersistedOption[];
   hookLabSelected: string[];
-  hookLabBusy: 'generate' | 'apply' | 'variants' | null;
+  hookLabNotes: string;
+  hookLabBusy: 'load' | 'generate' | 'accept' | 'delete' | 'apply' | 'variants' | null;
   hookLabError: string | null;
+  onHookLabNotesChange: (notes: string) => void;
   onGenerateHookLab: () => void;
   onToggleHookLabSelection: (hook: string) => void;
   onSelectAllHookLab: () => void;
   onClearHookLabSelection: () => void;
+  onAcceptHookLabOption: (optionId: string) => void;
+  onDeleteHookLabOption: (optionId: string) => void;
   onApplyHookLab: (hook: string) => void;
   onCreateHookLabVariants: () => void;
   media?: CandidateMediaState;
@@ -708,27 +713,192 @@ function SourceAssetsGrid({
   );
 }
 
+function IconInfo({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function HookLabOptionDetails({ option }: { option: ReelHookLabPersistedOption }) {
+  const hasDetails =
+    option.angle || option.why_it_could_work || option.discovery_fit || option.risk;
+  if (!hasDetails) return null;
+
+  return (
+    <div className="group/hookinfo relative shrink-0">
+      <button
+        type="button"
+        className="inline-flex items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-0.5 text-[var(--muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--text)]"
+        aria-label="Hook details"
+        title="Hook details"
+      >
+        <IconInfo />
+      </button>
+      <div className="pointer-events-none invisible absolute right-0 top-full z-50 mt-1 w-[min(90vw,20rem)] rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3 opacity-0 shadow-xl transition-opacity group-hover/hookinfo:pointer-events-auto group-hover/hookinfo:visible group-hover/hookinfo:opacity-100 group-focus-within/hookinfo:pointer-events-auto group-focus-within/hookinfo:visible group-focus-within/hookinfo:opacity-100">
+        <div className="space-y-2 text-xs leading-relaxed text-[var(--text)]">
+          {option.angle ? (
+            <p>
+              <span className="font-semibold uppercase tracking-wide text-violet-200/90">
+                Angle
+              </span>
+              <br />
+              {option.angle}
+            </p>
+          ) : null}
+          {option.why_it_could_work ? (
+            <p>
+              <span className="font-semibold text-[var(--muted)]">Why it could work</span>
+              <br />
+              {option.why_it_could_work}
+            </p>
+          ) : null}
+          {option.discovery_fit ? (
+            <p>
+              <span className="font-semibold text-[var(--muted)]">Discovery</span>
+              <br />
+              {option.discovery_fit}
+            </p>
+          ) : null}
+          {option.risk ? (
+            <p className="text-amber-200/90">
+              <span className="font-semibold">Risk</span>
+              <br />
+              {option.risk}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HookLabOptionRow({
+  option,
+  checked,
+  isBusy,
+  showSelection,
+  onToggleSelection,
+  onAccept,
+  onDelete,
+  onApply,
+}: {
+  option: ReelHookLabPersistedOption;
+  checked: boolean;
+  isBusy: boolean;
+  showSelection?: boolean;
+  onToggleSelection?: (hook: string) => void;
+  onAccept?: (optionId: string) => void;
+  onDelete?: (optionId: string) => void;
+  onApply?: (hook: string) => void;
+}) {
+  return (
+    <li
+      className={`rounded-lg border px-2.5 py-2 ${
+        checked
+          ? 'border-violet-500/50 bg-violet-500/10'
+          : 'border-[var(--border)] bg-[var(--surface)]'
+      }`}
+    >
+      <div className="flex items-start gap-2">
+        {showSelection && onToggleSelection ? (
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={isBusy}
+            onChange={() => onToggleSelection(option.hook)}
+            className="mt-1 shrink-0"
+            aria-label={`Select hook: ${option.hook}`}
+          />
+        ) : null}
+        <p className="min-w-0 flex-1 text-sm font-medium leading-snug text-[var(--text)]">
+          {option.hook}
+        </p>
+        <HookLabOptionDetails option={option} />
+      </div>
+      {(onAccept || onDelete || onApply) && (
+        <div className="mt-2 flex flex-wrap gap-1.5 pl-0">
+          {onAccept ? (
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onAccept(option.id)}
+              className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-100 hover:border-emerald-400 disabled:opacity-50"
+            >
+              Accept
+            </button>
+          ) : null}
+          {onDelete ? (
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onDelete(option.id)}
+              className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted)] hover:border-[var(--bad)] hover:text-[var(--bad)] disabled:opacity-50"
+            >
+              Delete
+            </button>
+          ) : null}
+          {onApply ? (
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onApply(option.hook)}
+              className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              Use on reel
+            </button>
+          ) : null}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function HookLabPanel({
-  options,
+  pending,
+  accepted,
   selected,
+  notes,
   busy,
   error,
+  onNotesChange,
   onGenerate,
   onToggleSelection,
   onSelectAll,
   onClearSelection,
+  onAccept,
+  onDelete,
   onApply,
   onCreateVariants,
   layoutVariant = 'embedded',
 }: {
-  options: ReelHookLabOption[];
+  pending: ReelHookLabPersistedOption[];
+  accepted: ReelHookLabPersistedOption[];
   selected: string[];
-  busy: 'generate' | 'apply' | 'variants' | null;
+  notes: string;
+  busy: ReelProductionWorkspaceProps['hookLabBusy'];
   error: string | null;
+  onNotesChange: (notes: string) => void;
   onGenerate: () => void;
   onToggleSelection: (hook: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
+  onAccept: (optionId: string) => void;
+  onDelete: (optionId: string) => void;
   onApply: (hook: string) => void;
   onCreateVariants: () => void;
   layoutVariant?: 'column' | 'embedded';
@@ -736,121 +906,127 @@ function HookLabPanel({
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const isBusy = busy != null;
   const isColumn = layoutVariant === 'column';
+  const hasBatch = pending.length > 0 || accepted.length > 0;
+  const generateLabel =
+    busy === 'generate'
+      ? 'Generating…'
+      : hasBatch
+        ? 'Generate another 9'
+        : 'Generate 9 hooks';
 
   const controls = (
-    <div className={`flex flex-wrap items-center gap-2 ${isColumn ? 'pb-3' : ''}`}>
-      <button
-        type="button"
-        disabled={isBusy}
-        onClick={onGenerate}
-        className="rounded-lg border border-violet-500/40 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-violet-100 hover:border-violet-400 disabled:opacity-50"
-      >
-        {busy === 'generate' ? 'Generating…' : 'Generate 30 hooks'}
-      </button>
-      {options.length > 0 && (
-        <>
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={onSelectAll}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
-          >
-            Select all
-          </button>
-          <button
-            type="button"
-            disabled={isBusy || selected.length === 0}
-            onClick={onClearSelection}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
-          >
-            Clear
-          </button>
-          <button
-            type="button"
-            disabled={isBusy || selected.length === 0}
-            onClick={onCreateVariants}
-            className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
-          >
-            {busy === 'variants'
-              ? 'Creating variants…'
-              : `Create selected variants (${selected.length})`}
-          </button>
-        </>
-      )}
+    <div className={`flex flex-col gap-2 ${isColumn ? 'pb-3' : ''}`}>
+      <label className="block text-[11px] font-medium text-[var(--muted)]">
+        Notes for next batch
+        <textarea
+          value={notes}
+          disabled={isBusy}
+          onChange={(e) => onNotesChange(e.target.value)}
+          rows={2}
+          placeholder="e.g. more family confusion, less countdown…"
+          className="mt-1 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--muted)] disabled:opacity-50"
+        />
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={isBusy}
+          onClick={onGenerate}
+          className="rounded-lg border border-violet-500/40 bg-violet-500/15 px-3 py-1.5 text-xs font-semibold text-violet-100 hover:border-violet-400 disabled:opacity-50"
+        >
+          {generateLabel}
+        </button>
+        {pending.length > 0 && (
+          <>
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={onSelectAll}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              disabled={isBusy || selected.length === 0}
+              onClick={onClearSelection}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              disabled={isBusy || selected.length === 0}
+              onClick={onCreateVariants}
+              className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              {busy === 'variants'
+                ? 'Creating variants…'
+                : `Create selected variants (${selected.length})`}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 
   const hookList =
-    options.length === 0 ? (
+    pending.length === 0 && accepted.length === 0 ? (
       <p className="text-xs leading-relaxed text-[var(--muted)]">
-        Generate many POV discovery hooks for this exact reel. Same clips, different overlay text
-        — pick several and render trial variants at once.
+        Generate nine discovery POV hooks for this exact reel. Accept the ones you like, delete the
+        rest, then generate another batch with notes.
       </p>
     ) : (
-      <ul
+      <div
         className={
           isColumn
-            ? 'scrollbar-thin min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1'
-            : 'max-h-[min(50vh,24rem)] space-y-2 overflow-y-auto pr-1'
+            ? 'scrollbar-thin min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain pr-1'
+            : 'max-h-[min(50vh,24rem)] space-y-4 overflow-y-auto pr-1'
         }
       >
-        {options.map((opt) => {
-          const checked = selectedSet.has(opt.hook);
-          return (
-            <li
-              key={opt.hook}
-              className={`rounded-lg border px-3 py-2.5 ${
-                checked
-                  ? 'border-violet-500/50 bg-violet-500/10'
-                  : 'border-[var(--border)] bg-[var(--surface)]'
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={isBusy}
-                  onChange={() => onToggleSelection(opt.hook)}
-                  className="mt-1 shrink-0"
-                  aria-label={`Select hook: ${opt.hook}`}
+        {pending.length > 0 ? (
+          <section>
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Current batch ({pending.length})
+            </h3>
+            <ul className="space-y-2">
+              {pending.map((opt) => (
+                <HookLabOptionRow
+                  key={opt.id}
+                  option={opt}
+                  checked={selectedSet.has(opt.hook)}
+                  isBusy={isBusy}
+                  showSelection
+                  onToggleSelection={onToggleSelection}
+                  onAccept={onAccept}
+                  onDelete={onDelete}
+                  onApply={onApply}
                 />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium leading-snug text-[var(--text)]">{opt.hook}</p>
-                  {opt.angle ? (
-                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-violet-200/90">
-                      {opt.angle}
-                    </p>
-                  ) : null}
-                  {opt.why_it_could_work ? (
-                    <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                      {opt.why_it_could_work}
-                    </p>
-                  ) : null}
-                  {opt.discovery_fit ? (
-                    <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                      <span className="font-medium text-[var(--text)]">Discovery:</span>{' '}
-                      {opt.discovery_fit}
-                    </p>
-                  ) : null}
-                  {opt.risk ? (
-                    <p className="mt-1 text-xs leading-relaxed text-amber-200/90">{opt.risk}</p>
-                  ) : null}
-                  <div className="mt-2">
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={() => onApply(opt.hook)}
-                      className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
-                    >
-                      {busy === 'apply' ? 'Applying…' : 'Use on this reel'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {accepted.length > 0 ? (
+          <section>
+            <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-emerald-200/80">
+              Accepted ({accepted.length})
+            </h3>
+            <ul className="space-y-2">
+              {accepted.map((opt) => (
+                <HookLabOptionRow
+                  key={opt.id}
+                  option={opt}
+                  checked={selectedSet.has(opt.hook)}
+                  isBusy={isBusy}
+                  showSelection
+                  onToggleSelection={onToggleSelection}
+                  onApply={onApply}
+                />
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
     );
 
   if (isColumn) {
@@ -862,6 +1038,9 @@ function HookLabPanel({
             <p className="mt-2 rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2.5 py-2 text-xs text-[var(--bad)]">
               {error}
             </p>
+          ) : null}
+          {busy === 'load' ? (
+            <p className="mt-2 text-xs text-[var(--muted)]">Loading saved hooks…</p>
           ) : null}
         </div>
         <div className="flex min-h-0 flex-1 flex-col px-4 py-3">{hookList}</div>
@@ -876,6 +1055,9 @@ function HookLabPanel({
         <p className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2.5 py-2 text-xs text-[var(--bad)]">
           {error}
         </p>
+      ) : null}
+      {busy === 'load' ? (
+        <p className="text-xs text-[var(--muted)]">Loading saved hooks…</p>
       ) : null}
       {hookList}
     </div>
@@ -897,21 +1079,24 @@ function buildReelWorkspaceGridCols(
   return `${stage} ${hookLab} ${settings}`;
 }
 
-function HookLabColumn(
-  props: HookLabPanelProps & {
-    optionCount: number;
-    collapsed: boolean;
-    onToggleCollapsed: () => void;
-  },
-) {
-  if (props.collapsed) {
+function HookLabColumn({
+  optionCount,
+  collapsed,
+  onToggleCollapsed,
+  ...panelProps
+}: HookLabPanelProps & {
+  optionCount: number;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  if (collapsed) {
     return (
       <CollapsibleColumnFrame
         label="Hook Lab"
-        badge={props.optionCount > 0 ? props.optionCount : null}
+        badge={optionCount > 0 ? optionCount : null}
         collapsed
         togglePlacement="start"
-        onToggleCollapsed={props.onToggleCollapsed}
+        onToggleCollapsed={onToggleCollapsed}
         borderSide="both"
       >
         {null}
@@ -926,7 +1111,7 @@ function HookLabColumn(
           label="Hook Lab"
           collapsed={false}
           placement="start"
-          onClick={props.onToggleCollapsed}
+          onClick={onToggleCollapsed}
         />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -935,9 +1120,9 @@ function HookLabColumn(
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--text)]">
             Hook Lab
           </h2>
-          {props.optionCount > 0 ? (
+          {optionCount > 0 ? (
             <span className="rounded-sm border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-violet-200">
-              {props.optionCount}
+              {optionCount}
             </span>
           ) : null}
         </div>
@@ -945,7 +1130,7 @@ function HookLabColumn(
           Discovery POV hooks for this reel. Same clips — trial overlay text.
         </p>
       </div>
-      <HookLabPanel {...props} layoutVariant="column" />
+      <HookLabPanel {...panelProps} layoutVariant="column" />
       </div>
     </aside>
   );
@@ -967,14 +1152,19 @@ function OperatorPanel({
   onStyleChange,
   onCreateVariant,
   includeHookLab = true,
-  hookLabOptions,
+  hookLabPending,
+  hookLabAccepted,
   hookLabSelected,
+  hookLabNotes,
   hookLabBusy,
   hookLabError,
+  onHookLabNotesChange,
   onGenerateHookLab,
   onToggleHookLabSelection,
   onSelectAllHookLab,
   onClearHookLabSelection,
+  onAcceptHookLabOption,
+  onDeleteHookLabOption,
   onApplyHookLab,
   onCreateHookLabVariants,
   clips,
@@ -994,14 +1184,19 @@ function OperatorPanel({
   | 'onTimedCuesChange'
   | 'onStyleChange'
   | 'onCreateVariant'
-  | 'hookLabOptions'
+  | 'hookLabPending'
+  | 'hookLabAccepted'
   | 'hookLabSelected'
+  | 'hookLabNotes'
   | 'hookLabBusy'
   | 'hookLabError'
+  | 'onHookLabNotesChange'
   | 'onGenerateHookLab'
   | 'onToggleHookLabSelection'
   | 'onSelectAllHookLab'
   | 'onClearHookLabSelection'
+  | 'onAcceptHookLabOption'
+  | 'onDeleteHookLabOption'
   | 'onApplyHookLab'
   | 'onCreateHookLabVariants'
   | 'clips'
@@ -1109,19 +1304,28 @@ function OperatorPanel({
       {isClipReel && includeHookLab && (
         <CollapsibleSection
           title="Hook Lab"
-          hint="Generate 20–30 discovery POV hooks for this reel. Same clips, trial overlay text."
-          badge={hookLabOptions.length > 0 ? String(hookLabOptions.length) : undefined}
+          hint="Generate 9 discovery POV hooks. Accept, delete, or regenerate with notes."
+          badge={
+            hookLabPending.length + hookLabAccepted.length > 0
+              ? String(hookLabPending.length + hookLabAccepted.length)
+              : undefined
+          }
           defaultOpen={false}
         >
           <HookLabPanel
-            options={hookLabOptions}
+            pending={hookLabPending}
+            accepted={hookLabAccepted}
             selected={hookLabSelected}
+            notes={hookLabNotes}
             busy={hookLabBusy}
             error={hookLabError}
+            onNotesChange={onHookLabNotesChange}
             onGenerate={onGenerateHookLab}
             onToggleSelection={onToggleHookLabSelection}
             onSelectAll={onSelectAllHookLab}
             onClearSelection={onClearHookLabSelection}
+            onAccept={onAcceptHookLabOption}
+            onDelete={onDeleteHookLabOption}
             onApply={onApplyHookLab}
             onCreateVariants={onCreateHookLabVariants}
           />
@@ -1211,15 +1415,20 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
 
   const reelGridTemplate = buildReelWorkspaceGridCols(showHookLabColumn, reelColumnsCollapsed);
 
-  const hookLabPanelProps: HookLabPanelProps = {
-    options: props.hookLabOptions,
+  const hookLabPanelProps = {
+    pending: props.hookLabPending,
+    accepted: props.hookLabAccepted,
     selected: props.hookLabSelected,
+    notes: props.hookLabNotes,
     busy: props.hookLabBusy,
     error: props.hookLabError,
+    onNotesChange: props.onHookLabNotesChange,
     onGenerate: props.onGenerateHookLab,
     onToggleSelection: props.onToggleHookLabSelection,
     onSelectAll: props.onSelectAllHookLab,
     onClearSelection: props.onClearHookLabSelection,
+    onAccept: props.onAcceptHookLabOption,
+    onDelete: props.onDeleteHookLabOption,
     onApply: props.onApplyHookLab,
     onCreateVariants: props.onCreateHookLabVariants,
   };
@@ -1308,7 +1517,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
         {showHookLabColumn ? (
           <HookLabColumn
             {...hookLabPanelProps}
-            optionCount={props.hookLabOptions.length}
+            optionCount={props.hookLabPending.length + props.hookLabAccepted.length}
             collapsed={reelColumnsCollapsed.hookLab}
             onToggleCollapsed={() => toggleReelColumn('hookLab')}
           />
@@ -1385,14 +1594,19 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                 onStyleChange={props.onStyleChange}
                 onCreateVariant={props.onCreateVariant}
                 includeHookLab={false}
-                hookLabOptions={props.hookLabOptions}
+                hookLabPending={props.hookLabPending}
+                hookLabAccepted={props.hookLabAccepted}
                 hookLabSelected={props.hookLabSelected}
+                hookLabNotes={props.hookLabNotes}
                 hookLabBusy={props.hookLabBusy}
                 hookLabError={props.hookLabError}
+                onHookLabNotesChange={props.onHookLabNotesChange}
                 onGenerateHookLab={props.onGenerateHookLab}
                 onToggleHookLabSelection={props.onToggleHookLabSelection}
                 onSelectAllHookLab={props.onSelectAllHookLab}
                 onClearHookLabSelection={props.onClearHookLabSelection}
+                onAcceptHookLabOption={props.onAcceptHookLabOption}
+                onDeleteHookLabOption={props.onDeleteHookLabOption}
                 onApplyHookLab={props.onApplyHookLab}
                 onCreateHookLabVariants={props.onCreateHookLabVariants}
                 clips={props.clips}
@@ -1586,19 +1800,28 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
             </CollapsibleSection>
             <CollapsibleSection
               title="Hook Lab"
-              hint="Generate discovery POV hooks for trial reels on the same clips."
-              badge={props.hookLabOptions.length > 0 ? String(props.hookLabOptions.length) : undefined}
+              hint="Generate 9 discovery POV hooks. Accept, delete, or regenerate with notes."
+              badge={
+                props.hookLabPending.length + props.hookLabAccepted.length > 0
+                  ? String(props.hookLabPending.length + props.hookLabAccepted.length)
+                  : undefined
+              }
               defaultOpen={false}
             >
               <HookLabPanel
-                options={props.hookLabOptions}
+                pending={props.hookLabPending}
+                accepted={props.hookLabAccepted}
                 selected={props.hookLabSelected}
+                notes={props.hookLabNotes}
                 busy={props.hookLabBusy}
                 error={props.hookLabError}
+                onNotesChange={props.onHookLabNotesChange}
                 onGenerate={props.onGenerateHookLab}
                 onToggleSelection={props.onToggleHookLabSelection}
                 onSelectAll={props.onSelectAllHookLab}
                 onClearSelection={props.onClearHookLabSelection}
+                onAccept={props.onAcceptHookLabOption}
+                onDelete={props.onDeleteHookLabOption}
                 onApply={props.onApplyHookLab}
                 onCreateVariants={props.onCreateHookLabVariants}
               />

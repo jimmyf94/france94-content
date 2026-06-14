@@ -22,11 +22,19 @@ import {
   type ReelReasoning,
   type ReelSpecification,
 } from './reel-assembly.js';
+import { resolveFr94Phase, type Fr94ProjectPhase } from './ai/prompts/post-planner.js';
 import { mergeHookWithOverlayLines } from './reel-text-style.js';
 
-export const DEFAULT_HOOK_LAB_OPTION_COUNT = 30;
-export const MIN_HOOK_LAB_OPTION_COUNT = 20;
-export const MAX_HOOK_LAB_OPTION_COUNT = 30;
+export const DEFAULT_HOOK_LAB_OPTION_COUNT = 9;
+export const MIN_HOOK_LAB_OPTION_COUNT = 6;
+export const MAX_HOOK_LAB_OPTION_COUNT = 9;
+
+export type ReelHookLabOptionStatus =
+  | 'pending'
+  | 'accepted'
+  | 'deleted'
+  | 'applied'
+  | 'variant_created';
 
 export type ReelHookLabOption = {
   hook: string;
@@ -36,8 +44,37 @@ export type ReelHookLabOption = {
   risk?: string;
 };
 
+export type ReelHookLabPersistedOption = ReelHookLabOption & {
+  id: string;
+  batch_id: string;
+  status: ReelHookLabOptionStatus;
+  seq: number;
+  created_at: string;
+};
+
+export type ReelHookLabBatchRow = {
+  id: string;
+  post_candidate_id: string;
+  status: string;
+  reviewer_notes: string | null;
+  option_count: number;
+  llm_model: string | null;
+  created_at: string;
+};
+
+export type ReelHookLabState = {
+  active_batch: ReelHookLabBatchRow | null;
+  pending: ReelHookLabPersistedOption[];
+  accepted: ReelHookLabPersistedOption[];
+};
+
 export type ReelHookLabGenerateResult =
-  | { ok: true; options: ReelHookLabOption[]; llmModel: string }
+  | {
+      ok: true;
+      options: ReelHookLabPersistedOption[];
+      batch: ReelHookLabBatchRow;
+      llmModel: string;
+    }
   | { ok: false; error: string };
 
 export type ClipReelCandidateContext = {
@@ -146,7 +183,252 @@ function normalizeHookLabOptions(raw: z.infer<typeof hookLabOptionSchema>[]): Re
 export function clampHookLabOptionCount(count: number | undefined): number {
   const n = count ?? DEFAULT_HOOK_LAB_OPTION_COUNT;
   if (!Number.isFinite(n)) return DEFAULT_HOOK_LAB_OPTION_COUNT;
-  return Math.min(MAX_HOOK_LAB_OPTION_COUNT, Math.max(MIN_HOOK_LAB_OPTION_COUNT, Math.round(n)));
+  return Math.min(MAX_HOOK_LAB_OPTION_COUNT, Math.max(1, Math.round(n)));
+}
+
+function rowToPersistedOption(row: Record<string, unknown>): ReelHookLabPersistedOption {
+  return {
+    id: String(row.id),
+    batch_id: String(row.batch_id),
+    status: String(row.status) as ReelHookLabOptionStatus,
+    seq: typeof row.seq === 'number' ? row.seq : Number(row.seq ?? 0),
+    hook: String(row.hook ?? ''),
+    angle: String(row.angle ?? ''),
+    why_it_could_work: String(row.why_it_could_work ?? ''),
+    discovery_fit: String(row.discovery_fit ?? ''),
+    risk: typeof row.risk === 'string' && row.risk.trim() ? row.risk.trim() : undefined,
+    created_at: String(row.created_at ?? ''),
+  };
+}
+
+function rowToBatch(row: Record<string, unknown>): ReelHookLabBatchRow {
+  return {
+    id: String(row.id),
+    post_candidate_id: String(row.post_candidate_id),
+    status: String(row.status ?? 'active'),
+    reviewer_notes:
+      typeof row.reviewer_notes === 'string' && row.reviewer_notes.trim()
+        ? row.reviewer_notes.trim()
+        : null,
+    option_count: typeof row.option_count === 'number' ? row.option_count : DEFAULT_HOOK_LAB_OPTION_COUNT,
+    llm_model: typeof row.llm_model === 'string' ? row.llm_model : null,
+    created_at: String(row.created_at ?? ''),
+  };
+}
+
+export async function loadReelHookLabState(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<ReelHookLabState> {
+  const { data: batchRows, error: batchErr } = await supabase
+    .from('reel_hook_lab_batches')
+    .select('id, post_candidate_id, status, reviewer_notes, option_count, llm_model, created_at')
+    .eq('post_candidate_id', candidateId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (batchErr) throw new Error(`loadReelHookLabState batches: ${batchErr.message}`);
+
+  const activeBatch = batchRows?.[0] ? rowToBatch(batchRows[0] as Record<string, unknown>) : null;
+
+  const { data: acceptedRows, error: acceptedErr } = await supabase
+    .from('reel_hook_lab_options')
+    .select(
+      'id, batch_id, status, seq, hook, angle, why_it_could_work, discovery_fit, risk, created_at',
+    )
+    .eq('post_candidate_id', candidateId)
+    .eq('status', 'accepted')
+    .order('created_at', { ascending: false });
+
+  if (acceptedErr) throw new Error(`loadReelHookLabState accepted: ${acceptedErr.message}`);
+
+  let pending: ReelHookLabPersistedOption[] = [];
+  if (activeBatch) {
+    const { data: pendingRows, error: pendingErr } = await supabase
+      .from('reel_hook_lab_options')
+      .select(
+        'id, batch_id, status, seq, hook, angle, why_it_could_work, discovery_fit, risk, created_at',
+      )
+      .eq('batch_id', activeBatch.id)
+      .eq('status', 'pending')
+      .order('seq', { ascending: true });
+
+    if (pendingErr) throw new Error(`loadReelHookLabState pending: ${pendingErr.message}`);
+    pending = (pendingRows ?? []).map((r) => rowToPersistedOption(r as Record<string, unknown>));
+  }
+
+  return {
+    active_batch: activeBatch,
+    pending,
+    accepted: (acceptedRows ?? []).map((r) => rowToPersistedOption(r as Record<string, unknown>)),
+  };
+}
+
+type PriorHookLabContext = {
+  accepted_hooks: string[];
+  deleted_hooks: string[];
+  prior_pending_hooks: string[];
+};
+
+async function loadPriorHookLabContext(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<PriorHookLabContext> {
+  const { data, error } = await supabase
+    .from('reel_hook_lab_options')
+    .select('hook, status')
+    .eq('post_candidate_id', candidateId)
+    .in('status', ['accepted', 'deleted', 'pending', 'applied', 'variant_created']);
+
+  if (error) throw new Error(`loadPriorHookLabContext: ${error.message}`);
+
+  const accepted_hooks: string[] = [];
+  const deleted_hooks: string[] = [];
+  const prior_pending_hooks: string[] = [];
+
+  for (const row of data ?? []) {
+    const hook = typeof row.hook === 'string' ? row.hook.trim() : '';
+    if (!hook) continue;
+    const status = String(row.status ?? '');
+    if (status === 'accepted') accepted_hooks.push(hook);
+    else if (status === 'deleted') deleted_hooks.push(hook);
+    else if (status === 'pending') prior_pending_hooks.push(hook);
+  }
+
+  return { accepted_hooks, deleted_hooks, prior_pending_hooks };
+}
+
+async function supersedeActiveHookLabBatches(
+  supabase: SupabaseClient,
+  candidateId: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('reel_hook_lab_batches')
+    .update({ status: 'superseded', updated_at: now })
+    .eq('post_candidate_id', candidateId)
+    .eq('status', 'active');
+
+  if (error) throw new Error(`supersedeActiveHookLabBatches: ${error.message}`);
+}
+
+async function persistHookLabBatch(params: {
+  supabase: SupabaseClient;
+  candidateId: string;
+  reviewerNotes: string | null;
+  optionCount: number;
+  llmModel: string;
+  llmRaw: unknown;
+  options: ReelHookLabOption[];
+}): Promise<{ batch: ReelHookLabBatchRow; options: ReelHookLabPersistedOption[] }> {
+  await supersedeActiveHookLabBatches(params.supabase, params.candidateId);
+  const now = new Date().toISOString();
+
+  const { data: batchRow, error: batchErr } = await params.supabase
+    .from('reel_hook_lab_batches')
+    .insert({
+      post_candidate_id: params.candidateId,
+      status: 'active',
+      reviewer_notes: params.reviewerNotes,
+      option_count: params.optionCount,
+      llm_model: params.llmModel,
+      llm_raw: params.llmRaw,
+      created_at: now,
+      updated_at: now,
+    })
+    .select('id, post_candidate_id, status, reviewer_notes, option_count, llm_model, created_at')
+    .single();
+
+  if (batchErr || !batchRow) {
+    throw new Error(`persistHookLabBatch insert batch: ${batchErr?.message ?? 'no row'}`);
+  }
+
+  const batch = rowToBatch(batchRow as Record<string, unknown>);
+  const optionRows = params.options.map((opt, idx) => ({
+    batch_id: batch.id,
+    post_candidate_id: params.candidateId,
+    seq: idx,
+    hook: opt.hook,
+    angle: opt.angle,
+    why_it_could_work: opt.why_it_could_work,
+    discovery_fit: opt.discovery_fit,
+    risk: opt.risk ?? null,
+    status: 'pending',
+    created_at: now,
+    updated_at: now,
+  }));
+
+  const { data: insertedOptions, error: optErr } = await params.supabase
+    .from('reel_hook_lab_options')
+    .insert(optionRows)
+    .select(
+      'id, batch_id, status, seq, hook, angle, why_it_could_work, discovery_fit, risk, created_at',
+    );
+
+  if (optErr) throw new Error(`persistHookLabBatch insert options: ${optErr.message}`);
+
+  return {
+    batch,
+    options: (insertedOptions ?? []).map((r) => rowToPersistedOption(r as Record<string, unknown>)),
+  };
+}
+
+export async function setReelHookLabOptionStatus(
+  supabase: SupabaseClient,
+  params: {
+    candidateId: string;
+    optionId: string;
+    status: ReelHookLabOptionStatus;
+  },
+): Promise<{ ok: true; option: ReelHookLabPersistedOption } | { ok: false; error: string }> {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('reel_hook_lab_options')
+    .update({ status: params.status, updated_at: now })
+    .eq('id', params.optionId)
+    .eq('post_candidate_id', params.candidateId)
+    .select(
+      'id, batch_id, status, seq, hook, angle, why_it_could_work, discovery_fit, risk, created_at',
+    )
+    .maybeSingle();
+
+  if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Hook lab option not found' };
+  return { ok: true, option: rowToPersistedOption(data as Record<string, unknown>) };
+}
+
+async function markHookLabOptionsByHookText(
+  supabase: SupabaseClient,
+  candidateId: string,
+  hooks: string[],
+  status: ReelHookLabOptionStatus,
+): Promise<void> {
+  const normalized = [...new Set(hooks.map((h) => h.trim().toLowerCase()).filter(Boolean))];
+  if (normalized.length === 0) return;
+
+  const { data, error } = await supabase
+    .from('reel_hook_lab_options')
+    .select('id, hook')
+    .eq('post_candidate_id', candidateId)
+    .in('status', ['pending', 'accepted']);
+
+  if (error || !data) return;
+
+  const ids = data
+    .filter((row) => {
+      const hook = typeof row.hook === 'string' ? row.hook.trim().toLowerCase() : '';
+      return hook && normalized.includes(hook);
+    })
+    .map((row) => String(row.id));
+
+  if (ids.length === 0) return;
+
+  const now = new Date().toISOString();
+  await supabase
+    .from('reel_hook_lab_options')
+    .update({ status, updated_at: now })
+    .in('id', ids);
 }
 
 /** Load clip rows (with asset join) for the clip ids used in a reel spec. */
@@ -240,6 +522,8 @@ export async function generateReelHookLabOptions(params: {
   ai: GoogleGenAI;
   candidate: ClipReelCandidateContext;
   optionCount?: number;
+  reviewerNotes?: string | null;
+  currentPhase?: Fr94ProjectPhase;
 }): Promise<ReelHookLabGenerateResult> {
   const ctx = requireClipReelCandidateContext(params.candidate);
   if (!ctx) {
@@ -252,12 +536,17 @@ export async function generateReelHookLabOptions(params: {
 
   const { spec, variantBase } = ctx;
   const optionCount = clampHookLabOptionCount(params.optionCount);
+  const reviewerNotes = params.reviewerNotes?.trim() || null;
   const clipIds = spec.clips.map((c) => c.clip_id);
+  const now = new Date();
+  const currentDate = now.toISOString().slice(0, 10);
+  const currentPhase = params.currentPhase ?? resolveFr94Phase(now);
 
-  const [allSeries, selectedClips, recentLedger] = await Promise.all([
+  const [allSeries, selectedClips, recentLedger, priorHookLab] = await Promise.all([
     loadActiveSeries(params.supabase),
     loadClipsByIds(params.supabase, clipIds),
     loadRecentLedgerContext(params.supabase, { days: 60, limit: 80 }),
+    loadPriorHookLabContext(params.supabase, params.candidate.id),
   ]);
 
   const seriesSlug = params.candidate.selected_series?.trim() || '';
@@ -279,6 +568,9 @@ export async function generateReelHookLabOptions(params: {
   const stable = appendSeriesToSystemInstruction(composed.text, [targetSeries]);
 
   const payload: Record<string, unknown> = {
+    current_date: currentDate,
+    current_phase: currentPhase,
+    reviewer_notes: reviewerNotes,
     target_series: seriesForPrompt(targetSeries),
     base_candidate: {
       candidate_id: params.candidate.id,
@@ -297,7 +589,9 @@ export async function generateReelHookLabOptions(params: {
       default_format: 'pov',
       language: 'fr',
       keep_clips_fixed: true,
+      assume_cold_audience: currentPhase === 'foundation_public_build',
     },
+    prior_hook_lab: priorHookLab,
     recent_committed: reelRecent,
   };
 
@@ -338,9 +632,27 @@ export async function generateReelHookLabOptions(params: {
     };
   }
 
+  const trimmedOptions = options.slice(0, optionCount);
+  let persisted;
+  try {
+    persisted = await persistHookLabBatch({
+      supabase: params.supabase,
+      candidateId: params.candidate.id,
+      reviewerNotes,
+      optionCount,
+      llmModel: modelUsed,
+      llmRaw: json,
+      options: trimmedOptions,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+
   return {
     ok: true,
-    options: options.slice(0, optionCount),
+    options: persisted.options,
+    batch: persisted.batch,
     llmModel: modelUsed,
   };
 }
@@ -380,6 +692,7 @@ export async function applyHookToClipReelCandidate(
     .eq('id', candidate.id);
 
   if (error) return { ok: false, error: error.message };
+  await markHookLabOptionsByHookText(supabase, candidate.id, [hookTrim], 'applied');
   return { ok: true };
 }
 
@@ -462,6 +775,8 @@ export async function createHookVariantsFromClipReelCandidate(
       error: renderRes.error ?? undefined,
     });
   }
+
+  await markHookLabOptionsByHookText(supabase, candidate.id, uniqueHooks, 'variant_created');
 
   return { created, errors };
 }

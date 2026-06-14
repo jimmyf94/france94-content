@@ -6,7 +6,10 @@ import {
   applyHookToClipReelCandidate,
   clampHookLabOptionCount,
   createHookVariantsFromClipReelCandidate,
+  DEFAULT_HOOK_LAB_OPTION_COUNT,
   generateReelHookLabOptions,
+  loadReelHookLabState,
+  setReelHookLabOptionStatus,
   type ClipReelCandidateContext,
 } from '@fr94/reel-hook-lab';
 
@@ -19,7 +22,16 @@ export const runtime = 'nodejs';
 const bodySchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('generate'),
-    option_count: z.number().int().min(20).max(30).optional(),
+    option_count: z.number().int().min(1).max(9).optional(),
+    reviewer_notes: z.string().max(4000).optional().nullable(),
+  }),
+  z.object({
+    action: z.literal('accept'),
+    option_id: z.string().uuid(),
+  }),
+  z.object({
+    action: z.literal('delete'),
+    option_id: z.string().uuid(),
   }),
   z.object({
     action: z.literal('apply'),
@@ -66,6 +78,58 @@ function toClipReelCandidateContext(row: Record<string, unknown>): ClipReelCandi
   };
 }
 
+async function loadCandidateContext(supabase: ReturnType<typeof getSupabaseServiceRole>, id: string) {
+  const { data: row, error: readErr } = await supabase
+    .from('post_candidates')
+    .select(POST_CANDIDATE_DETAIL_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (readErr) {
+    console.error('[hook-lab] read', readErr);
+    return { error: NextResponse.json({ error: readErr.message }, { status: 500 }) };
+  }
+  if (!row) {
+    return { error: NextResponse.json({ error: 'Candidate not found' }, { status: 404 }) };
+  }
+
+  const candidateRow = row as unknown as Record<string, unknown>;
+  const postType = String(candidateRow.post_type ?? '');
+  if (postType !== 'reel') {
+    return {
+      error: NextResponse.json(
+        { error: 'Hook lab is only supported for reel candidates' },
+        { status: 400 },
+      ),
+    };
+  }
+
+  return { candidate: toClipReelCandidateContext(candidateRow) };
+}
+
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const denied = assertReviewAuthorized(req);
+  if (denied) return denied;
+
+  const { id } = await ctx.params;
+  if (!id?.trim()) {
+    return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+  }
+
+  const supabase = getSupabaseServiceRole();
+  const loaded = await loadCandidateContext(supabase, id);
+  if ('error' in loaded && loaded.error) return loaded.error;
+
+  try {
+    const state = await loadReelHookLabState(supabase, id);
+    return NextResponse.json(state);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[hook-lab] load', msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = assertReviewAuthorized(req);
   if (denied) return denied;
@@ -85,28 +149,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   }
 
   const supabase = getSupabaseServiceRole();
-
-  const { data: row, error: readErr } = await supabase
-    .from('post_candidates')
-    .select(POST_CANDIDATE_DETAIL_COLUMNS)
-    .eq('id', id)
-    .maybeSingle();
-
-  if (readErr) {
-    console.error('[hook-lab] read', readErr);
-    return NextResponse.json({ error: readErr.message }, { status: 500 });
-  }
-  if (!row) {
-    return NextResponse.json({ error: 'Candidate not found' }, { status: 404 });
-  }
-
-  const candidateRow = row as unknown as Record<string, unknown>;
-  const postType = String(candidateRow.post_type ?? '');
-  if (postType !== 'reel') {
-    return NextResponse.json({ error: 'Hook lab is only supported for reel candidates' }, { status: 400 });
-  }
-
-  const candidate = toClipReelCandidateContext(candidateRow);
+  const loaded = await loadCandidateContext(supabase, id);
+  if ('error' in loaded && loaded.error) return loaded.error;
+  const candidate = loaded.candidate!;
 
   if (body.action === 'generate') {
     let result;
@@ -116,7 +161,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         supabase,
         ai,
         candidate,
-        optionCount: clampHookLabOptionCount(body.option_count),
+        optionCount: clampHookLabOptionCount(body.option_count ?? DEFAULT_HOOK_LAB_OPTION_COUNT),
+        reviewerNotes: body.reviewer_notes ?? null,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -128,11 +174,41 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return NextResponse.json({ error: result.error }, { status: 422 });
     }
 
+    const state = await loadReelHookLabState(supabase, id);
     return NextResponse.json({
+      batch: result.batch,
       options: result.options,
+      pending: state.pending,
+      accepted: state.accepted,
       option_count: result.options.length,
       llm_model: result.llmModel,
     });
+  }
+
+  if (body.action === 'accept') {
+    const updated = await setReelHookLabOptionStatus(supabase, {
+      candidateId: id,
+      optionId: body.option_id,
+      status: 'accepted',
+    });
+    if (!updated.ok) {
+      return NextResponse.json({ error: updated.error }, { status: 400 });
+    }
+    const state = await loadReelHookLabState(supabase, id);
+    return NextResponse.json({ option: updated.option, ...state });
+  }
+
+  if (body.action === 'delete') {
+    const updated = await setReelHookLabOptionStatus(supabase, {
+      candidateId: id,
+      optionId: body.option_id,
+      status: 'deleted',
+    });
+    if (!updated.ok) {
+      return NextResponse.json({ error: updated.error }, { status: 400 });
+    }
+    const state = await loadReelHookLabState(supabase, id);
+    return NextResponse.json({ option: updated.option, ...state });
   }
 
   if (body.action === 'apply') {
@@ -152,7 +228,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return NextResponse.json({ error: fetchErr.message }, { status: 500 });
     }
 
-    return NextResponse.json({ candidate: updated, hook: body.hook.trim() });
+    const state = await loadReelHookLabState(supabase, id);
+    return NextResponse.json({ candidate: updated, hook: body.hook.trim(), ...state });
   }
 
   const variantResult = await createHookVariantsFromClipReelCandidate(
@@ -183,11 +260,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     (createdRows ?? []).map((r) => [String((r as { id?: string }).id), r]),
   );
 
+  const state = await loadReelHookLabState(supabase, id);
+
   return NextResponse.json({
     created: variantResult.created.map((item) => ({
       ...item,
       candidate: byId.get(item.candidate_id) ?? null,
     })),
     errors: variantResult.errors,
+    ...state,
   });
 }

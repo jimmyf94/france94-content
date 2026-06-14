@@ -165,7 +165,7 @@ export const PROMPT_REGISTRY: readonly PromptMetaDef[] = [
   {
     key: 'task_reel_hook_lab',
     title: 'Task · Reel hook lab',
-    hint: 'Wired into the review UI hook lab: generates 20–30 discovery POV hook options for a fixed clip-based reel candidate.',
+    hint: 'Wired into the review UI hook lab: generates 9 discovery POV hook options for a fixed clip-based reel candidate.',
     group: 'task_wired',
     wired: true,
   },

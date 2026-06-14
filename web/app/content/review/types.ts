@@ -31,6 +31,21 @@ export type ReelHookLabOption = {
   risk?: string;
 };
 
+export type ReelHookLabOptionStatus =
+  | 'pending'
+  | 'accepted'
+  | 'deleted'
+  | 'applied'
+  | 'variant_created';
+
+export type ReelHookLabPersistedOption = ReelHookLabOption & {
+  id: string;
+  batch_id: string;
+  status: ReelHookLabOptionStatus;
+  seq: number;
+  created_at: string;
+};
+
 export type PostCandidate = {
   id: string;
   candidate_date: string | null;
