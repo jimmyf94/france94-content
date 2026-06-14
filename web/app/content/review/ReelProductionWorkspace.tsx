@@ -1205,22 +1205,9 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
   const currentTimeSec = stageTab === 'rendered' ? renderedTimeSec : null;
   const showHookLabColumn = props.isClipReel;
 
-  const toggleReelColumn = useCallback(
-    (key: ReelWorkspaceColumnKey) => {
-      setReelColumnsCollapsed((prev) => {
-        if (prev[key]) {
-          return { ...prev, [key]: false };
-        }
-        const keys: ReelWorkspaceColumnKey[] = showHookLabColumn
-          ? ['hookLab', 'settings']
-          : ['settings'];
-        const expanded = keys.filter((k) => !prev[k]);
-        if (expanded.length === 1 && expanded[0] === key) return prev;
-        return { ...prev, [key]: true };
-      });
-    },
-    [showHookLabColumn],
-  );
+  const toggleReelColumn = useCallback((key: ReelWorkspaceColumnKey) => {
+    setReelColumnsCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
 
   const reelGridTemplate = buildReelWorkspaceGridCols(showHookLabColumn, reelColumnsCollapsed);
 
