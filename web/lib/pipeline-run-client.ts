@@ -5,6 +5,7 @@ export type PipelineRunPayload = {
   auto_pause_threshold: number;
   auto_ingest_interval_minutes: number;
   enabled_post_types: string[];
+  auto_reel_render_enabled: boolean;
   needs_review_count: number;
   last_run_started_at: string | null;
   last_run_finished_at: string | null;

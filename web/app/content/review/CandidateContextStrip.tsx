@@ -137,6 +137,7 @@ export function CandidateContextStrip({
   onApproveAnyway,
   onDelete,
   deleting,
+  deciding,
   onRefreshQueue,
   onStageError,
   decisionsDisabled,
@@ -149,6 +150,7 @@ export function CandidateContextStrip({
   onApproveAnyway?: () => void;
   onDelete?: () => void;
   deleting?: boolean;
+  deciding?: boolean;
   onRefreshQueue?: () => void;
   onStageError?: (message: string) => void;
   decisionsDisabled?: boolean;
@@ -163,7 +165,6 @@ export function CandidateContextStrip({
   const showApproveAnyway =
     onApproveAnyway &&
     ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
-    candidate.has_asset_conflict !== true &&
     !candidate.invalidated_at &&
     candidate.status !== 'ready_to_publish';
 
@@ -231,7 +232,7 @@ export function CandidateContextStrip({
                   variant="iconOnly"
                   size="md"
                   showShortcuts={false}
-                  disabled={decisionsDisabled}
+                  disabled={decisionsDisabled || deciding}
                   approveDisabled={approveDisabled}
                   allDecisionsDisabled={allDecisionsDisabled}
                 />

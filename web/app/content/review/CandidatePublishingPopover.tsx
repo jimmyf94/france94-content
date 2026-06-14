@@ -3,13 +3,13 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
+import { stagingProgressLabel } from '@/lib/publishing-publish-feedback';
 
 import { PublishingJobView } from '../publishing/PublishingJobView';
 import { notifyScheduleQueueChanged } from '../schedule-events';
 import {
   loadPublishingJobByCandidate,
   preparePublishingForCandidate,
-  publishPublishingJobNow,
   refreshPublishingJobStatus,
   schedulePublishingJob,
   unschedulePublishingJob,
@@ -17,6 +17,7 @@ import {
   updateReelTrialStrategy,
 } from './publishingJobClient';
 import type { PostCandidate } from './types';
+import { usePublishingJobProgress } from './usePublishingJobProgress';
 import { canAutoStagePublishingForCandidate } from '@/lib/publishing-staging';
 import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
@@ -36,6 +37,7 @@ export function CandidatePublishingPopover({
   const [job, setJob] = useState<PublishingJobDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [staging, setStaging] = useState(false);
+  const [stagingStarted, setStagingStarted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [acting, setActing] = useState(false);
@@ -61,10 +63,22 @@ export function CandidatePublishingPopover({
     }
   }, [candidate.id]);
 
+  const {
+    publishActing,
+    publishNow,
+    showProgress: showPublishProgress,
+    progressLabel: publishProgressLabel,
+  } = usePublishingJobProgress({
+    job,
+    candidateId: candidate.id,
+    onJobUpdate: setJob,
+  });
+
   useEffect(() => {
     if (!open) {
       setJob(null);
       setError(null);
+      setStagingStarted(false);
       return;
     }
 
@@ -75,12 +89,15 @@ export function CandidatePublishingPopover({
       if (!canAutoStagePublishingForCandidate(candidate.status)) return;
 
       setStaging(true);
+      setStagingStarted(false);
       try {
         const staged = await preparePublishingForCandidate(candidate.id);
         if (staged) {
           setJob(staged);
           refreshQueue();
         } else {
+          setStagingStarted(true);
+          refreshQueue();
           await loadJob();
         }
       } catch (e) {
@@ -91,7 +108,17 @@ export function CandidatePublishingPopover({
         setStaging(false);
       }
     })();
-  }, [open, candidate.id, candidate.publishing_job_id, candidate.status, loadJob, refreshQueue]);
+  }, [open, candidate.id, candidate.publishing_job_id, candidate.status, loadJob, refreshQueue, onError]);
+
+  useEffect(() => {
+    if (!open || !staging) return undefined;
+    const timer = window.setInterval(() => {
+      void loadPublishingJobByCandidate(candidate.id).then((polled) => {
+        if (polled) setJob(polled);
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [open, staging, candidate.id]);
 
   const refreshGraph = async () => {
     if (!job?.id) return;
@@ -138,22 +165,6 @@ export function CandidatePublishingPopover({
     }
   };
 
-  const publishNow = async () => {
-    if (!job?.id) return;
-    setActing(true);
-    setError(null);
-    try {
-      const updated = await publishPublishingJobNow(job.id, candidate.id);
-      setJob(updated);
-      refreshQueue();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActing(false);
-      void loadJob();
-    }
-  };
-
   const unstagePublish = async () => {
     if (!job?.id) return;
     setActing(true);
@@ -186,6 +197,8 @@ export function CandidatePublishingPopover({
 
   if (!open) return null;
 
+  const stagingLabel = stagingProgressLabel(job?.status, staging || (stagingStarted && !job));
+
   return (
     <>
       <button
@@ -214,13 +227,17 @@ export function CandidatePublishingPopover({
         </div>
 
         <div className="scrollbar-thin flex-1 overflow-auto p-4">
-          {(loading || staging) && (
-            <p className="text-sm text-[var(--muted)]">
-              {staging ? 'Staging for publishing…' : 'Loading…'}
+          {(loading || staging || (stagingStarted && !job)) && (
+            <p className="text-sm text-[var(--warn)]">{stagingLabel}</p>
+          )}
+          {stagingStarted && !staging && !job && !error && (
+            <p className="mt-2 text-xs text-[var(--muted)]">
+              Staging started; worker will pick it up within ~5 minutes. Check the Publishing tab
+              for progress.
             </p>
           )}
-          {error && <p className="text-sm text-[var(--bad)]">{error}</p>}
-          {!loading && !staging && !job && !error && (
+          {error && <p className="mt-2 text-sm text-[var(--bad)]">{error}</p>}
+          {!loading && !staging && !job && !error && !stagingStarted && (
             <p className="text-sm text-[var(--muted)]">No publishing job for this candidate yet.</p>
           )}
           {job && (
@@ -230,6 +247,10 @@ export function CandidatePublishingPopover({
               refreshing={refreshing}
               onRefreshGraph={refreshGraph}
               publishingActing={acting}
+              publishActing={publishActing}
+              showPublishProgress={showPublishProgress}
+              publishProgressLabel={publishProgressLabel}
+              publishBackgroundHint
               onSchedulePublish={schedulePublish}
               onUnschedulePublish={unschedulePublish}
               onPublishNow={publishNow}

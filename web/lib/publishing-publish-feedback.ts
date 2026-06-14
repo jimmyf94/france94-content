@@ -47,3 +47,56 @@ export function publishPipelineProgressLabel(
 
   return feedback?.message ?? defaultPublishNowMessage(feedback?.dispatched ?? true);
 }
+
+export function stagingProgressLabel(
+  jobStatus: string | null | undefined,
+  stagingActive: boolean,
+): string {
+  if (stagingActive && !jobStatus) return 'Starting staging…';
+  if (jobStatus === 'draft') return 'Creating publishing job…';
+  if (jobStatus === 'media_prepared') return 'Preparing media for Instagram…';
+  if (jobStatus === 'processing' || jobStatus === 'containers_created') {
+    return 'Waiting for Instagram containers…';
+  }
+  if (jobStatus === 'ready_to_publish') return 'Ready to schedule or publish';
+  if (stagingActive) return 'Staging for publishing…';
+  return 'Loading publishing job…';
+}
+
+export function showPublishPipelineProgress(
+  status: string,
+  feedback?: PublishNowFeedback | null,
+  publishActing = false,
+): boolean {
+  if (publishActing) return true;
+  if (!feedback) return false;
+  if (isPublishPipelineTerminal(status)) return false;
+  return isPublishPipelineInProgress(status) || status === 'draft' || status === 'scheduled';
+}
+
+export function countActivePublishingJobs(
+  items: Array<{ id: string; status: string }>,
+  feedbackByJobId: Record<string, PublishNowFeedback>,
+  publishActingJobId?: string | null,
+): number {
+  const activeIds = new Set<string>();
+  for (const item of items) {
+    const feedback = feedbackByJobId[item.id] ?? null;
+    const fromFeedback = showPublishPipelineProgress(
+      item.status,
+      feedback,
+      publishActingJobId === item.id,
+    );
+    const fromStatus =
+      item.status === 'publishing' ||
+      item.status === 'processing' ||
+      item.status === 'containers_created';
+    if (fromFeedback || fromStatus) {
+      activeIds.add(item.id);
+    }
+  }
+  if (publishActingJobId && !activeIds.has(publishActingJobId)) {
+    activeIds.add(publishActingJobId);
+  }
+  return activeIds.size;
+}

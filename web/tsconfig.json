@@ -32,6 +32,7 @@
       "@fr94/reel-render-progress": ["../scripts/lib/reel-render-progress"],
       "@fr94/reel-render-defaults": ["../scripts/lib/reel-render-defaults"],
       "@fr94/content-clips": ["../scripts/lib/content-clips"],
+      "@fr94/pipeline-settings": ["../scripts/lib/pipeline-settings"],
       "@fr94/publishing/instagram-graph": ["../scripts/lib/publishing/instagram-graph"]
     }
   },

@@ -74,7 +74,9 @@ export type ReelProductionWorkspaceProps = {
   hookLabSelected: string[];
   hookLabNotes: string;
   hookLabBusy: 'load' | 'generate' | 'accept' | 'delete' | 'apply' | 'variants' | null;
+  hookLabBusyOptionId?: string | null;
   hookLabError: string | null;
+  renderMessage?: string | null;
   onHookLabNotesChange: (notes: string) => void;
   onGenerateHookLab: () => void;
   onToggleHookLabSelection: (hook: string) => void;
@@ -82,7 +84,7 @@ export type ReelProductionWorkspaceProps = {
   onClearHookLabSelection: () => void;
   onAcceptHookLabOption: (optionId: string) => void;
   onDeleteHookLabOption: (optionId: string) => void;
-  onApplyHookLab: (hook: string) => void;
+  onApplyHookLab: (hook: string, optionId?: string) => void;
   onCreateHookLabVariants: () => void;
   media?: CandidateMediaState;
   videoRef?: React.RefObject<HTMLVideoElement | null>;
@@ -791,6 +793,8 @@ function HookLabOptionRow({
   option,
   checked,
   isBusy,
+  busyAction,
+  busyOptionId,
   showSelection,
   onToggleSelection,
   onAccept,
@@ -800,12 +804,19 @@ function HookLabOptionRow({
   option: ReelHookLabPersistedOption;
   checked: boolean;
   isBusy: boolean;
+  busyAction?: 'accept' | 'delete' | 'apply' | null;
+  busyOptionId?: string | null;
   showSelection?: boolean;
   onToggleSelection?: (hook: string) => void;
   onAccept?: (optionId: string) => void;
   onDelete?: (optionId: string) => void;
-  onApply?: (hook: string) => void;
+  onApply?: (hook: string, optionId: string) => void;
 }) {
+  const isRowBusy = isBusy && busyOptionId === option.id;
+  const acceptLabel = isRowBusy && busyAction === 'accept' ? 'Accepting…' : 'Accept';
+  const deleteLabel = isRowBusy && busyAction === 'delete' ? 'Deleting…' : 'Delete';
+  const applyLabel = isRowBusy && busyAction === 'apply' ? 'Applying…' : 'Use on reel';
+
   return (
     <li
       className={`rounded-lg border px-2.5 py-2 ${
@@ -839,7 +850,7 @@ function HookLabOptionRow({
               onClick={() => onAccept(option.id)}
               className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-100 hover:border-emerald-400 disabled:opacity-50"
             >
-              Accept
+              {acceptLabel}
             </button>
           ) : null}
           {onDelete ? (
@@ -849,17 +860,17 @@ function HookLabOptionRow({
               onClick={() => onDelete(option.id)}
               className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--muted)] hover:border-[var(--bad)] hover:text-[var(--bad)] disabled:opacity-50"
             >
-              Delete
+              {deleteLabel}
             </button>
           ) : null}
           {onApply ? (
             <button
               type="button"
               disabled={isBusy}
-              onClick={() => onApply(option.hook)}
+              onClick={() => onApply(option.hook, option.id)}
               className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-2 py-0.5 text-[10px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
             >
-              Use on reel
+              {applyLabel}
             </button>
           ) : null}
         </div>
@@ -874,6 +885,7 @@ function HookLabPanel({
   selected,
   notes,
   busy,
+  busyOptionId,
   error,
   onNotesChange,
   onGenerate,
@@ -891,6 +903,7 @@ function HookLabPanel({
   selected: string[];
   notes: string;
   busy: ReelProductionWorkspaceProps['hookLabBusy'];
+  busyOptionId?: string | null;
   error: string | null;
   onNotesChange: (notes: string) => void;
   onGenerate: () => void;
@@ -899,7 +912,7 @@ function HookLabPanel({
   onClearSelection: () => void;
   onAccept: (optionId: string) => void;
   onDelete: (optionId: string) => void;
-  onApply: (hook: string) => void;
+  onApply: (hook: string, optionId?: string) => void;
   onCreateVariants: () => void;
   layoutVariant?: 'column' | 'embedded';
 }) {
@@ -909,10 +922,12 @@ function HookLabPanel({
   const hasBatch = pending.length > 0 || accepted.length > 0;
   const generateLabel =
     busy === 'generate'
-      ? 'Generating…'
+      ? 'Generating 9 hooks…'
       : hasBatch
         ? 'Generate another 9'
         : 'Generate 9 hooks';
+  const rowBusyAction =
+    busy === 'accept' || busy === 'delete' || busy === 'apply' ? busy : null;
 
   const controls = (
     <div className={`flex flex-col gap-2 ${isColumn ? 'pb-3' : ''}`}>
@@ -996,6 +1011,8 @@ function HookLabPanel({
                   option={opt}
                   checked={selectedSet.has(opt.hook)}
                   isBusy={isBusy}
+                  busyAction={rowBusyAction}
+                  busyOptionId={busyOptionId}
                   showSelection
                   onToggleSelection={onToggleSelection}
                   onAccept={onAccept}
@@ -1018,6 +1035,8 @@ function HookLabPanel({
                   option={opt}
                   checked={selectedSet.has(opt.hook)}
                   isBusy={isBusy}
+                  busyAction={rowBusyAction}
+                  busyOptionId={busyOptionId}
                   showSelection
                   onToggleSelection={onToggleSelection}
                   onApply={onApply}
@@ -1157,6 +1176,7 @@ function OperatorPanel({
   hookLabSelected,
   hookLabNotes,
   hookLabBusy,
+  hookLabBusyOptionId,
   hookLabError,
   onHookLabNotesChange,
   onGenerateHookLab,
@@ -1189,6 +1209,7 @@ function OperatorPanel({
   | 'hookLabSelected'
   | 'hookLabNotes'
   | 'hookLabBusy'
+  | 'hookLabBusyOptionId'
   | 'hookLabError'
   | 'onHookLabNotesChange'
   | 'onGenerateHookLab'
@@ -1318,6 +1339,7 @@ function OperatorPanel({
             selected={hookLabSelected}
             notes={hookLabNotes}
             busy={hookLabBusy}
+            busyOptionId={hookLabBusyOptionId}
             error={hookLabError}
             onNotesChange={onHookLabNotesChange}
             onGenerate={onGenerateHookLab}
@@ -1395,8 +1417,8 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
   const [reelColumnsCollapsed, setReelColumnsCollapsed] = useState<
     Record<ReelWorkspaceColumnKey, boolean>
   >({
-    hookLab: false,
-    settings: false,
+    hookLab: true,
+    settings: true,
   });
   const laneTag = resolveLaneTag(props.candidate);
   const assetCount = props.media?.files?.length ?? props.clipCount;
@@ -1421,6 +1443,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
     selected: props.hookLabSelected,
     notes: props.hookLabNotes,
     busy: props.hookLabBusy,
+    busyOptionId: props.hookLabBusyOptionId,
     error: props.hookLabError,
     onNotesChange: props.onHookLabNotesChange,
     onGenerate: props.onGenerateHookLab,
@@ -1551,13 +1574,16 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
             draftDiffersFromRendered={props.draftDiffersFromRendered}
             onRender={props.onRender}
           />
-          {(props.loading && !props.job) || props.error || props.job?.error_message ? (
+          {(props.loading && !props.job) || props.error || props.renderMessage ? (
             <div className="shrink-0 border-b border-[var(--border)] px-3 py-2">
               {props.loading && !props.job && (
                 <p className="text-xs text-[var(--muted)]">Loading render job…</p>
               )}
               {props.error && (
                 <p className="text-xs whitespace-pre-wrap text-[var(--bad)]">{props.error}</p>
+              )}
+              {props.renderMessage && (
+                <p className="text-xs text-[var(--warn)]">{props.renderMessage}</p>
               )}
               {props.job?.error_message && (
                 <p className="text-xs whitespace-pre-wrap text-[var(--bad)]">
@@ -1599,6 +1625,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                 hookLabSelected={props.hookLabSelected}
                 hookLabNotes={props.hookLabNotes}
                 hookLabBusy={props.hookLabBusy}
+                hookLabBusyOptionId={props.hookLabBusyOptionId}
                 hookLabError={props.hookLabError}
                 onHookLabNotesChange={props.onHookLabNotesChange}
                 onGenerateHookLab={props.onGenerateHookLab}
@@ -1638,13 +1665,16 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
           status={props.job?.status ?? null}
         />
       </div>
-      {(props.loading && !props.job) || props.error ? (
+      {(props.loading && !props.job) || props.error || props.renderMessage ? (
         <div className="border-b border-[var(--border)] px-4 py-2 lg:px-6">
           {props.loading && !props.job && (
             <p className="text-xs text-[var(--muted)]">Loading render job…</p>
           )}
           {props.error && (
             <p className="text-xs whitespace-pre-wrap text-[var(--bad)]">{props.error}</p>
+          )}
+          {props.renderMessage && (
+            <p className="text-xs text-[var(--warn)]">{props.renderMessage}</p>
           )}
         </div>
       ) : null}
@@ -1814,6 +1844,7 @@ function CompactLayout(props: ReelProductionWorkspaceProps) {
                 selected={props.hookLabSelected}
                 notes={props.hookLabNotes}
                 busy={props.hookLabBusy}
+                busyOptionId={props.hookLabBusyOptionId}
                 error={props.hookLabError}
                 onNotesChange={props.onHookLabNotesChange}
                 onGenerate={props.onGenerateHookLab}

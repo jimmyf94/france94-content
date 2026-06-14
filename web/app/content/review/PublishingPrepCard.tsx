@@ -6,18 +6,19 @@ import type { PublishingJobDto } from '@/lib/publishing-types';
 import { canOpenPublishingForCandidate } from '@/lib/publishing-staging';
 import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
+import { PublishProgressBanner } from '../publishing/PublishProgressBanner';
 import { PublishingJobView, statusTone } from '../publishing/PublishingJobView';
 import { notifyScheduleQueueChanged } from '../schedule-events';
 
 import {
   loadPublishingJobByCandidate,
-  publishPublishingJobNow,
   refreshPublishingJobStatus,
   schedulePublishingJob,
   unschedulePublishingJob,
   updateReelTrialStrategy,
 } from './publishingJobClient';
 import type { PostCandidate } from './types';
+import { usePublishingJobProgress } from './usePublishingJobProgress';
 
 export function PublishingPrepCard({
   candidate,
@@ -62,6 +63,17 @@ export function PublishingPrepCard({
       setLoading(false);
     }
   }, [candidate.id, candidate.publishing_job_id, candidate.status]);
+
+  const {
+    publishActing,
+    publishNow,
+    showProgress: showPublishProgress,
+    progressLabel: publishProgressLabel,
+  } = usePublishingJobProgress({
+    job,
+    candidateId: candidate.id,
+    onJobUpdate: setJob,
+  });
 
   useEffect(() => {
     if (!show) {
@@ -113,21 +125,6 @@ export function PublishingPrepCard({
     }
   };
 
-  const publishNow = async () => {
-    if (!job?.id) return;
-    setPublishingActing(true);
-    setError(null);
-    try {
-      setJob(await publishPublishingJobNow(job.id, candidate.id));
-      refreshQueue();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPublishingActing(false);
-      void load();
-    }
-  };
-
   const updateReelTrial = async (strategy: ReelTrialGraduationStrategy | null) => {
     if (!job?.id) return;
     setPublishingActing(true);
@@ -159,9 +156,14 @@ export function PublishingPrepCard({
       )}
 
       {job && compact && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
-          <span className="text-[var(--muted)]">· {job.publish_type}</span>
+        <div className="mt-2 space-y-2">
+          {showPublishProgress && (
+            <PublishProgressBanner label={publishProgressLabel} />
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
+            <span className="text-[var(--muted)]">· {job.publish_type}</span>
+          </div>
         </div>
       )}
 
@@ -172,6 +174,9 @@ export function PublishingPrepCard({
           refreshing={refreshing}
           onRefreshGraph={refreshGraph}
           publishingActing={publishingActing}
+          publishActing={publishActing}
+          showPublishProgress={showPublishProgress}
+          publishProgressLabel={publishProgressLabel}
           onSchedulePublish={schedulePublish}
           onUnschedulePublish={unschedulePublish}
           onPublishNow={publishNow}

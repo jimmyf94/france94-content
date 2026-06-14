@@ -18,6 +18,7 @@ export type PipelineRow = {
   auto_pause_threshold: number;
   auto_ingest_interval_minutes: number;
   enabled_post_types: PipelinePostType[];
+  auto_reel_render_enabled: boolean;
   last_run_started_at: string | null;
   last_run_finished_at: string | null;
   last_run_status: string | null;
@@ -54,7 +55,7 @@ export async function loadPipelineRow(
   const { data, error } = await supabase
     .from('pipeline_settings')
     .select(
-      'auto_ingest_enabled,auto_pause_threshold,auto_ingest_interval_minutes,enabled_post_types,last_run_started_at,last_run_finished_at,last_run_status,last_run_summary,updated_at',
+      'auto_ingest_enabled,auto_pause_threshold,auto_ingest_interval_minutes,enabled_post_types,auto_reel_render_enabled,last_run_started_at,last_run_finished_at,last_run_status,last_run_summary,updated_at',
     )
     .eq('singleton', PIPELINE_SINGLETON)
     .maybeSingle();
@@ -68,6 +69,7 @@ export async function loadPipelineRow(
     ...row,
     auto_ingest_interval_minutes: row.auto_ingest_interval_minutes ?? 30,
     enabled_post_types: normalizeEnabledPostTypes(row.enabled_post_types),
+    auto_reel_render_enabled: row.auto_reel_render_enabled === true,
   };
 }
 
@@ -77,6 +79,7 @@ export function toPipelinePayload(row: PipelineRow, needsReview: number) {
     auto_pause_threshold: row.auto_pause_threshold,
     auto_ingest_interval_minutes: row.auto_ingest_interval_minutes,
     enabled_post_types: normalizeEnabledPostTypes(row.enabled_post_types),
+    auto_reel_render_enabled: row.auto_reel_render_enabled === true,
     needs_review_count: needsReview,
     last_run_started_at: row.last_run_started_at,
     last_run_finished_at: row.last_run_finished_at,

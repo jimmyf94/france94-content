@@ -379,6 +379,43 @@ export function PipelineSection({
           </SettingsCard>
 
           <SettingsCard
+            title="Reel render"
+            description="When on, clip-based reels automatically queue a render after generation, approval, or variant creation. Render now in the production workspace always works."
+          >
+            <FieldRow
+              label="Auto reel render"
+              hint="Off by default — turn on to restore background rendering without clicking Render now"
+            >
+              <div className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-0.5">
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void patch({ auto_reel_render_enabled: true })}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    data.auto_reel_render_enabled
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'text-[var(--muted)] hover:text-[var(--text)]'
+                  }`}
+                >
+                  On
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void patch({ auto_reel_render_enabled: false })}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    !data.auto_reel_render_enabled
+                      ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
+                      : 'text-[var(--muted)] hover:text-[var(--text)]'
+                  }`}
+                >
+                  Off
+                </button>
+              </div>
+            </FieldRow>
+          </SettingsCard>
+
+          <SettingsCard
             title="Manual run"
             description="Trigger GitHub Actions immediately. Use a new candidate batch when the current queue has nothing worth a solo regeneration."
           >

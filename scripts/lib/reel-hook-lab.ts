@@ -23,6 +23,7 @@ import {
   type ReelSpecification,
 } from './reel-assembly.js';
 import { resolveFr94Phase, type Fr94ProjectPhase } from './ai/prompts/post-planner.js';
+import { loadAutoReelRenderEnabled } from './pipeline-settings.js';
 import { mergeHookWithOverlayLines } from './reel-text-style.js';
 
 export const DEFAULT_HOOK_LAB_OPTION_COUNT = 9;
@@ -744,6 +745,7 @@ export async function createHookVariantsFromClipReelCandidate(
 
   const created: HookVariantCreateResult[] = [];
   const errors: string[] = [];
+  const autoReelRenderEnabled = await loadAutoReelRenderEnabled(supabase);
 
   for (const hook of uniqueHooks) {
     const reel = buildAssembledReelWithHook(candidate, ctx.spec, hook);
@@ -760,19 +762,23 @@ export async function createHookVariantsFromClipReelCandidate(
       continue;
     }
 
-    const renderRes = await enqueueReelRenderJob(supabase, {
-      candidateId: ins.id,
-      reel,
-    });
-    if (renderRes.error) {
-      errors.push(`${hook}: render enqueue failed — ${renderRes.error}`);
+    let renderQueued = false;
+    if (autoReelRenderEnabled) {
+      const renderRes = await enqueueReelRenderJob(supabase, {
+        candidateId: ins.id,
+        reel,
+      });
+      if (renderRes.error) {
+        errors.push(`${hook}: render enqueue failed — ${renderRes.error}`);
+      } else {
+        renderQueued = true;
+      }
     }
 
     created.push({
       hook,
       candidate_id: ins.id,
-      render_queued: !renderRes.error,
-      error: renderRes.error ?? undefined,
+      render_queued: renderQueued,
     });
   }
 

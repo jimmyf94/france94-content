@@ -8,6 +8,10 @@ export type ReviewToolbarState = {
   generatingCandidates: boolean;
   generateDisabled: boolean;
   includeBlocked: boolean;
+  refreshingReview?: boolean;
+  healingLedger?: boolean;
+  pipelineRunStatus?: string | null;
+  activePublishingCount?: number;
 };
 
 export function requestReviewRefresh(): void {

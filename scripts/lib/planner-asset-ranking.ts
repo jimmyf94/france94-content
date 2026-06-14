@@ -12,12 +12,13 @@ export type PlannerAssetSummary = {
   candidate_eligibility?: string | null;
 };
 
-/** Assets the planner must not use (matches generate_candidate.md rules). */
-const BLOCKED_USAGE_STATUSES = new Set([
-  'published',
-  'hard_locked',
-  'approved_pending',
-]);
+/** Assets with prior usage stay available, but rank below clean unused assets. */
+const USAGE_STATUS_PENALTIES: Record<string, number> = {
+  published: -25,
+  hard_locked: -25,
+  scheduled: -20,
+  approved_pending: -15,
+};
 
 export type PlannerAssetRankContext = {
   committedAssetIds: Set<string>;
@@ -33,9 +34,8 @@ export function scoreAssetForPlanner(
   summary: PlannerAssetSummary,
   ctx: PlannerAssetRankContext,
 ): number {
-  if (BLOCKED_USAGE_STATUSES.has(summary.usage_status)) return Number.NEGATIVE_INFINITY;
-
   let score = 0;
+  score += USAGE_STATUS_PENALTIES[summary.usage_status] ?? 0;
   score += numericScore(summary.quality_score) * 2;
   score += numericScore(summary.mission_score) * 1.5;
   score += numericScore(summary.human_score) * 1.5;

@@ -100,7 +100,7 @@ flowchart LR
 Asset reservations and the asset-usage ledger ride alongside this flow:
 
 - On candidate approve, `recordAssetUsageEvent('approved')` reserves source assets (`content_assets.usage_status='approved_pending'`).
-- On publishing-job `ready_to_publish`, hard locks may be applied (`APPLY_ASSET_LOCKS_AT_READY_TO_PUBLISH=true`).
+- On publishing-job `ready_to_publish`, final published usage is recorded for warnings/reporting; asset reuse is not hard-blocked.
 - Reconciliation endpoint repairs stale approvals: `POST /api/content-review/reconcile-asset-reservations`.
 
 ---

@@ -5,6 +5,8 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { readJsonResponse } from '@/lib/read-json-response';
+import { countActivePublishingJobs } from '@/lib/publishing-publish-feedback';
+import { isPipelineRunBusy } from '@/lib/pipeline-run-client';
 
 import { openScheduleDrawer, SCHEDULE_QUEUE_CHANGED_EVENT } from './schedule-events';
 import {
@@ -238,6 +240,7 @@ export function ContentNav() {
   const pathname = usePathname() ?? '';
   const [pipelineOn, setPipelineOn] = useState<boolean | null>(null);
   const [scheduleCount, setScheduleCount] = useState(0);
+  const [activePublishingCount, setActivePublishingCount] = useState(0);
   const [reviewToolbar, setReviewToolbar] = useState<ReviewToolbarState>({
     generatingCandidates: false,
     generateDisabled: false,
@@ -246,6 +249,12 @@ export function ContentNav() {
 
   const showReviewToolbar = isReviewCockpitPath(pathname);
   const generateBusy = reviewToolbar.generatingCandidates || reviewToolbar.generateDisabled;
+  const scheduleTitle =
+    activePublishingCount > 0
+      ? `${activePublishingCount} post${activePublishingCount === 1 ? '' : 's'} publishing`
+      : scheduleCount > 0
+        ? `${scheduleCount} in queue`
+        : 'Schedule';
 
   useEffect(() => {
     let cancelled = false;
@@ -255,9 +264,13 @@ export function ContentNav() {
           credentials: 'include',
           cache: 'no-store',
         });
-        const json = await readJsonResponse<{ items?: unknown[] }>(res);
+        const json = await readJsonResponse<{ items?: Array<{ id: string; status: string }> }>(res);
         if (!cancelled && res.ok) {
-          setScheduleCount(json.items?.length ?? 0);
+          const items = json.items ?? [];
+          setScheduleCount(items.length);
+          setActivePublishingCount(
+            countActivePublishingJobs(items, {}, null),
+          );
         }
       } catch {
         if (!cancelled) setScheduleCount(0);
@@ -351,10 +364,14 @@ export function ContentNav() {
               onClick={() => openScheduleDrawer()}
               className="relative flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md border border-black bg-black p-2 text-[var(--bad)] transition-[filter] hover:brightness-125 lg:min-h-0 lg:min-w-0"
               aria-label="Schedule"
-              title="Schedule"
+              title={scheduleTitle}
             >
               <IconCalendar />
-              {scheduleCount > 0 ? (
+              {activePublishingCount > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--warn)] px-1 text-[10px] font-semibold text-black">
+                  {activePublishingCount > 9 ? '9+' : activePublishingCount}
+                </span>
+              ) : scheduleCount > 0 ? (
                 <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--bad)] px-1 text-[10px] font-semibold text-black">
                   {scheduleCount > 9 ? '9+' : scheduleCount}
                 </span>
@@ -369,9 +386,9 @@ export function ContentNav() {
               <button
                 type="button"
                 onClick={() => requestReviewRefresh()}
-                className={iconBtnClass()}
+                className={`${iconBtnClass()} ${reviewToolbar.refreshingReview ? 'animate-pulse opacity-70' : ''}`}
                 aria-label="Refresh"
-                title="Refresh"
+                title={reviewToolbar.refreshingReview ? 'Refreshing…' : 'Refresh'}
               >
                 <IconRefresh />
               </button>
@@ -384,17 +401,20 @@ export function ContentNav() {
                 title={
                   reviewToolbar.generatingCandidates
                     ? 'Generating…'
-                    : 'Generate new candidates'
+                    : isPipelineRunBusy(reviewToolbar.pipelineRunStatus)
+                      ? 'Candidate generation running…'
+                      : 'Generate new candidates'
                 }
               >
                 <IconGenerate />
               </button>
               <button
                 type="button"
+                disabled={reviewToolbar.healingLedger}
                 onClick={() => requestReviewHealLedger()}
-                className={iconBtnClass()}
+                className={`${iconBtnClass()} ${reviewToolbar.healingLedger ? 'animate-pulse opacity-70' : ''}`}
                 aria-label="Heal ledger"
-                title="Heal ledger"
+                title={reviewToolbar.healingLedger ? 'Healing ledger…' : 'Heal ledger'}
               >
                 <IconHealLedger />
               </button>

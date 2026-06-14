@@ -9,6 +9,7 @@ import { readJsonResponse } from '@/lib/read-json-response';
 
 import { PublishingJobView } from '../PublishingJobView';
 import { unstagePublishingJob, updateReelTrialStrategy } from '../../review/publishingJobClient';
+import { usePublishingJobProgress } from '../../review/usePublishingJobProgress';
 import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
 
 type CandidateBrief = {
@@ -55,6 +56,17 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const {
+    publishActing,
+    publishNow,
+    showProgress: showPublishProgress,
+    progressLabel: publishProgressLabel,
+  } = usePublishingJobProgress({
+    job,
+    candidateId: candidate?.id ?? job?.post_candidate_id ?? '',
+    onJobUpdate: setJob,
+  });
 
   const refreshGraph = async () => {
     setRefreshing(true);
@@ -108,28 +120,6 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
     try {
       const res = await fetch(
         `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/unschedule`,
-        { method: 'POST', credentials: 'include' },
-      );
-      const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
-      if (!res.ok) {
-        const err = json.error;
-        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
-      }
-      if (json.job) setJob(json.job as PublishingJobDto);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPublishingActing(false);
-    }
-  };
-
-  const publishNow = async () => {
-    setPublishingActing(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/publish-now`,
         { method: 'POST', credentials: 'include' },
       );
       const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown }>(res);
@@ -212,6 +202,9 @@ export function PublishingDetailClient({ jobId }: { jobId: string }) {
             onRefreshGraph={refreshGraph}
             reviewDriveFolderUrl={candidate?.review_drive_folder_url}
             publishingActing={publishingActing}
+            publishActing={publishActing}
+            showPublishProgress={showPublishProgress}
+            publishProgressLabel={publishProgressLabel}
             onSchedulePublish={schedulePublish}
             onUnschedulePublish={unschedulePublish}
             onPublishNow={publishNow}

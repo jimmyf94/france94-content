@@ -51,8 +51,10 @@ approval-ready content concepts a human will accept, reject, or rewrite.
   is `false` unless the concept is an explicit recap / throwback; in that
   case prefix the title with "Recap:" or "Throwback:" or use
   `archive_note` when enabled.
-- Do not use any asset whose `usage_status` is `published`, `hard_locked`,
-  `scheduled`, or `approved_pending`.
+- Treat assets whose `usage_status` is `published`, `hard_locked`, `scheduled`,
+  or `approved_pending` as reuse warnings, not hard blockers. Prefer cleaner
+  alternatives when they support the idea; if you use one, add a `warnings`
+  entry explaining the reuse risk.
 - An asset may be reused across multiple feed-style candidates if its
   `usage_status` is `unused` (or similar) and the ideas are clearly
   different.

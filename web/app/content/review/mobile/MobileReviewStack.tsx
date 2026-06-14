@@ -122,8 +122,10 @@ export function MobileReviewStack({
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
+  savingNotes,
   onDelete,
   deleting,
+  deciding,
   onGenerateCandidates,
   generatingCandidates,
   generateDisabled,
@@ -172,6 +174,8 @@ export function MobileReviewStack({
   regenerating?: boolean;
   onDelete?: () => void;
   deleting?: boolean;
+  deciding?: boolean;
+  savingNotes?: boolean;
   onGenerateCandidates: () => void | Promise<void>;
   generatingCandidates?: boolean;
   generateDisabled?: boolean;
@@ -266,6 +270,8 @@ export function MobileReviewStack({
           onRemoveReviewAsset={onRemoveReviewAsset}
           onRegenerate={onRegenerate}
           regenerating={regenerating}
+          deciding={deciding}
+          savingNotes={savingNotes}
           onRefreshQueue={onRefreshQueue}
           onDelete={onDelete}
           deleting={deleting}
@@ -381,6 +387,8 @@ function MobileCandidateView({
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
+  deciding,
+  savingNotes,
   onRefreshQueue,
   onDelete,
   deleting,
@@ -403,6 +411,8 @@ function MobileCandidateView({
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
+  deciding?: boolean;
+  savingNotes?: boolean;
   onRefreshQueue?: () => void;
   onDelete?: () => void;
   deleting?: boolean;
@@ -587,8 +597,14 @@ function MobileCandidateView({
             {candidate.invalidation_reason ? `: ${candidate.invalidation_reason}` : ''}
           </div>
         )}
-        {candidate.has_asset_conflict === true && candidate.asset_conflict_summary && (
-          <div className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2 py-1.5 text-[11px] text-[var(--bad)]">
+        {candidate.asset_conflict_summary && (
+          <div
+            className={`rounded-md border px-2 py-1.5 text-[11px] ${
+              candidate.has_asset_conflict === true
+                ? 'border-[var(--bad)]/40 bg-[var(--bad)]/10 text-[var(--bad)]'
+                : 'border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)]'
+            }`}
+          >
             {candidate.asset_conflict_summary}
           </div>
         )}
@@ -611,10 +627,8 @@ function MobileCandidateView({
             onDecide={onDecide}
             size="lg"
             variant="iconOnly"
-            disabled={candidate.status === 'ready_to_publish'}
+            disabled={candidate.status === 'ready_to_publish' || deciding}
             approveDisabled={
-              candidate.has_asset_conflict === true ||
-              Boolean(candidate.freshness_warning) ||
               ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
             }
             allDecisionsDisabled={Boolean(candidate.invalidated_at)}
@@ -635,7 +649,6 @@ function MobileCandidateView({
         </div>
         {onApproveAnyway &&
           ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
-          candidate.has_asset_conflict !== true &&
           !candidate.invalidated_at && (
             <button
               type="button"
@@ -669,11 +682,11 @@ function MobileCandidateView({
           <div className="flex justify-end">
             <button
               type="button"
-              disabled={!dirty}
+              disabled={!dirty || savingNotes}
               onClick={() => void onSaveNotes()}
               className="rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
             >
-              Save notes
+              {savingNotes ? 'Saving…' : 'Save notes'}
             </button>
           </div>
           {showRegenerate && (

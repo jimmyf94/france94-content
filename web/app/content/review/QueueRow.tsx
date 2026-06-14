@@ -80,7 +80,7 @@ export const QueueRow = memo(function QueueRow({
       ? Number(candidate.priority_score).toFixed(1)
       : null;
 
-  const conflict = candidate.has_asset_conflict === true;
+  const assetWarning = Boolean(candidate.asset_conflict_summary?.trim());
   const stale = Boolean(candidate.freshness_warning);
   const risk = (candidate.collision_risk ?? '').trim();
   const riskGreyed = risk === 'blocked' || risk === 'high';
@@ -92,7 +92,7 @@ export const QueueRow = memo(function QueueRow({
       type="button"
       onClick={handleClick}
       className={`flex w-full items-start gap-2.5 rounded-lg border px-2 py-2 text-left transition-colors ${
-        conflict || stale || riskGreyed ? 'opacity-55' : ''
+        riskGreyed ? 'opacity-55' : ''
       } ${
         selected
           ? 'border-[var(--accent)] bg-[var(--accent-muted)] ring-1 ring-[var(--ring)]'
@@ -117,7 +117,7 @@ export const QueueRow = memo(function QueueRow({
             <span className="cockpit-pill text-[9px] text-[var(--good)]">Publish</span>
           )}
           {stale && <span className="cockpit-pill text-[9px] text-[var(--warn)]">Stale</span>}
-          {conflict && <span className="cockpit-pill text-[9px] text-[var(--bad)]">Conflict</span>}
+          {assetWarning && <span className="cockpit-pill text-[9px] text-[var(--warn)]">Asset warning</span>}
           {risk === 'high' || risk === 'blocked' ? (
             <span className="cockpit-pill text-[9px] capitalize">{risk}</span>
           ) : null}

@@ -9,6 +9,7 @@ import {
   isPipelineRunBusy,
 } from '@/lib/pipeline-run-client';
 import { readJsonResponse } from '@/lib/read-json-response';
+import { countActivePublishingJobs } from '@/lib/publishing-publish-feedback';
 
 import { ActiveCandidateWorkspace } from './ActiveCandidateWorkspace';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
@@ -16,6 +17,7 @@ import { CandidateQueueSidebar } from './CandidateQueueSidebar';
 import { CollapsibleColumnFrame, columnGridWidth } from './CollapsibleColumnFrame';
 import type { ReviewFilters } from './FilterDrawer';
 import { MobileReviewStack } from './mobile/MobileReviewStack';
+import { ReviewActivityStrip } from './ReviewActivityStrip';
 import { usePublishingScheduleQueue } from '../publishing/usePublishingScheduleQueue';
 import {
   notifyScheduleQueueChanged,
@@ -141,6 +143,10 @@ export function ReviewDashboard() {
   const [generatingCandidates, setGeneratingCandidates] = useState(false);
   const [pipelineRunStatus, setPipelineRunStatus] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [decidingCandidateId, setDecidingCandidateId] = useState<string | null>(null);
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [refreshingReview, setRefreshingReview] = useState(false);
+  const [healingLedger, setHealingLedger] = useState(false);
   const [queueThumbnails, setQueueThumbnails] = useState<Record<string, string | null>>({});
   const thumbFetchGen = useRef(0);
 
@@ -200,6 +206,18 @@ export function ReviewDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isPipelineRunBusy(pipelineRunStatus)) return undefined;
+    const timer = window.setInterval(() => {
+      void fetchPipelineStatus()
+        .then((json) => setPipelineRunStatus(json.last_run_status))
+        .catch(() => {
+          /* best-effort */
+        });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [pipelineRunStatus]);
+
   const generateCandidates = useCallback(async () => {
     if (generatingCandidates || isPipelineRunBusy(pipelineRunStatus)) return;
     setGeneratingCandidates(true);
@@ -240,6 +258,9 @@ export function ReviewDashboard() {
         setLoading(true);
         setError(null);
       }
+      if (mode === 'silent') {
+        setRefreshingReview(true);
+      }
       try {
         const res = await fetch(`/api/content-review/candidates?${queryString}`, {
           credentials: 'include',
@@ -273,6 +294,9 @@ export function ReviewDashboard() {
         if (showLoading) {
           setLoading(false);
         }
+        if (mode === 'silent') {
+          setRefreshingReview(false);
+        }
       }
     },
     [queryString],
@@ -292,6 +316,7 @@ export function ReviewDashboard() {
   }, [silentReloadCandidates]);
 
   const healStaleAssetLedger = useCallback(async () => {
+    setHealingLedger(true);
     try {
       const res = await fetch('/api/content-review/reconcile-asset-reservations', {
         method: 'POST',
@@ -319,6 +344,8 @@ export function ReviewDashboard() {
         kind: 'bad',
         msg: e instanceof Error ? e.message : 'Heal ledger failed',
       });
+    } finally {
+      setHealingLedger(false);
     }
   }, [silentReloadCandidates]);
 
@@ -346,8 +373,25 @@ export function ReviewDashboard() {
       generatingCandidates,
       generateDisabled: isPipelineRunBusy(pipelineRunStatus),
       includeBlocked,
+      refreshingReview,
+      healingLedger,
+      pipelineRunStatus,
+      activePublishingCount: countActivePublishingJobs(
+        publishingItems,
+        publishingFeedbackByJobId,
+        publishingPublishActingJobId,
+      ),
     });
-  }, [generatingCandidates, pipelineRunStatus, includeBlocked]);
+  }, [
+    generatingCandidates,
+    pipelineRunStatus,
+    includeBlocked,
+    refreshingReview,
+    healingLedger,
+    publishingItems,
+    publishingFeedbackByJobId,
+    publishingPublishActingJobId,
+  ]);
 
   useEffect(() => {
     void fetchCandidates();
@@ -613,7 +657,6 @@ export function ReviewDashboard() {
     async (status: DecisionStatus, opts?: { overrideCollision?: boolean }) => {
       if (!selected) return;
       if (selected.invalidated_at) return;
-      if (status === 'approved' && selected.has_asset_conflict === true) return;
       const collisionRisk = (selected.collision_risk ?? '').trim();
       if (
         status === 'approved' &&
@@ -649,6 +692,7 @@ export function ReviewDashboard() {
       setSelectedId(next?.id ?? null);
       setToast({ kind: 'good', msg: decisionToastMessage(status, decidedTitle) });
 
+      setDecidingCandidateId(decidedId);
       try {
         const res = await fetch(`/api/content-review/candidates/${decidedId}`, {
           method: 'PATCH',
@@ -687,6 +731,8 @@ export function ReviewDashboard() {
           kind: 'bad',
           msg: e instanceof Error ? `Save failed: ${e.message}` : 'Save failed',
         });
+      } finally {
+        setDecidingCandidateId(null);
       }
     },
     [selected, draftNotes, visible, silentReloadCandidates],
@@ -813,8 +859,7 @@ export function ReviewDashboard() {
   useKeyboardShortcuts({
     enabled: !!selected && selected.status !== 'ready_to_publish' && !selected.invalidated_at,
     canApprove: selected
-      ? selected.has_asset_conflict !== true &&
-        !['blocked', 'high'].includes((selected.collision_risk ?? '').trim())
+      ? !['blocked', 'high'].includes((selected.collision_risk ?? '').trim())
       : true,
     onApprove: useCallback(() => void decide('approved'), [decide]),
     onRewrite: useCallback(() => void decide('needs_rewrite'), [decide]),
@@ -848,6 +893,7 @@ export function ReviewDashboard() {
       prev?.id === id ? { ...prev, reviewer_notes: notes, updated_at: now } : prev,
     );
 
+    setSavingNotes(true);
     try {
       const res = await fetch(`/api/content-review/candidates/${id}`, {
         method: 'PATCH',
@@ -871,6 +917,8 @@ export function ReviewDashboard() {
         kind: 'bad',
         msg: e instanceof Error ? `Save failed: ${e.message}` : 'Save failed',
       });
+    } finally {
+      setSavingNotes(false);
     }
   }, [selected, draftNotes]);
 
@@ -984,6 +1032,19 @@ export function ReviewDashboard() {
     onRefreshPublishing: refreshPublishingQueue,
   };
 
+  const activityState = {
+    publishingItems,
+    publishFeedbackByJobId: publishingFeedbackByJobId,
+    publishActingJobId: publishingPublishActingJobId,
+    pipelineRunStatus,
+    generatingCandidates,
+    regenerating,
+    decidingCandidateId,
+    savingNotes,
+    refreshingReview,
+    healingLedger,
+  };
+
   const inboxListCount =
     activeStatusTab === 'publishing' ? publishingItems.length : counts[activeStatusTab];
 
@@ -1007,6 +1068,8 @@ export function ReviewDashboard() {
           </button>
         </div>
       )}
+
+      <ReviewActivityStrip state={activityState} />
 
       {/* Desktop operator cockpit */}
       <div
@@ -1053,13 +1116,12 @@ export function ReviewDashboard() {
           onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
           decisionsDisabled={selected?.status === 'ready_to_publish'}
           approveDisabled={
-            selected?.has_asset_conflict === true ||
-            Boolean(selected?.freshness_warning) ||
             ['blocked', 'high'].includes((selected?.collision_risk ?? '').trim())
           }
           allDecisionsDisabled={Boolean(selected?.invalidated_at)}
           onDelete={() => void deleteCandidate()}
           deleting={deleting}
+          deciding={Boolean(decidingCandidateId)}
           onRefreshQueue={() => {
             void silentReloadCandidates();
             setPublishingQueueNonce((n) => n + 1);
@@ -1088,6 +1150,7 @@ export function ReviewDashboard() {
             onCandidateUpdated={handleCandidateUpdated}
             onRegenerate={regenerate}
             regenerating={regenerating}
+            savingNotes={savingNotes}
             onRefreshQueue={() => {
               void silentReloadCandidates();
               setPublishingQueueNonce((n) => n + 1);
@@ -1131,8 +1194,10 @@ export function ReviewDashboard() {
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onRegenerate={regenerate}
           regenerating={regenerating}
+          savingNotes={savingNotes}
           onDelete={() => void deleteCandidate()}
           deleting={deleting}
+          deciding={Boolean(decidingCandidateId)}
           onGenerateCandidates={generateCandidates}
           generatingCandidates={generatingCandidates}
           generateDisabled={isPipelineRunBusy(pipelineRunStatus)}

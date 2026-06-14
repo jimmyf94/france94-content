@@ -300,6 +300,8 @@ export function PublishingCalendarView() {
                           key={item.id}
                           item={item}
                           acting={actingJobId === item.id}
+                          publishActing={publishActingJobId === item.id}
+                          publishFeedback={publishFeedbackByJobId[item.id] ?? null}
                           onSchedule={schedulePublish}
                           onUnschedule={unschedulePublish}
                           onUnstage={unstagePublish}

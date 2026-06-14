@@ -14,6 +14,7 @@ import {
   type ReelVariantKind,
 } from '@fr94/reel-assembly';
 
+import { loadAutoReelRenderEnabled } from '@fr94/pipeline-settings';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
@@ -147,12 +148,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: ins.error }, { status: 500 });
   }
 
-  const renderRes = await enqueueReelRenderJob(supabase, {
-    candidateId: ins.id,
-    reel: assembled.reel,
-  });
-  if (renderRes.error) {
-    console.warn('[candidate variant] render enqueue', renderRes.error);
+  const autoReelRenderEnabled = await loadAutoReelRenderEnabled(supabase);
+  let renderQueued = false;
+  if (autoReelRenderEnabled) {
+    const renderRes = await enqueueReelRenderJob(supabase, {
+      candidateId: ins.id,
+      reel: assembled.reel,
+    });
+    if (renderRes.error) {
+      console.warn('[candidate variant] render enqueue', renderRes.error);
+    } else {
+      renderQueued = true;
+    }
   }
 
   const { data: created, error: fetchErr } = await supabase
@@ -169,6 +176,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   return NextResponse.json({
     candidate: created,
     variant_kind: kind,
-    render_queued: !renderRes.error,
+    render_queued: renderQueued,
   });
 }

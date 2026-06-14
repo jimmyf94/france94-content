@@ -27,7 +27,7 @@ export const APPROVED_RESERVATION_WARNING_DAYS = 14;
 
 /**
  * Instagram `media_publish` is not implemented in-repo; we treat `ready_to_publish` as the
- * operational moment to apply final asset locks and invalidate competing draft candidates.
+ * operational moment to record final published usage for warning/reporting purposes.
  */
 export const APPLY_ASSET_LOCKS_AT_READY_TO_PUBLISH = true;
 
@@ -111,7 +111,7 @@ export function computeAssetReusePolicy(postType: string | null | undefined): {
   if (t === 'story' || t === 'story_sequence') {
     return { lockStrength: 'soft', cooldownDays: STORY_REUSE_COOLDOWN_DAYS };
   }
-  return { lockStrength: 'hard', cooldownDays: 0 };
+  return { lockStrength: 'soft', cooldownDays: 0 };
 }
 
 /** Maps ledger usage_stage to v0.8 event_kind vocabulary (override for manual_* etc.). */
@@ -235,49 +235,6 @@ function maxIso(dates: (string | null | undefined)[]): string | null {
   return bestIso;
 }
 
-/**
- * After a non-story publish lock, mark asset as stale for future candidate generation
- * (does not override excluded/manual_only or an existing manual stale timestamp).
- */
-async function maybeAutoStaleCandidateEligibility(
-  supabase: SupabaseClient,
-  assetId: string,
-  usageStatus: string,
-  publishedActiveEvents: Array<{ usage_type?: string | null }>,
-): Promise<void> {
-  if (usageStatus !== 'published' && usageStatus !== 'hard_locked') return;
-
-  if (publishedActiveEvents.length > 0) {
-    const allManual = publishedActiveEvents.every((e) => {
-      const t = String(e.usage_type ?? '').trim();
-      return t === 'manual_post' || t === 'manual_story' || t === 'manual_reel';
-    });
-    if (allManual) return;
-  }
-
-  const { data: row, error } = await supabase
-    .from('content_assets')
-    .select('candidate_eligibility, manually_marked_stale_at')
-    .eq('id', assetId)
-    .maybeSingle();
-  if (error || !row) return;
-
-  const el = String((row as { candidate_eligibility?: string | null }).candidate_eligibility ?? 'eligible').trim();
-  if (el === 'excluded' || el === 'manual_only' || el === 'stale') return;
-  const marked = (row as { manually_marked_stale_at?: string | null }).manually_marked_stale_at;
-  if (marked && String(marked).trim()) return;
-  if (el !== 'eligible' && el !== 'needs_review') return;
-
-  const { error: upErr } = await supabase
-    .from('content_assets')
-    .update({
-      candidate_eligibility: 'stale',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', assetId);
-  if (upErr) throw new Error(`maybeAutoStaleCandidateEligibility: ${upErr.message}`);
-}
-
 function isBlockingUsageEvent(
   e: { usage_stage?: string; lock_strength?: string; usage_type?: string; reuse_allowed_after?: string | null },
   nowMs: number,
@@ -328,23 +285,13 @@ export async function updateAssetUsageSummary(supabase: SupabaseClient, assetId:
   let last_published_at: string | null = null;
   let reuse_allowed_after: string | null = null;
 
-  const hardPublished = published.filter(
-    (e: { lock_strength?: string }) => (e.lock_strength ?? 'soft') === 'hard',
-  );
   const softStoryPublished = published.filter(
     (e: { lock_strength?: string; usage_type?: string }) =>
       (e.lock_strength ?? 'soft') === 'soft' &&
       ((e.usage_type ?? '') === 'story' || (e.usage_type ?? '') === 'story_sequence'),
   );
 
-  if (hardPublished.length > 0) {
-    usage_status = 'hard_locked';
-    hard_locked = true;
-    last_published_at = maxIso(hardPublished.map((e: { published_at?: string }) => e.published_at)) ?? maxIso(
-      hardPublished.map((e: { used_at?: string }) => e.used_at),
-    );
-    reuse_allowed_after = null;
-  } else if (softStoryPublished.length > 0) {
+  if (softStoryPublished.length > 0) {
     const anySoftStoryCooldown = softStoryPublished.some(
       (e: { reuse_allowed_after?: string | null }) =>
         e.reuse_allowed_after && Date.parse(e.reuse_allowed_after) > now,
@@ -396,8 +343,6 @@ export async function updateAssetUsageSummary(supabase: SupabaseClient, assetId:
     })
     .eq('id', assetId);
   if (error) throw new Error(`updateAssetUsageSummary: ${error.message}`);
-
-  await maybeAutoStaleCandidateEligibility(supabase, assetId, usage_status, published);
 }
 
 async function loadCandidate(supabase: SupabaseClient, candidateId: string): Promise<CandidateLike | null> {
@@ -485,31 +430,10 @@ export async function reserveAssetsForCandidate(supabase: SupabaseClient, candid
   }
 
   const assets = await loadAssets(supabase, assetIds);
-  const now = new Date();
-  const nowIso = now.toISOString();
 
   for (const aid of assetIds) {
     const row = assets.get(aid);
     if (!row) throw new AssetUsageError('unknown_asset', `Unknown content_asset: ${aid}`);
-
-    if (row.hard_locked === true) {
-      throw new AssetUsageError('hard_locked', 'One or more source assets are hard-locked.');
-    }
-    const ra = row.reuse_allowed_after;
-    if (ra && Date.parse(ra) > now.getTime()) {
-      throw new AssetUsageError('cooldown', 'One or more source assets are in reuse cooldown.');
-    }
-    const st = (row.usage_status ?? '').trim();
-    if (st === 'hard_locked' || st === 'published') {
-      throw new AssetUsageError('published', 'One or more source assets are already published or locked.');
-    }
-
-    if (await hasOtherApprovedReservation(supabase, aid, candidateId)) {
-      throw new AssetUsageError('reserved_elsewhere', 'One or more assets are already approved in another candidate.');
-    }
-    if (await hasOtherScheduledUsage(supabase, aid, candidateId)) {
-      throw new AssetUsageError('scheduled_elsewhere', 'One or more assets are already scheduled on another publish job.');
-    }
   }
 
   // Idempotent: remove prior approved events for this candidate, then re-insert
@@ -809,7 +733,7 @@ export async function recordScheduledUsageForPublishingJob(
 }
 
 /**
- * Apply final locks after publish (or at ready_to_publish when APPLY_ASSET_LOCKS_AT_READY_TO_PUBLISH).
+ * Record final published usage after publish (or at ready_to_publish when enabled).
  */
 export async function applyPublishedAssetLocks(supabase: SupabaseClient, publishingJobId: string): Promise<void> {
   if (!APPLY_ASSET_LOCKS_AT_READY_TO_PUBLISH) {
@@ -874,72 +798,173 @@ export async function applyPublishedAssetLocks(supabase: SupabaseClient, publish
       publishedAt,
       reuseAllowedAfter: reuseAfter,
       lockStrength: policy.lockStrength,
-      notes: 'Final publication (operational: ready_to_publish boundary)',
+      notes: 'Final publication usage (operational: ready_to_publish boundary)',
     });
     await updateAssetUsageSummary(supabase, aid);
   }
 
-  await invalidateCompetingCandidates(supabase, candidateId, assetIds, publishedAt);
   await refreshConflictsForAssets(supabase, assetIds);
 }
 
-async function invalidateCompetingCandidates(
-  supabase: SupabaseClient,
-  winnerCandidateId: string,
-  assetIds: string[],
-  publishedAtIso: string,
-): Promise<void> {
-  if (assetIds.length === 0) return;
-  const reason =
-    'Source asset(s) committed to another publish job (operational lock at ready_to_publish / published).';
+const LEGACY_ASSET_LOCK_INVALIDATION = /operational lock|committed to another publish job|hard[- ]lock/i;
 
-  const { data: rows, error } = await supabase
-    .from('post_candidates')
-    .select('id,status')
-    .neq('id', winnerCandidateId)
-    .overlaps('source_asset_ids', assetIds);
-  if (error) throw new Error(`invalidateCompetingCandidates: ${error.message}`);
-
-  const seen = new Set<string>();
-  for (const r of rows ?? []) {
-    const id = (r as { id: string }).id;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const st = (r as { status?: string }).status ?? '';
-    if (st === 'needs_review' || st === 'needs_rewrite') {
-      await markCandidateInvalidated(supabase, id, reason, publishedAtIso);
-    } else if (st === 'approved') {
-      const { error: upErr } = await supabase
-        .from('post_candidates')
-        .update({
-          has_asset_conflict: true,
-          asset_conflict_summary: 'Asset already committed to another publish job.',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id);
-      if (upErr) throw new Error(`invalidateCompetingCandidates: ${upErr.message}`);
-    }
+export function isLegacyAssetLockCandidateRow(row: {
+  invalidated_at?: string | null;
+  invalidation_reason?: string | null;
+  has_asset_conflict?: boolean | null;
+  asset_conflict_summary?: string | null;
+}): boolean {
+  if (row.invalidated_at && LEGACY_ASSET_LOCK_INVALIDATION.test(row.invalidation_reason ?? '')) {
+    return true;
   }
+  if (
+    row.has_asset_conflict === true &&
+    LEGACY_ASSET_LOCK_INVALIDATION.test(row.asset_conflict_summary ?? '')
+  ) {
+    return true;
+  }
+  return false;
 }
 
-export async function markCandidateInvalidated(
+/**
+ * Clear historical hard-lock invalidations and refresh reuse warnings for one candidate.
+ */
+export async function releaseLegacyAssetLockInvalidationIfNeeded(
   supabase: SupabaseClient,
   candidateId: string,
-  reason: string,
-  atIso?: string,
-): Promise<void> {
-  const now = atIso ?? new Date().toISOString();
+  row: {
+    invalidated_at?: string | null;
+    invalidation_reason?: string | null;
+    has_asset_conflict?: boolean | null;
+    asset_conflict_summary?: string | null;
+  },
+): Promise<boolean> {
+  if (!isLegacyAssetLockCandidateRow(row)) return false;
+
+  const now = new Date().toISOString();
   const { error } = await supabase
     .from('post_candidates')
     .update({
-      invalidated_at: now,
-      invalidation_reason: reason,
-      has_asset_conflict: true,
-      asset_conflict_summary: reason,
+      invalidated_at: null,
+      invalidation_reason: null,
       updated_at: now,
     })
     .eq('id', candidateId);
-  if (error) throw new Error(`markCandidateInvalidated: ${error.message}`);
+  if (error) throw new Error(`releaseLegacyAssetLockInvalidationIfNeeded: ${error.message}`);
+
+  await refreshCandidateAssetConflicts(supabase, candidateId);
+  return true;
+}
+
+/** Recompute summaries for assets still marked hard_locked from the old enforcement model. */
+export async function reconcileLegacyHardLockedAssetSummaries(
+  supabase: SupabaseClient,
+): Promise<{ repairedAssetIds: string[] }> {
+  const pageSize = 1000;
+  const assetIds: string[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const { data: page, error } = await supabase
+      .from('content_assets')
+      .select('id')
+      .or('hard_locked.eq.true,usage_status.eq.hard_locked')
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`reconcileLegacyHardLockedAssetSummaries: ${error.message}`);
+
+    const rows = page ?? [];
+    for (const row of rows) {
+      const id = (row as { id?: string | null }).id;
+      if (id) assetIds.push(id);
+    }
+    if (rows.length < pageSize) break;
+  }
+
+  const repairedAssetIds: string[] = [];
+  for (const assetId of assetIds) {
+    await updateAssetUsageSummary(supabase, assetId);
+    repairedAssetIds.push(assetId);
+  }
+
+  if (repairedAssetIds.length > 0) {
+    await refreshConflictsForAssets(supabase, repairedAssetIds);
+  }
+
+  return { repairedAssetIds };
+}
+
+/** Bulk-heal candidates invalidated by the retired hard-lock model. */
+export async function reconcileLegacyAssetLockCandidates(
+  supabase: SupabaseClient,
+): Promise<{ repairedCandidateIds: string[] }> {
+  const pageSize = 500;
+  const repairedCandidateIds: string[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const { data: page, error } = await supabase
+      .from('post_candidates')
+      .select('id,invalidated_at,invalidation_reason,has_asset_conflict,asset_conflict_summary')
+      .not('invalidated_at', 'is', null)
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`reconcileLegacyAssetLockCandidates: ${error.message}`);
+
+    const rows = page ?? [];
+    for (const row of rows) {
+      const id = (row as { id: string }).id;
+      const healed = await releaseLegacyAssetLockInvalidationIfNeeded(supabase, id, row as {
+        invalidated_at?: string | null;
+        invalidation_reason?: string | null;
+        has_asset_conflict?: boolean | null;
+        asset_conflict_summary?: string | null;
+      });
+      if (healed) repairedCandidateIds.push(id);
+    }
+    if (rows.length < pageSize) break;
+  }
+
+  return { repairedCandidateIds };
+}
+
+/** Restore planner eligibility for assets auto-staled by the retired publish lock model. */
+export async function reconcilePublishedAutoStaleEligibility(
+  supabase: SupabaseClient,
+): Promise<{ repairedAssetIds: string[] }> {
+  const pageSize = 1000;
+  const repairedAssetIds: string[] = [];
+
+  for (let from = 0; ; from += pageSize) {
+    const { data: page, error } = await supabase
+      .from('content_assets')
+      .select('id')
+      .eq('candidate_eligibility', 'stale')
+      .is('manually_marked_stale_at', null)
+      .in('usage_status', [
+        'published',
+        'scheduled',
+        'approved_pending',
+        'hard_locked',
+        'story_used_reusable_later',
+      ])
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`reconcilePublishedAutoStaleEligibility: ${error.message}`);
+
+    const rows = page ?? [];
+    for (const row of rows) {
+      const id = (row as { id?: string | null }).id;
+      if (!id) continue;
+      const { error: upErr } = await supabase
+        .from('content_assets')
+        .update({
+          candidate_eligibility: 'eligible',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+      if (upErr) throw new Error(`reconcilePublishedAutoStaleEligibility(update): ${upErr.message}`);
+      repairedAssetIds.push(id);
+    }
+    if (rows.length < pageSize) break;
+  }
+
+  return { repairedAssetIds };
 }
 
 export async function refreshConflictsForAssets(supabase: SupabaseClient, assetIds: string[]): Promise<void> {
@@ -960,8 +985,8 @@ export async function refreshCandidateAssetConflicts(supabase: SupabaseClient, c
   if (!candidate) return;
 
   const assetIds = getCandidateAssetIds(candidate);
-  const reasons: string[] = [];
-  let hasConflict = false;
+  const warnings: string[] = [];
+  const blocking: string[] = [];
 
   const assets = await loadAssets(supabase, assetIds);
   const now = Date.now();
@@ -969,35 +994,30 @@ export async function refreshCandidateAssetConflicts(supabase: SupabaseClient, c
   for (const aid of assetIds) {
     const row = assets.get(aid);
     if (!row) {
-      reasons.push('Unknown source asset in registry.');
-      hasConflict = true;
+      blocking.push('Unknown source asset in registry.');
       continue;
     }
     if (row.hard_locked === true || (row.usage_status ?? '') === 'hard_locked') {
-      reasons.push('Asset is hard-locked.');
-      hasConflict = true;
-      continue;
+      warnings.push('Asset was used in a prior publish job.');
     }
     const ra = row.reuse_allowed_after;
     if (ra && Date.parse(ra) > now) {
-      reasons.push(`Asset reusable after ${ra.slice(0, 10)}.`);
-      hasConflict = true;
-      continue;
+      warnings.push(`Asset in story reuse cooldown until ${ra.slice(0, 10)}.`);
     }
     const st = (row.usage_status ?? '').trim();
     if (st === 'published') {
-      reasons.push('Asset already published and locked.');
-      hasConflict = true;
-      continue;
+      warnings.push('Asset already published elsewhere.');
+    } else if (st === 'scheduled') {
+      warnings.push('Asset scheduled on another publish job.');
+    } else if (st === 'approved_pending') {
+      warnings.push('Asset approved in another candidate.');
     }
 
     if (await hasOtherApprovedReservation(supabase, aid, candidateId)) {
-      reasons.push('Asset already approved in another candidate.');
-      hasConflict = true;
+      warnings.push('Asset already approved in another candidate.');
     }
     if (await hasOtherScheduledUsage(supabase, aid, candidateId)) {
-      reasons.push('Asset already scheduled for publication.');
-      hasConflict = true;
+      warnings.push('Asset already scheduled for publication.');
     }
   }
 
@@ -1013,20 +1033,22 @@ export async function refreshCandidateAssetConflicts(supabase: SupabaseClient, c
     if (stale) {
       freshness_warning =
         'Story uses stale assets. Convert to post/carousel/reel or mark as recap/throwback.';
-      hasConflict = true;
-      reasons.push('Story asset is stale.');
     }
   } else {
     is_fresh_story = null;
     freshness_warning = null;
   }
 
-  const summary = [...new Set(reasons)].slice(0, 4).join(' ') || null;
+  const warningSummary = [...new Set(warnings)].slice(0, 4).join(' ') || null;
+  const hasBlocking = blocking.length > 0;
+  const summary = hasBlocking
+    ? [...new Set([...blocking, ...warnings])].slice(0, 4).join(' ')
+    : warningSummary;
 
   const { error } = await supabase
     .from('post_candidates')
     .update({
-      has_asset_conflict: hasConflict,
+      has_asset_conflict: hasBlocking,
       asset_conflict_summary: summary,
       freshness_warning,
       is_fresh_story,

@@ -7,6 +7,7 @@ import {
   deletePostCandidateCompletely,
   refreshCandidateAssetConflicts,
   releaseAssetsForCandidate,
+  releaseLegacyAssetLockInvalidationIfNeeded,
   releaseStaleApprovedReservationsIfNeeded,
   reserveAssetsForCandidate,
 } from '@fr94/asset-usage';
@@ -18,6 +19,7 @@ import {
 import { buildPublishingCaption } from '@fr94/publishing/caption';
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 import { normalizeOverlayEndSec, normalizeReelSpecOverlay, normalizeTimedOverlayCues, parseTimedOverlayCues, resolveReelTextStyle } from '@fr94/reel-text-style';
+import { loadAutoReelRenderEnabled } from '@fr94/pipeline-settings';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import { reorderCandidateCarouselSlides } from '@/lib/reorder-candidate-carousel-slides';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
@@ -122,15 +124,31 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ error: 'Candidate not found' }, { status: 404 });
   }
 
-  const row = data as unknown as { status: string };
+  const row = data as unknown as {
+    status: string;
+    invalidated_at?: string | null;
+    invalidation_reason?: string | null;
+    has_asset_conflict?: boolean | null;
+    asset_conflict_summary?: string | null;
+  };
 
   const noStore = {
     'Cache-Control': 'no-store, no-cache, must-revalidate',
     Pragma: 'no-cache',
   } as const;
 
+  let refreshed = false;
   try {
     if (await releaseStaleApprovedReservationsIfNeeded(supabase, id, row.status)) {
+      refreshed = true;
+    }
+    if (await releaseLegacyAssetLockInvalidationIfNeeded(supabase, id, row)) {
+      refreshed = true;
+    } else if (row.has_asset_conflict === true) {
+      await refreshCandidateAssetConflicts(supabase, id);
+      refreshed = true;
+    }
+    if (refreshed) {
       const { data: healed, error: healErr } = await supabase
         .from('post_candidates')
         .select(POST_CANDIDATE_DETAIL_COLUMNS)
@@ -141,7 +159,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       }
     }
   } catch (e) {
-    console.error('[candidate get] stale reservation heal', e);
+    console.error('[candidate get] asset usage heal', e);
   }
 
   return NextResponse.json({ candidate: data }, { headers: noStore });
@@ -533,61 +551,64 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   if (status === 'approved' && candidateOut) {
-    const pt = (candidateOut as { post_type?: string }).post_type?.trim();
-    if (pt === 'reel') {
-      const c = candidateOut as unknown as {
-        id: string;
-        hook?: string | null;
-        reel_instructions: unknown;
-        source_asset_ids: unknown;
-        source_drive_file_ids: unknown;
-      };
-      const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
-      const sd =
-        Array.isArray(c.source_drive_file_ids) ? (c.source_drive_file_ids as string[]) : [];
-      const riRaw =
-        c.reel_instructions != null && typeof c.reel_instructions === 'object'
-          ? (c.reel_instructions as Record<string, unknown>)
-          : {};
-      const ri =
-        riRaw.version === 'clips-v1'
-          ? normalizeReelSpecOverlay(riRaw, c.hook ?? null)
-          : riRaw;
-      // Clip-based reels auto-render at generation; don't reset a job that is
-      // already queued/rendering/produced — only (re)queue when missing or failed.
-      const { data: existingJob } = await supabase
-        .from('production_jobs')
-        .select('id,status')
-        .eq('post_candidate_id', c.id)
-        .eq('production_type', 'reel')
-        .maybeSingle();
-      const existingStatus = (existingJob as { status?: string } | null)?.status ?? null;
-      const shouldQueue =
-        existingStatus == null || existingStatus === 'failed' || existingStatus === 'needs_manual_production';
-      if (shouldQueue)
-        void supabase
-        .from('production_jobs')
-        .upsert(
-          {
-            post_candidate_id: c.id,
-            production_type: 'reel',
-            status: 'queued',
-            source_asset_ids: sa,
-            source_drive_file_ids: sd,
-            instructions: ri,
-            reel_specification: ri,
-            error_message: null,
-            render_log: null,
-            output_video_url: null,
-            output_drive_file_id: null,
-            render_strategy: null,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'post_candidate_id,production_type' },
-        )
-        .then(({ error: pjErr }) => {
-          if (pjErr) console.error('[candidate patch] production_jobs upsert', pjErr);
-        });
+    const autoReelRenderEnabled = await loadAutoReelRenderEnabled(supabase);
+    if (autoReelRenderEnabled) {
+      const pt = (candidateOut as { post_type?: string }).post_type?.trim();
+      if (pt === 'reel') {
+        const c = candidateOut as unknown as {
+          id: string;
+          hook?: string | null;
+          reel_instructions: unknown;
+          source_asset_ids: unknown;
+          source_drive_file_ids: unknown;
+        };
+        const sa = Array.isArray(c.source_asset_ids) ? (c.source_asset_ids as string[]) : [];
+        const sd =
+          Array.isArray(c.source_drive_file_ids) ? (c.source_drive_file_ids as string[]) : [];
+        const riRaw =
+          c.reel_instructions != null && typeof c.reel_instructions === 'object'
+            ? (c.reel_instructions as Record<string, unknown>)
+            : {};
+        const ri =
+          riRaw.version === 'clips-v1'
+            ? normalizeReelSpecOverlay(riRaw, c.hook ?? null)
+            : riRaw;
+        const { data: existingJob } = await supabase
+          .from('production_jobs')
+          .select('id,status')
+          .eq('post_candidate_id', c.id)
+          .eq('production_type', 'reel')
+          .maybeSingle();
+        const existingStatus = (existingJob as { status?: string } | null)?.status ?? null;
+        const shouldQueue =
+          existingStatus == null ||
+          existingStatus === 'failed' ||
+          existingStatus === 'needs_manual_production';
+        if (shouldQueue)
+          void supabase
+            .from('production_jobs')
+            .upsert(
+              {
+                post_candidate_id: c.id,
+                production_type: 'reel',
+                status: 'queued',
+                source_asset_ids: sa,
+                source_drive_file_ids: sd,
+                instructions: ri,
+                reel_specification: ri,
+                error_message: null,
+                render_log: null,
+                output_video_url: null,
+                output_drive_file_id: null,
+                render_strategy: null,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'post_candidate_id,production_type' },
+            )
+            .then(({ error: pjErr }) => {
+              if (pjErr) console.error('[candidate patch] production_jobs upsert', pjErr);
+            });
+      }
     }
   }
 

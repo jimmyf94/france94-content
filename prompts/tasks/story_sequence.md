@@ -20,8 +20,9 @@ story-sequence flow is added, the dynamic payload will provide:
 - If `allow_old_assets` is `false`, do not use any asset whose
   `is_fresh_for_story` is `false`. Refuse the task with an explanatory
   `warnings` entry rather than building a stale sequence.
-- Never use assets with `usage_status` in `published`, `hard_locked`,
-  `scheduled`, `approved_pending`.
+- Treat `usage_status` values `published`, `hard_locked`, `scheduled`, and
+  `approved_pending` as reuse warnings, not hard blockers. Prefer cleaner
+  alternatives when available; if you use one, add a `warnings` entry.
 - 3–6 frames maximum. Quality over length.
 
 ## Tone

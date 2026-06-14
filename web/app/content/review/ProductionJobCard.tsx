@@ -125,7 +125,9 @@ export function ProductionJobCard({
   const [hookLabBusy, setHookLabBusy] = useState<
     'load' | 'generate' | 'accept' | 'delete' | 'apply' | 'variants' | null
   >(null);
+  const [hookLabBusyOptionId, setHookLabBusyOptionId] = useState<string | null>(null);
   const [hookLabError, setHookLabError] = useState<string | null>(null);
+  const [renderMessage, setRenderMessage] = useState<string | null>(null);
   const [styleBusy, setStyleBusy] = useState(false);
   const [renderBusy, setRenderBusy] = useState(false);
   const [workspaceDefaults, setWorkspaceDefaults] = useState<ReelRenderTextStyle>(
@@ -232,9 +234,16 @@ export function ProductionJobCard({
     const json = await readJsonResponse<{
       ok?: boolean;
       error?: string;
+      message?: string;
+      dispatched?: boolean;
       job?: ProductionJobDto;
     }>(res);
     if (!res.ok) throw new Error(json.error || res.statusText);
+    if (typeof json.message === 'string' && json.message.trim()) {
+      setRenderMessage(json.message.trim());
+    } else {
+      setRenderMessage(null);
+    }
     if (json.job) {
       setJob(json.job);
     } else {
@@ -409,6 +418,7 @@ export function ProductionJobCard({
     async (optionId: string) => {
       if (hookLabBusy) return;
       setHookLabBusy('accept');
+      setHookLabBusyOptionId(optionId);
       setHookLabError(null);
       try {
         const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
@@ -432,6 +442,7 @@ export function ProductionJobCard({
         setHookLabError(e instanceof Error ? e.message : String(e));
       } finally {
         setHookLabBusy(null);
+        setHookLabBusyOptionId(null);
       }
     },
     [candidate.id, hookLabBusy],
@@ -441,6 +452,7 @@ export function ProductionJobCard({
     async (optionId: string) => {
       if (hookLabBusy) return;
       setHookLabBusy('delete');
+      setHookLabBusyOptionId(optionId);
       setHookLabError(null);
       try {
         const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
@@ -464,6 +476,7 @@ export function ProductionJobCard({
         setHookLabError(e instanceof Error ? e.message : String(e));
       } finally {
         setHookLabBusy(null);
+        setHookLabBusyOptionId(null);
       }
     },
     [candidate.id, hookLabBusy],
@@ -474,9 +487,10 @@ export function ProductionJobCard({
   }, []);
 
   const applyHookLab = useCallback(
-    async (hook: string) => {
+    async (hook: string, optionId?: string) => {
       if (hookLabBusy) return;
       setHookLabBusy('apply');
+      if (optionId) setHookLabBusyOptionId(optionId);
       setHookLabError(null);
       try {
         const res = await fetch(`/api/content-review/candidates/${candidate.id}/hook-lab`, {
@@ -515,6 +529,7 @@ export function ProductionJobCard({
         setHookLabError(e instanceof Error ? e.message : String(e));
       } finally {
         setHookLabBusy(null);
+        setHookLabBusyOptionId(null);
       }
     },
     [candidate.id, hookLabBusy, onCandidateUpdated],
@@ -739,7 +754,9 @@ export function ProductionJobCard({
       hookLabSelected={hookLabSelected}
       hookLabNotes={hookLabNotes}
       hookLabBusy={hookLabBusy}
+      hookLabBusyOptionId={hookLabBusyOptionId}
       hookLabError={hookLabError}
+      renderMessage={renderMessage}
       onHookLabNotesChange={setHookLabNotes}
       onGenerateHookLab={() => void generateHookLab()}
       onToggleHookLabSelection={toggleHookLabSelection}
@@ -747,7 +764,7 @@ export function ProductionJobCard({
       onClearHookLabSelection={clearHookLabSelection}
       onAcceptHookLabOption={(optionId) => void acceptHookLabOption(optionId)}
       onDeleteHookLabOption={(optionId) => void deleteHookLabOption(optionId)}
-      onApplyHookLab={(hook) => void applyHookLab(hook)}
+      onApplyHookLab={(hook, optionId) => void applyHookLab(hook, optionId)}
       onCreateHookLabVariants={() => void createHookLabVariants()}
       media={media}
       videoRef={videoRef}

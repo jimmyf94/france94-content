@@ -103,23 +103,42 @@ export async function unstagePublishingJob(jobId: string): Promise<UnstagePublis
   return json;
 }
 
-export async function publishPublishingJobNow(
-  jobId: string,
-  candidateId: string,
-): Promise<PublishingJobDto> {
+export async function triggerPublishJobNow(jobId: string): Promise<{
+  job: PublishingJobDto;
+  message: string;
+  dispatched: boolean;
+}> {
   const res = await fetch(
     `/api/content-review/publishing-jobs/${encodeURIComponent(jobId)}/publish-now`,
     { method: 'POST', credentials: 'include' },
   );
-  const json = await readJsonResponse<{ job?: PublishingJobDto; error?: unknown; message?: string }>(
-    res,
-  );
+  const json = await readJsonResponse<{
+    job?: PublishingJobDto;
+    error?: unknown;
+    message?: string;
+    dispatched?: boolean;
+  }>(res);
   if (!res.ok || !json.job) {
     const err = json.error;
     throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
   }
+  const dispatched = json.dispatched ?? false;
+  const message =
+    typeof json.message === 'string' && json.message.trim()
+      ? json.message.trim()
+      : dispatched
+        ? 'Publishing pipeline started. Waiting for Instagram…'
+        : 'Publish scheduled. Worker will pick it up within ~5 minutes.';
+  return { job: json.job, message, dispatched };
+}
 
-  let latest = json.job;
+export async function publishPublishingJobNow(
+  jobId: string,
+  candidateId: string,
+): Promise<PublishingJobDto> {
+  const { job } = await triggerPublishJobNow(jobId);
+
+  let latest = job;
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await new Promise((r) => setTimeout(r, 2000));
     const polled = await loadPublishingJobByCandidate(candidateId);

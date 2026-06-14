@@ -1,7 +1,10 @@
 'use client';
 
 import type { PublishingJobDto } from '@/lib/publishing-types';
+import type { PublishNowFeedback } from '@/lib/publishing-publish-feedback';
+import { publishPipelineProgressLabel } from '@/lib/publishing-publish-feedback';
 
+import { PublishProgressBanner } from './PublishProgressBanner';
 import { ScheduleControls } from './ScheduleControls';
 import { ReelTrialBadge, ReelTrialControls } from './ReelTrialControls';
 import type { ReelTrialGraduationStrategy } from '@/lib/reel-trial-types';
@@ -40,12 +43,13 @@ function PublishScheduleBlock(props: {
   variant: PublishingJobViewVariant;
   job: PublishingJobDto;
   acting: boolean;
+  publishActing?: boolean;
   onSchedule: (iso: string) => void | Promise<void>;
   onUnschedule: () => void | Promise<void>;
   onPublishNow: () => void | Promise<void>;
   onUnstage?: () => void | Promise<void>;
 }) {
-  const { variant, job, acting, onSchedule, onUnschedule, onPublishNow, onUnstage } = props;
+  const { variant, job, acting, publishActing = false, onSchedule, onUnschedule, onPublishNow, onUnstage } = props;
 
   const isCompact = variant === 'prepCard' || variant === 'popup';
 
@@ -78,6 +82,7 @@ function PublishScheduleBlock(props: {
           canUnschedule={canUnschedule}
           canPublishNow={canPublishNow}
           acting={acting}
+          publishActing={publishActing}
           compact
           onSchedule={onSchedule}
           onUnschedule={onUnschedule}
@@ -136,6 +141,7 @@ function PublishScheduleBlock(props: {
         canUnschedule={canUnschedule}
         canPublishNow={canPublishNow}
         acting={acting}
+        publishActing={publishActing}
         compact={isCompact}
         onSchedule={onSchedule}
         onUnschedule={onUnschedule}
@@ -165,6 +171,11 @@ export function PublishingJobView({
   onRefreshGraph,
   reviewDriveFolderUrl,
   publishingActing = false,
+  publishActing = false,
+  publishFeedback = null,
+  showPublishProgress = false,
+  publishProgressLabel,
+  publishBackgroundHint = false,
   onSchedulePublish,
   onUnschedulePublish,
   onPublishNow,
@@ -177,6 +188,11 @@ export function PublishingJobView({
   onRefreshGraph: () => void;
   reviewDriveFolderUrl?: string | null;
   publishingActing?: boolean;
+  publishActing?: boolean;
+  publishFeedback?: PublishNowFeedback | null;
+  showPublishProgress?: boolean;
+  publishProgressLabel?: string;
+  publishBackgroundHint?: boolean;
   onSchedulePublish?: (iso: string) => void | Promise<void>;
   onUnschedulePublish?: () => void | Promise<void>;
   onPublishNow?: () => void | Promise<void>;
@@ -197,10 +213,16 @@ export function PublishingJobView({
     onPublishNow;
 
   const refreshLabel = refreshing ? 'Refreshing…' : 'Refresh container status';
+  const progressLabel =
+    publishProgressLabel ??
+    publishPipelineProgressLabel(job.status, publishFeedback, publishActing || publishingActing);
 
   if (variant === 'prepCard' || variant === 'popup') {
     return (
       <div className={variant === 'popup' ? 'space-y-3' : 'mt-3 space-y-3'}>
+        {showPublishProgress && (
+          <PublishProgressBanner label={progressLabel} backgroundHint={publishBackgroundHint} />
+        )}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className={`font-semibold ${statusTone(job.status)}`}>{job.status}</span>
           <span className="text-[var(--muted)]">·</span>
@@ -229,6 +251,7 @@ export function PublishingJobView({
             variant={variant === 'popup' ? 'popup' : 'prepCard'}
             job={job}
             acting={publishingActing}
+            publishActing={publishActing}
             onSchedule={onSchedulePublish}
             onUnschedule={onUnschedulePublish}
             onPublishNow={onPublishNow}
@@ -342,6 +365,9 @@ export function PublishingJobView({
 
   return (
     <div className="space-y-6">
+      {showPublishProgress && (
+        <PublishProgressBanner label={progressLabel} backgroundHint={publishBackgroundHint} />
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <span className="rounded-full border border-[var(--border)] px-3 py-1 text-xs font-medium">
           {job.status}
@@ -367,6 +393,7 @@ export function PublishingJobView({
           variant="detailPage"
           job={job}
           acting={publishingActing}
+          publishActing={publishActing}
           onSchedule={onSchedulePublish}
           onUnschedule={onUnschedulePublish}
           onPublishNow={onPublishNow}

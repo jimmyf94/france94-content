@@ -37,11 +37,15 @@ function WarningBanner({ candidate }: { candidate: PostCandidate }) {
       </div>,
     );
   }
-  if (candidate.has_asset_conflict === true && candidate.asset_conflict_summary) {
+  if (candidate.asset_conflict_summary) {
     items.push(
       <div
         key="conflict"
-        className="rounded-md border border-[var(--bad)]/40 bg-[var(--bad)]/10 px-2 py-1.5 text-xs text-[var(--bad)]"
+        className={`rounded-md border px-2 py-1.5 text-xs ${
+          candidate.has_asset_conflict === true
+            ? 'border-[var(--bad)]/40 bg-[var(--bad)]/10 text-[var(--bad)]'
+            : 'border-[var(--warn)]/40 bg-[var(--warn)]/10 text-[var(--warn)]'
+        }`}
       >
         {candidate.asset_conflict_summary}
       </div>,
@@ -88,6 +92,7 @@ export function CandidateDecisionPanel({
   onCandidateUpdated,
   onRegenerate,
   regenerating,
+  savingNotes,
   onRefreshQueue,
   activeTab,
   onChangeTab,
@@ -101,6 +106,7 @@ export function CandidateDecisionPanel({
   onCandidateUpdated?: (c: PostCandidate) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
+  savingNotes?: boolean;
   onRefreshQueue?: () => void;
   activeTab: import('./types').DetailTab;
   onChangeTab: (t: import('./types').DetailTab) => void;
@@ -160,11 +166,11 @@ export function CandidateDecisionPanel({
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
-              disabled={!dirty}
+              disabled={!dirty || savingNotes}
               onClick={() => void onSaveNotes()}
               className="cockpit-btn-secondary px-2.5 py-1 text-xs disabled:opacity-40"
             >
-              Save notes only
+              {savingNotes ? 'Saving…' : 'Save notes only'}
             </button>
             {(candidate.regeneration_count ?? 0) > 0 && (
               <p className="text-[10px] text-[var(--muted)]">

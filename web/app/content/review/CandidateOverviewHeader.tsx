@@ -50,8 +50,8 @@ export function CandidateOverviewHeader({
               <PostTypeBadge postType={candidate.post_type} />
               {assets && <MetaChip>{assets}</MetaChip>}
               {candidate.candidate_date && <MetaChip>{candidate.candidate_date}</MetaChip>}
-              {candidate.has_asset_conflict === true && (
-                <MetaChip>Conflict</MetaChip>
+              {candidate.asset_conflict_summary && (
+                <MetaChip>Asset warning</MetaChip>
               )}
               {candidate.freshness_warning && <MetaChip>Stale story</MetaChip>}
             </div>

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import {
   reconcileAllStaleApprovedReservations,
+  reconcileLegacyAssetLockCandidates,
+  reconcileLegacyHardLockedAssetSummaries,
+  reconcilePublishedAutoStaleEligibility,
   reconcileStaleSuggestedUsageSummaries,
 } from '@fr94/asset-usage';
 import { assertReviewAuthorized } from '@/lib/review-auth';
@@ -24,6 +27,12 @@ export async function POST(req: NextRequest) {
     const supabase = getSupabaseServiceRole();
     const { repairedCandidateIds } = await reconcileAllStaleApprovedReservations(supabase);
     const { repairedAssetIds } = await reconcileStaleSuggestedUsageSummaries(supabase);
+    const { repairedAssetIds: legacyHardLockAssetIds } =
+      await reconcileLegacyHardLockedAssetSummaries(supabase);
+    const { repairedCandidateIds: legacyLockCandidateIds } =
+      await reconcileLegacyAssetLockCandidates(supabase);
+    const { repairedAssetIds: restoredEligibilityAssetIds } =
+      await reconcilePublishedAutoStaleEligibility(supabase);
     const maxIds = 200;
     return NextResponse.json(
       {
@@ -33,6 +42,15 @@ export async function POST(req: NextRequest) {
         repairedAssetSummaryCount: repairedAssetIds.length,
         repairedAssetIds: repairedAssetIds.slice(0, maxIds),
         repairedAssetIdsTruncated: repairedAssetIds.length > maxIds,
+        legacyHardLockAssetCount: legacyHardLockAssetIds.length,
+        legacyHardLockAssetIds: legacyHardLockAssetIds.slice(0, maxIds),
+        legacyHardLockAssetIdsTruncated: legacyHardLockAssetIds.length > maxIds,
+        legacyLockCandidateCount: legacyLockCandidateIds.length,
+        legacyLockCandidateIds: legacyLockCandidateIds.slice(0, maxIds),
+        legacyLockCandidateIdsTruncated: legacyLockCandidateIds.length > maxIds,
+        restoredEligibilityAssetCount: restoredEligibilityAssetIds.length,
+        restoredEligibilityAssetIds: restoredEligibilityAssetIds.slice(0, maxIds),
+        restoredEligibilityAssetIdsTruncated: restoredEligibilityAssetIds.length > maxIds,
       },
       { headers: noStore },
     );

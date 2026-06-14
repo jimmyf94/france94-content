@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { PublishingJobDto, PublishingQueueItem } from '@/lib/publishing-types';
+import type { PublishNowFeedback } from '@/lib/publishing-publish-feedback';
+import { publishPipelineProgressLabel } from '@/lib/publishing-publish-feedback';
 
 import { formatScheduledTime } from './publishingQueueSplit';
 import { PublishingCaptionEditor } from './PublishingCaptionEditor';
@@ -196,6 +198,8 @@ function CalendarCardHoverPanel({
 export function PublishingCalendarCard({
   item,
   acting,
+  publishFeedback,
+  publishActing = false,
   onSchedule,
   onUnschedule,
   onUnstage,
@@ -203,6 +207,8 @@ export function PublishingCalendarCard({
 }: {
   item: PublishingQueueItem;
   acting: boolean;
+  publishFeedback?: PublishNowFeedback | null;
+  publishActing?: boolean;
   onSchedule: (jobId: string, iso: string) => void | Promise<void>;
   onUnschedule: (jobId: string) => void | Promise<void>;
   onUnstage?: (jobId: string) => void | Promise<void>;
@@ -258,6 +264,22 @@ export function PublishingCalendarCard({
   const captionEn = detail?.candidate?.caption_en ?? null;
   const captionTags = detail?.candidate?.hashtags ?? null;
   const canUnstage = canUnstagePublishingJob(item.status);
+  const publishProgressLabel = publishPipelineProgressLabel(
+    item.status,
+    publishFeedback,
+    publishActing,
+  );
+  const showPublishProgress =
+    publishActing ||
+    Boolean(
+      publishFeedback &&
+        item.status !== 'published' &&
+        item.status !== 'failed' &&
+        (item.status === 'publishing' ||
+          item.status === 'processing' ||
+          item.status === 'containers_created' ||
+          item.status === 'scheduled'),
+    );
 
   const handleUnstage = () => {
     if (
@@ -403,6 +425,9 @@ export function PublishingCalendarCard({
               {formatScheduledTime(item.scheduled_publish_at ?? '')}
             </span>
           </div>
+          {showPublishProgress && (
+            <p className="mt-1 line-clamp-2 text-[10px] text-[var(--warn)]">{publishProgressLabel}</p>
+          )}
         </div>
       </div>
 

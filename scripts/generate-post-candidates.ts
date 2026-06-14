@@ -51,6 +51,7 @@ import {
   enqueueReelRenderJob,
   insertReelCandidate,
 } from './lib/reel-assembly.js';
+import { loadAutoReelRenderEnabled } from './lib/pipeline-settings.js';
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -1399,6 +1400,7 @@ export async function generatePostCandidates(): Promise<void> {
   }
 
   if (clipReelActive) {
+    const autoReelRenderEnabled = await loadAutoReelRenderEnabled(supabase);
     try {
       const reelRecent = recentLedger
         .filter((r) => r.post_type === 'reel')
@@ -1453,14 +1455,16 @@ export async function generatePostCandidates(): Promise<void> {
             console.warn(`[reel-clips collision check]\t${ins.id}`, e);
           }
 
-          const renderRes = await enqueueReelRenderJob(supabase, {
-            candidateId: ins.id,
-            reel: res.reel,
-          });
-          if (renderRes.error) {
-            console.warn(`[reel-clips] render enqueue failed: ${renderRes.error}`);
-          } else {
-            console.log(`[reel-clips] render job queued for ${ins.id}`);
+          if (autoReelRenderEnabled) {
+            const renderRes = await enqueueReelRenderJob(supabase, {
+              candidateId: ins.id,
+              reel: res.reel,
+            });
+            if (renderRes.error) {
+              console.warn(`[reel-clips] render enqueue failed: ${renderRes.error}`);
+            } else {
+              console.log(`[reel-clips] render job queued for ${ins.id}`);
+            }
           }
         }
       }

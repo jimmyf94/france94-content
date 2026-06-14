@@ -20,6 +20,7 @@ export function ActiveCandidateWorkspace({
   onApproveAnyway,
   onDelete,
   deleting,
+  deciding,
   onRefreshQueue,
   onStageError,
   decisionsDisabled,
@@ -39,6 +40,7 @@ export function ActiveCandidateWorkspace({
   onApproveAnyway?: () => void;
   onDelete?: () => void;
   deleting?: boolean;
+  deciding?: boolean;
   onRefreshQueue?: () => void;
   onStageError?: (message: string) => void;
   decisionsDisabled?: boolean;
@@ -64,6 +66,7 @@ export function ActiveCandidateWorkspace({
         onApproveAnyway={onApproveAnyway}
         onDelete={onDelete}
         deleting={deleting}
+        deciding={deciding}
         onRefreshQueue={onRefreshQueue}
         onStageError={onStageError}
         decisionsDisabled={decisionsDisabled}

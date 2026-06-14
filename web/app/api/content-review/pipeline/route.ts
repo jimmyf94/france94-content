@@ -19,16 +19,18 @@ const patchBodySchema = z
     auto_pause_threshold: z.number().int().min(1).max(100).optional(),
     auto_ingest_interval_minutes: z.number().int().min(5).max(60 * 24 * 30).optional(),
     enabled_post_types: z.array(pipelinePostTypeSchema).min(0).optional(),
+    auto_reel_render_enabled: z.boolean().optional(),
   })
   .refine(
     (b) =>
       b.auto_ingest_enabled !== undefined ||
       b.auto_pause_threshold !== undefined ||
       b.auto_ingest_interval_minutes !== undefined ||
-      b.enabled_post_types !== undefined,
+      b.enabled_post_types !== undefined ||
+      b.auto_reel_render_enabled !== undefined,
     {
       message:
-        'Provide auto_ingest_enabled, auto_pause_threshold, auto_ingest_interval_minutes, and/or enabled_post_types',
+        'Provide auto_ingest_enabled, auto_pause_threshold, auto_ingest_interval_minutes, enabled_post_types, and/or auto_reel_render_enabled',
     },
   );
 
@@ -70,6 +72,9 @@ export async function PATCH(req: NextRequest) {
     }
     if (parsed.data.enabled_post_types !== undefined) {
       patch.enabled_post_types = parsed.data.enabled_post_types;
+    }
+    if (parsed.data.auto_reel_render_enabled !== undefined) {
+      patch.auto_reel_render_enabled = parsed.data.auto_reel_render_enabled;
     }
 
     const supabase = getSupabaseServiceRole();

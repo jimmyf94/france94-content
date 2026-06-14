@@ -22,12 +22,12 @@ function makeSummary(overrides: Partial<PlannerAssetSummary> = {}): PlannerAsset
   };
 }
 
-test('scoreAssetForPlanner excludes blocked usage statuses', () => {
+test('scoreAssetForPlanner penalizes prior usage without excluding assets', () => {
   const ctx = { committedAssetIds: new Set<string>(), rejectedAssetIds: new Set<string>() };
-  assert.equal(
-    scoreAssetForPlanner(makeSummary({ usage_status: 'published' }), ctx),
-    Number.NEGATIVE_INFINITY,
-  );
+  const unused = scoreAssetForPlanner(makeSummary({ usage_status: 'unused' }), ctx);
+  const published = scoreAssetForPlanner(makeSummary({ usage_status: 'published' }), ctx);
+  assert.ok(Number.isFinite(published));
+  assert.ok(unused > published);
 });
 
 test('scoreAssetForPlanner prefers fresh unused assets over committed ones', () => {
