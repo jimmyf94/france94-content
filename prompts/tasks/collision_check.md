@@ -28,7 +28,7 @@ Decide whether this candidate is safe to show a human reviewer, or too close to 
 
 ### Collision kinds (use in `collisions[].kind`)
 
-`asset_reuse`, `lane`, `hook`, `caption`, `visual_subject`, `transcript`, `timing`, `platform_surface`
+`asset_reuse`, `series`, `hook`, `caption`, `visual_subject`, `transcript`, `timing`, `platform_surface`
 
 ## Output
 
@@ -42,7 +42,7 @@ Return **strict JSON only**, no markdown fences:
     {
       "against_ledger_id": "uuid",
       "against_label": "human-readable label e.g. reel · mission · 3d ago",
-      "kind": "lane",
+      "kind": "series",
       "reason": "specific explanation"
     }
   ]

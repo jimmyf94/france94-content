@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { POST_CANDIDATE_LIST_COLUMNS } from '@/lib/post-candidate-api-columns';
+import { enrichPublishedCandidates } from '@/lib/published-candidate-feedback';
 import { escapeIlikePattern } from '@/lib/query-escape';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
@@ -89,8 +90,34 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    let candidates = (data ?? []) as unknown as Array<Record<string, unknown>>;
+
+    if (statuses.includes('posted') && candidates.length > 0) {
+      try {
+        const postedIds = candidates
+          .filter((c) => {
+            const row = c as unknown as { status?: string };
+            return row.status === 'posted';
+          })
+          .map((c) => String((c as unknown as { id: string }).id));
+        if (postedIds.length > 0) {
+          const metaById = await enrichPublishedCandidates(supabase, postedIds);
+          candidates = candidates.map((c) => {
+            const row = c as unknown as { id: string; status?: string };
+            if (row.status !== 'posted') return c;
+            return {
+              ...(c as object),
+              published_meta: metaById.get(row.id) ?? null,
+            };
+          });
+        }
+      } catch (e) {
+        console.warn('[candidates] published enrichment failed', e);
+      }
+    }
+
     return NextResponse.json(
-      { candidates: data ?? [] },
+      { candidates },
       {
         headers: {
           'Cache-Control': 'no-store, no-cache, must-revalidate',

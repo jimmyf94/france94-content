@@ -23,6 +23,48 @@ export const REEL_VARIANT_LABELS: Record<ReelVariantKind, string> = {
   different_series: 'D · Different series',
 };
 
+export const SPAWN_MODES = [
+  'keep_text_change_assets',
+  'shuffle_assets',
+  'shuffle_assets_and_text',
+] as const;
+
+export type SpawnMode = (typeof SPAWN_MODES)[number];
+
+export const SPAWN_MODE_LABELS: Record<SpawnMode, string> = {
+  keep_text_change_assets: 'Keep text, change assets',
+  shuffle_assets: 'Shuffle assets',
+  shuffle_assets_and_text: 'New sibling: fresh assets + refreshed text',
+};
+
+export const SPAWN_MODE_HINTS: Record<SpawnMode, string> = {
+  keep_text_change_assets: 'Same hook and caption; different footage.',
+  shuffle_assets: 'Same text; reorder or swap within current assets.',
+  shuffle_assets_and_text:
+    'Keeps the winning idea and structure; changes footage and wording.',
+};
+
+export type CandidateInstagramFeedback = {
+  instagram_media_id: string;
+  permalink: string | null;
+  posted_at: string | null;
+  like_count: number | null;
+  comments_count: number | null;
+  views: number | null;
+  shares: number | null;
+  avg_watch_time_ms: number | null;
+  insights_available: boolean;
+  fetched_at: string;
+};
+
+export type PublishedCandidateMeta = {
+  publishing_job_id: string | null;
+  instagram_media_id: string | null;
+  instagram_permalink: string | null;
+  published_at: string | null;
+  feedback: CandidateInstagramFeedback | null;
+};
+
 export type ReelHookLabOption = {
   hook: string;
   angle: string;
@@ -96,6 +138,10 @@ export type PostCandidate = {
   reel_reasoning?: ReelReasoning | null;
   variant_of?: string | null;
   variant_kind?: ReelVariantKind | null;
+  spawned_from_candidate_id?: string | null;
+  spawn_root_candidate_id?: string | null;
+  spawn_mode?: SpawnMode | null;
+  spawn_notes?: string | null;
   narrative_function?: string | null;
   title_overlay?: string | null;
   collision_risk?: string | null;
@@ -115,7 +161,9 @@ export type CandidateListItem = Omit<
   | 'static_post_instructions'
   | 'llm_raw'
   | 'previous_versions'
->;
+> & {
+  published_meta?: PublishedCandidateMeta | null;
+};
 
 export function toCandidateListItem(c: PostCandidate): CandidateListItem {
   const {
@@ -151,6 +199,7 @@ export type StatusTab =
   | 'needs_rewrite'
   | 'approved'
   | 'publishing'
+  | 'published'
   | 'rejected';
 
 export type DetailTab = 'caption' | 'structure' | 'transcript' | 'debug';
@@ -162,5 +211,21 @@ export const STATUS_TAB_LABEL: Record<StatusTab, string> = {
   needs_rewrite: 'Needs rewrite',
   approved: 'Approved',
   publishing: 'Publishing',
+  published: 'Published',
   rejected: 'Rejected',
 };
+
+/** True when review decisions / delete / regenerate should be disabled. */
+export function isLockedReviewCandidate(status: string | null | undefined): boolean {
+  return status === 'ready_to_publish' || status === 'posted';
+}
+
+/** True when spawn / iteration from a proven post is allowed. */
+export function canSpawnFromCandidate(status: string | null | undefined): boolean {
+  return (
+    status === 'posted' ||
+    status === 'produced' ||
+    status === 'approved' ||
+    status === 'ready_to_publish'
+  );
+}

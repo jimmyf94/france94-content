@@ -33,7 +33,10 @@
       "@fr94/reel-render-defaults": ["../scripts/lib/reel-render-defaults"],
       "@fr94/content-clips": ["../scripts/lib/content-clips"],
       "@fr94/pipeline-settings": ["../scripts/lib/pipeline-settings"],
-      "@fr94/publishing/instagram-graph": ["../scripts/lib/publishing/instagram-graph"]
+      "@fr94/publishing/instagram-graph": ["../scripts/lib/publishing/instagram-graph"],
+      "@fr94/generate-post-candidates": ["../scripts/generate-post-candidates"],
+      "@fr94/planner-asset-ranking": ["../scripts/lib/planner-asset-ranking"],
+      "@fr94/process-analyzed-assets": ["../scripts/process-analyzed-assets"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

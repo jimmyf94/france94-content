@@ -145,7 +145,7 @@ function ReelPreviewStats({
   if (!hasTextStats && !hasTags) return null;
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
       {hasTextStats && (
         <div className="flex items-center gap-2 text-[11px] tabular-nums text-[var(--muted)]">
           {dur && <span>{dur}</span>}
@@ -163,7 +163,10 @@ function ReelPreviewStats({
         </span>
       )}
       {laneTag && (
-        <span className="shrink-0 rounded-sm border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-200">
+        <span
+          className="inline-block max-w-[9rem] shrink truncate rounded-sm border border-violet-500/40 bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-200 sm:max-w-[12rem]"
+          title={laneTag}
+        >
           {laneTag}
         </span>
       )}
@@ -1464,12 +1467,12 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
       >
         <div className="flex min-h-0 min-w-0 flex-col border-r border-[var(--border)]">
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="relative flex shrink-0 items-center justify-center border-b border-[var(--border)] bg-[var(--surface)] px-4">
-            <div className="flex min-w-0">
+            <div className="flex w-full shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-1">
+            <div className="flex shrink-0">
               <button
                 type="button"
                 onClick={() => setStageTab('source')}
-                className={`border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4 sm:py-2.5 ${
                   stageTab === 'source'
                     ? 'border-[var(--accent)] text-[var(--text)]'
                     : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
@@ -1480,7 +1483,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
               <button
                 type="button"
                 onClick={() => setStageTab('rendered')}
-                className={`border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                className={`border-b-2 px-3 py-2 text-sm font-medium transition-colors sm:px-4 sm:py-2.5 ${
                   stageTab === 'rendered'
                     ? 'border-[var(--accent)] text-[var(--text)]'
                     : 'border-transparent text-[var(--muted)] hover:text-[var(--text)]'
@@ -1494,7 +1497,7 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                 )}
               </button>
             </div>
-            <div className="absolute right-4 top-1/2 -translate-y-1/2">
+            <div className="ml-auto min-w-0 max-w-full">
               <ReelPreviewStats
                 durationSec={props.durationSec}
                 assetCount={assetCount}

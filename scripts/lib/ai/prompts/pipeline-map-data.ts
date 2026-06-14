@@ -10,6 +10,7 @@ export type StablePromptKey =
   | 'context_editorial_rules'
   | 'task_generate_candidate'
   | 'task_regenerate_with_notes'
+  | 'task_spawn_candidate_variant'
   | 'task_caption_rewrite'
   | 'task_story_sequence'
   | 'task_reel_caption_overlay'
@@ -59,6 +60,7 @@ export const STABLE_PROMPT_KEY_LIST = [
   'context_editorial_rules',
   'task_generate_candidate',
   'task_regenerate_with_notes',
+  'task_spawn_candidate_variant',
   'task_caption_rewrite',
   'task_story_sequence',
   'task_reel_caption_overlay',

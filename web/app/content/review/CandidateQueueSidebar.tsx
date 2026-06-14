@@ -15,6 +15,7 @@ const TAB_ORDER: StatusTab[] = [
   'needs_rewrite',
   'approved',
   'publishing',
+  'published',
   'rejected',
 ];
 
@@ -71,6 +72,7 @@ export function CandidateQueueSidebar({
   onCloseFilters?: () => void;
 } & PublishingSidebarProps) {
   const isPublishingTab = activeTab === 'publishing';
+  const isPublishedTab = activeTab === 'published';
 
   const listCount = isPublishingTab ? publishingItems.length : queueCandidates.length;
   const listLoading = isPublishingTab ? publishingLoading : loading;
@@ -103,6 +105,7 @@ export function CandidateQueueSidebar({
             </button>
           )}
           {!isPublishingTab &&
+            !isPublishedTab &&
             filters &&
             onChangeFilters &&
             onToggleFilters &&
@@ -149,7 +152,7 @@ export function CandidateQueueSidebar({
         )}
         {!listLoading && listCount === 0 && (
           <p className="p-3 text-sm text-[var(--muted)]">
-            {isPublishingTab ? 'No posts queued to go live.' : 'Inbox empty.'}
+            {isPublishingTab ? 'No posts queued to go live.' : isPublishedTab ? 'No published candidates yet.' : 'Inbox empty.'}
           </p>
         )}
         {isPublishingTab && publishingItems.length > 0 && (

@@ -12,6 +12,7 @@ export const STABLE_CONTEXT_KEYS = [
 export const TASK_PROMPT_KEYS = [
   'task_generate_candidate',
   'task_regenerate_with_notes',
+  'task_spawn_candidate_variant',
   'task_caption_rewrite',
   'task_story_sequence',
   'task_reel_caption_overlay',
@@ -32,6 +33,7 @@ const CONTEXT_FILE_REL: Record<StableContextKey, string> = {
 const TASK_FILE_REL: Record<TaskPromptKey, string> = {
   task_generate_candidate: path.join('prompts', 'tasks', 'generate_candidate.md'),
   task_regenerate_with_notes: path.join('prompts', 'tasks', 'regenerate_with_notes.md'),
+  task_spawn_candidate_variant: path.join('prompts', 'tasks', 'spawn_candidate_variant.md'),
   task_caption_rewrite: path.join('prompts', 'tasks', 'caption_rewrite.md'),
   task_story_sequence: path.join('prompts', 'tasks', 'story_sequence.md'),
   task_reel_caption_overlay: path.join('prompts', 'tasks', 'reel_caption_overlay.md'),

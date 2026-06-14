@@ -1,10 +1,13 @@
 'use client';
 
+import { CandidateIterationPanel } from './CandidateIterationPanel';
 import { RewriteChips } from './decision/RewriteChips';
 import { PublishingPrepCard } from './PublishingPrepCard';
 import { QuickCaptionEdit } from './QuickCaptionEdit';
+import { PublishedFeedbackStrip } from './PublishedFeedbackStrip';
 import { CandidateTabs } from './tabs/CandidateTabs';
 import type { PostCandidate, ReviewDriveFile } from './types';
+import { canSpawnFromCandidate, isLockedReviewCandidate } from './types';
 
 function appendNote(notes: string, chip: string): string {
   return notes.trim() ? `${notes.trim()} · ${chip}` : chip;
@@ -94,6 +97,8 @@ export function CandidateDecisionPanel({
   regenerating,
   savingNotes,
   onRefreshQueue,
+  onSpawnCreated,
+  onGoToSpawnInReview,
   activeTab,
   onChangeTab,
 }: {
@@ -108,6 +113,8 @@ export function CandidateDecisionPanel({
   regenerating?: boolean;
   savingNotes?: boolean;
   onRefreshQueue?: () => void;
+  onSpawnCreated?: (c: PostCandidate) => void | Promise<void>;
+  onGoToSpawnInReview?: (c: PostCandidate) => void;
   activeTab: import('./types').DetailTab;
   onChangeTab: (t: import('./types').DetailTab) => void;
 }) {
@@ -121,16 +128,46 @@ export function CandidateDecisionPanel({
 
   const dirty = (notes ?? '') !== (savedNotes ?? '');
   const notesNonEmpty = (notes ?? '').trim().length > 0 || (savedNotes ?? '').trim().length > 0;
+  const locked = isLockedReviewCandidate(candidate.status);
   const showRegenerate =
-    !!onRegenerate && (candidate.status === 'needs_rewrite' || notesNonEmpty);
+    !!onRegenerate &&
+    !locked &&
+    (candidate.status === 'needs_rewrite' || notesNonEmpty);
   const regenerateDisabled =
     !!regenerating || (candidate.status === 'needs_rewrite' && !notesNonEmpty);
+  const publishedMeta =
+    'published_meta' in candidate
+      ? (candidate as PostCandidate & { published_meta?: import('./types').PublishedCandidateMeta })
+          .published_meta
+      : undefined;
 
   return (
     <aside className="flex min-h-0 flex-col border-l border-[var(--border)] bg-[var(--surface)]">
       <div className="scrollbar-thin shrink-0 space-y-3 overflow-auto border-b border-[var(--border)] p-3">
         <WarningBanner candidate={candidate} />
 
+        {candidate.status === 'posted' && (
+          <section className="cockpit-card space-y-2 p-3">
+            <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Instagram performance
+            </h3>
+            <PublishedFeedbackStrip
+              feedback={publishedMeta?.feedback}
+              permalink={publishedMeta?.instagram_permalink}
+              publishedAt={publishedMeta?.published_at}
+            />
+          </section>
+        )}
+
+        {canSpawnFromCandidate(candidate.status) && (
+          <CandidateIterationPanel
+            candidate={candidate}
+            onSpawned={onSpawnCreated}
+            onGoToReview={onGoToSpawnInReview}
+          />
+        )}
+
+        {!locked && (
         <section className="cockpit-card space-y-2.5 p-3">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -181,15 +218,20 @@ export function CandidateDecisionPanel({
             )}
           </div>
         </section>
+        )}
 
+        {!locked && (
         <QuickCaptionEdit candidate={candidate} onCandidateUpdated={onCandidateUpdated} />
+        )}
 
+        {!locked && (
         <PublishingPrepCard
           candidate={candidate}
           reviewDriveFolderUrl={candidate.review_drive_folder_url}
           onRefreshQueue={onRefreshQueue}
           compact
         />
+        )}
       </div>
 
       <CandidateTabs

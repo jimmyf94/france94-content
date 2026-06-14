@@ -48,18 +48,21 @@ import {
 } from './useCandidateMedia';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 
-const ALL_STATUSES = 'needs_review,needs_rewrite,approved,produced,ready_to_publish,rejected';
+const ALL_STATUSES =
+  'needs_review,needs_rewrite,approved,produced,ready_to_publish,rejected,posted';
 
 const VALID_TABS: ReadonlySet<StatusTab> = new Set([
   'needs_review',
   'needs_rewrite',
   'approved',
   'publishing',
+  'published',
   'rejected',
 ]);
 
 function pickInitialTab(raw: string | null): StatusTab {
   if (raw === 'ready_to_publish') return 'publishing';
+  if (raw === 'posted') return 'published';
   if (raw && VALID_TABS.has(raw as StatusTab)) return raw as StatusTab;
   return 'needs_review';
 }
@@ -99,7 +102,8 @@ function mergeSelectedCandidate(row: CandidateListItem, detail: PostCandidate): 
     static_post_instructions: detail.static_post_instructions,
     llm_raw: detail.llm_raw,
     previous_versions: detail.previous_versions,
-  };
+    published_meta: row.published_meta,
+  } as PostCandidate & { published_meta?: CandidateListItem['published_meta'] };
 }
 
 export function ReviewDashboard() {
@@ -442,6 +446,7 @@ export function ReviewDashboard() {
       needs_rewrite: [],
       approved: [],
       publishing: [],
+      published: [],
       rejected: [],
     };
     for (const c of candidates) {
@@ -454,10 +459,17 @@ export function ReviewDashboard() {
         m.needs_rewrite.push(c);
       } else if (c.status === 'approved') {
         m.approved.push(c);
+      } else if (c.status === 'posted') {
+        m.published.push(c);
       } else if (c.status === 'rejected') {
         m.rejected.push(c);
       }
     }
+    m.published.sort((a, b) => {
+      const aTs = Date.parse(a.published_meta?.published_at ?? a.updated_at ?? '');
+      const bTs = Date.parse(b.published_meta?.published_at ?? b.updated_at ?? '');
+      return (Number.isFinite(bTs) ? bTs : 0) - (Number.isFinite(aTs) ? aTs : 0);
+    });
     return m;
   }, [candidates, pipelineCandidateIds]);
 
@@ -467,6 +479,7 @@ export function ReviewDashboard() {
       needs_rewrite: visibleByTab.needs_rewrite.length,
       approved: visibleByTab.approved.length,
       publishing: publishingItems.length,
+      published: visibleByTab.published.length,
       rejected: visibleByTab.rejected.length,
     }),
     [visibleByTab, publishingItems.length],
@@ -556,6 +569,22 @@ export function ReviewDashboard() {
     },
     [silentReloadCandidates],
   );
+
+  const handleSpawnCreated = useCallback(
+    async (c: PostCandidate) => {
+      const row = toCandidateListItem(c);
+      setCandidates((prev) => (prev.some((x) => x.id === row.id) ? prev : [row, ...prev]));
+      setToast({ kind: 'good', msg: 'Iteration created — open Needs review when ready' });
+      await silentReloadCandidates();
+    },
+    [silentReloadCandidates],
+  );
+
+  const handleOpenSpawnInReview = useCallback((c: PostCandidate) => {
+    setActiveStatusTab('needs_review');
+    setSelectedId(c.id);
+    setSelectedDetail(c);
+  }, []);
 
   const handleScheduleSelectCandidate = useCallback((candidateId: string) => {
     setSelectedId(candidateId);
@@ -657,6 +686,7 @@ export function ReviewDashboard() {
     async (status: DecisionStatus, opts?: { overrideCollision?: boolean }) => {
       if (!selected) return;
       if (selected.invalidated_at) return;
+      if (selected.status === 'ready_to_publish' || selected.status === 'posted') return;
       const collisionRisk = (selected.collision_risk ?? '').trim();
       if (
         status === 'approved' &&
@@ -741,7 +771,7 @@ export function ReviewDashboard() {
   const deleteCandidate = useCallback(async () => {
     if (!selected) return;
     if (selected.invalidated_at) return;
-    if (selected.status === 'ready_to_publish') return;
+    if (selected.status === 'ready_to_publish' || selected.status === 'posted') return;
     if (deleting) return;
 
     const deletedId = selected.id;
@@ -857,7 +887,11 @@ export function ReviewDashboard() {
   }, []);
 
   useKeyboardShortcuts({
-    enabled: !!selected && selected.status !== 'ready_to_publish' && !selected.invalidated_at,
+    enabled:
+      !!selected &&
+      selected.status !== 'ready_to_publish' &&
+      selected.status !== 'posted' &&
+      !selected.invalidated_at,
     canApprove: selected
       ? !['blocked', 'high'].includes((selected.collision_risk ?? '').trim())
       : true,
@@ -924,6 +958,7 @@ export function ReviewDashboard() {
 
   const regenerate = useCallback(async () => {
     if (!selected || regenerating) return;
+    if (selected.status === 'posted') return;
     const id = selected.id;
     const draft = draftNotes[id] ?? '';
     const saved = selected.reviewer_notes ?? '';
@@ -1114,7 +1149,9 @@ export function ReviewDashboard() {
           onVariantCreated={handleVariantCreated}
           onDecide={decide}
           onApproveAnyway={() => void decide('approved', { overrideCollision: true })}
-          decisionsDisabled={selected?.status === 'ready_to_publish'}
+          decisionsDisabled={
+            selected?.status === 'ready_to_publish' || selected?.status === 'posted'
+          }
           approveDisabled={
             ['blocked', 'high'].includes((selected?.collision_risk ?? '').trim())
           }
@@ -1151,6 +1188,8 @@ export function ReviewDashboard() {
             onRegenerate={regenerate}
             regenerating={regenerating}
             savingNotes={savingNotes}
+            onSpawnCreated={handleSpawnCreated}
+            onGoToSpawnInReview={handleOpenSpawnInReview}
             onRefreshQueue={() => {
               void silentReloadCandidates();
               setPublishingQueueNonce((n) => n + 1);
@@ -1191,6 +1230,8 @@ export function ReviewDashboard() {
           firstThumbnailById={queueThumbnails}
           onCandidateUpdated={handleCandidateUpdated}
           onVariantCreated={handleVariantCreated}
+          onSpawnCreated={handleSpawnCreated}
+          onGoToSpawnInReview={handleOpenSpawnInReview}
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onRegenerate={regenerate}
           regenerating={regenerating}

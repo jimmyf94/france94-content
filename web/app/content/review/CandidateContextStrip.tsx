@@ -8,7 +8,7 @@ import { StagePublishingButton } from './decision/StagePublishingButton';
 import { PostTypeBadge } from './PostTypeBadge';
 import { ScoreStrip, hasCandidateScores } from './ScoreStrip';
 import type { DecisionStatus, PostCandidate, ReviewDriveFile } from './types';
-import { STATUS_TAB_LABEL } from './types';
+import { STATUS_TAB_LABEL, isLockedReviewCandidate } from './types';
 
 function MetaSep() {
   return (
@@ -162,11 +162,12 @@ export function CandidateContextStrip({
   const statusLabel =
     STATUS_TAB_LABEL[candidate.status as keyof typeof STATUS_TAB_LABEL] ?? candidate.status;
 
+  const locked = isLockedReviewCandidate(candidate.status);
   const showApproveAnyway =
     onApproveAnyway &&
     ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
     !candidate.invalidated_at &&
-    candidate.status !== 'ready_to_publish';
+    !locked;
 
   const assetLabel =
     mediaFiles.length > 0
@@ -237,18 +238,20 @@ export function CandidateContextStrip({
                   allDecisionsDisabled={allDecisionsDisabled}
                 />
               )}
+              {!locked && (
               <StagePublishingButton
                 candidate={candidate}
                 onStaged={onRefreshQueue}
                 onError={onStageError}
               />
+              )}
               {onDelete && (
                 <DeleteCandidateButton
                   onDelete={onDelete}
                   variant="iconOnly"
                   disabled={
                     Boolean(deleting) ||
-                    candidate.status === 'ready_to_publish' ||
+                    locked ||
                     Boolean(candidate.invalidated_at)
                   }
                 />

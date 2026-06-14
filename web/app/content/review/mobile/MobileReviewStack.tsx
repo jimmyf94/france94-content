@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { PublishingQueueItem } from '@/lib/publishing-types';
 
+import { CandidateIterationPanel } from '../CandidateIterationPanel';
+import { PublishedFeedbackStrip } from '../PublishedFeedbackStrip';
 import { CandidateQueueSidebar } from '../CandidateQueueSidebar';
 import { DeleteCandidateButton } from '../decision/DeleteCandidateButton';
 import { StagePublishingButton } from '../decision/StagePublishingButton';
@@ -29,7 +31,7 @@ import type {
   ReviewDriveFile,
   StatusTab,
 } from '../types';
-import { STATUS_TAB_LABEL } from '../types';
+import { STATUS_TAB_LABEL, isLockedReviewCandidate } from '../types';
 import type { CandidateMediaState } from '../useCandidateMedia';
 
 import { BottomSheet } from './BottomSheet';
@@ -68,6 +70,7 @@ function StatusPill({ status }: { status: string }) {
     needs_rewrite: 'border-[var(--warn)] text-[var(--warn)]',
     approved: 'border-[var(--good)] text-[var(--good)]',
     publishing: 'border-[var(--good)] text-[var(--good)]',
+    published: 'border-[var(--good)] text-[var(--good)]',
     rejected: 'border-[var(--bad)] text-[var(--bad)]',
   };
   const tone = map[status] ?? 'border-[var(--border)] text-[var(--muted)]';
@@ -119,6 +122,8 @@ export function MobileReviewStack({
   firstThumbnailById = {},
   onCandidateUpdated,
   onVariantCreated,
+  onSpawnCreated,
+  onGoToSpawnInReview,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
@@ -169,6 +174,8 @@ export function MobileReviewStack({
   firstThumbnailById?: Readonly<Record<string, string | null>>;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onVariantCreated?: (c: PostCandidate) => void;
+  onSpawnCreated?: (c: PostCandidate) => void | Promise<void>;
+  onGoToSpawnInReview?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
@@ -267,6 +274,8 @@ export function MobileReviewStack({
           onRegisterActivateStream={onRegisterActivateStream}
           onCandidateUpdated={onCandidateUpdated}
           onVariantCreated={onVariantCreated}
+          onSpawnCreated={onSpawnCreated}
+          onGoToSpawnInReview={onGoToSpawnInReview}
           onRemoveReviewAsset={onRemoveReviewAsset}
           onRegenerate={onRegenerate}
           regenerating={regenerating}
@@ -384,6 +393,8 @@ function MobileCandidateView({
   onRegisterActivateStream,
   onCandidateUpdated,
   onVariantCreated,
+  onSpawnCreated,
+  onGoToSpawnInReview,
   onRemoveReviewAsset,
   onRegenerate,
   regenerating,
@@ -408,6 +419,8 @@ function MobileCandidateView({
   onRegisterActivateStream?: (activate: () => void) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onVariantCreated?: (c: PostCandidate) => void;
+  onSpawnCreated?: (c: PostCandidate) => void | Promise<void>;
+  onGoToSpawnInReview?: (c: PostCandidate) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onRegenerate?: () => void | Promise<void>;
   regenerating?: boolean;
@@ -418,9 +431,12 @@ function MobileCandidateView({
   deleting?: boolean;
 }) {
   const dirty = (notes ?? '') !== (savedNotes ?? '');
+  const locked = isLockedReviewCandidate(candidate.status);
   const notesNonEmpty = (notes ?? '').trim().length > 0 || (savedNotes ?? '').trim().length > 0;
   const showRegenerate =
-    !!onRegenerate && (candidate.status === 'needs_rewrite' || notesNonEmpty);
+    !!onRegenerate &&
+    !locked &&
+    (candidate.status === 'needs_rewrite' || notesNonEmpty);
   const regenerateDisabled =
     !!regenerating ||
     (candidate.status === 'needs_rewrite' && !notesNonEmpty);
@@ -627,27 +643,26 @@ function MobileCandidateView({
             onDecide={onDecide}
             size="lg"
             variant="iconOnly"
-            disabled={candidate.status === 'ready_to_publish' || deciding}
+            disabled={locked || deciding}
             approveDisabled={
               ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim())
             }
             allDecisionsDisabled={Boolean(candidate.invalidated_at)}
           />
-          <StagePublishingButton candidate={candidate} onStaged={onRefreshQueue} />
+          {!locked && (
+            <StagePublishingButton candidate={candidate} onStaged={onRefreshQueue} />
+          )}
           {onDelete && (
             <DeleteCandidateButton
               onDelete={onDelete}
               size="lg"
               variant="iconOnly"
-              disabled={
-                Boolean(deleting) ||
-                candidate.status === 'ready_to_publish' ||
-                Boolean(candidate.invalidated_at)
-              }
+              disabled={Boolean(deleting) || locked || Boolean(candidate.invalidated_at)}
             />
           )}
         </div>
         {onApproveAnyway &&
+          !locked &&
           ['blocked', 'high'].includes((candidate.collision_risk ?? '').trim()) &&
           !candidate.invalidated_at && (
             <button
@@ -660,6 +675,41 @@ function MobileCandidateView({
           )}
       </section>
 
+      {'published_meta' in candidate && candidate.status === 'posted' && (
+        <section className="px-3 pb-2">
+          <div className="rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2">
+            <h3 className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Instagram performance
+            </h3>
+            <div className="mt-2">
+              <PublishedFeedbackStrip
+                feedback={
+                  (candidate as PostCandidate & { published_meta?: import('../types').PublishedCandidateMeta })
+                    .published_meta?.feedback
+                }
+                permalink={
+                  (candidate as PostCandidate & { published_meta?: import('../types').PublishedCandidateMeta })
+                    .published_meta?.instagram_permalink
+                }
+                publishedAt={
+                  (candidate as PostCandidate & { published_meta?: import('../types').PublishedCandidateMeta })
+                    .published_meta?.published_at
+                }
+              />
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="px-3 pb-2">
+        <CandidateIterationPanel
+          candidate={candidate}
+          onSpawned={onSpawnCreated}
+          onGoToReview={onGoToSpawnInReview}
+        />
+      </section>
+
+      {!locked && (
       <section className="px-3 pb-2">
         <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--surface-2)] p-2">
           <div className="flex items-center justify-between">
@@ -717,6 +767,7 @@ function MobileCandidateView({
           )}
         </div>
       </section>
+      )}
 
       <section className="px-3 pb-6">
         <button

@@ -86,6 +86,9 @@ export const QueueRow = memo(function QueueRow({
   const riskGreyed = risk === 'blocked' || risk === 'high';
   const hasPublishing =
     Boolean(candidate.publishing_job_id) || candidate.status === 'ready_to_publish';
+  const feedback = candidate.published_meta?.feedback;
+  const viewsLabel =
+    feedback?.views != null ? `${Math.round(feedback.views)} views` : null;
 
   return (
     <button
@@ -112,6 +115,9 @@ export const QueueRow = memo(function QueueRow({
         <div className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug">
           {candidate.title || '(untitled)'}
         </div>
+        {viewsLabel && (
+          <p className="mt-0.5 text-[10px] tabular-nums text-[var(--good)]">{viewsLabel}</p>
+        )}
         <div className="mt-0.5 flex flex-wrap gap-1">
           {hasPublishing && (
             <span className="cockpit-pill text-[9px] text-[var(--good)]">Publish</span>

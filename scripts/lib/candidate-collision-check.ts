@@ -17,7 +17,7 @@ import { buildCollisionCheckDynamicText } from './ai/prompts/collision-check.js'
 import { loadComposedStableSystemInstruction, STABLE_CONTEXT_KEYS } from './ai/resolve-stable-prompt.js';
 import { getFr94PromptVersion } from './ai/prompt-version.js';
 
-const collisionKindEnum = z.enum([
+const collisionKindEnumRaw = z.enum([
   'asset_reuse',
   'series',
   'hook',
@@ -27,6 +27,17 @@ const collisionKindEnum = z.enum([
   'timing',
   'platform_surface',
 ]);
+
+const COLLISION_KIND_ALIASES: Record<string, z.infer<typeof collisionKindEnumRaw>> = {
+  lane: 'series',
+};
+
+const collisionKindEnum = z.preprocess((v) => {
+  if (typeof v === 'string' && v in COLLISION_KIND_ALIASES) {
+    return COLLISION_KIND_ALIASES[v];
+  }
+  return v;
+}, collisionKindEnumRaw);
 
 const collisionItemSchema = z.object({
   against_ledger_id: z.string(),
