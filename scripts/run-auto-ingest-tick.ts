@@ -33,6 +33,11 @@ function resolveAutoIngestStage(): AutoIngestStage {
   return raw === 'candidates_only' ? 'candidates_only' : 'full';
 }
 
+function resolvePostCandidateSeriesSlug(): string | null {
+  const raw = process.env.POST_CANDIDATE_SERIES_SLUG?.trim();
+  return raw || null;
+}
+
 function isScheduledGithubEvent(): boolean {
   return process.env.GITHUB_EVENT_NAME?.trim() === 'schedule';
 }
@@ -44,6 +49,7 @@ type TickSummary = {
   geocoded: number;
   candidates_created: number;
   needs_review_count_after: number;
+  series_slug?: string;
 };
 
 function requireEnv(name: string): string {
@@ -156,9 +162,11 @@ export async function runAutoIngestTick(): Promise<void> {
   const settings = await loadPipeline(supabase);
   const needsReview = await needsReviewCount(supabase);
   const stage = resolveAutoIngestStage();
+  const seriesSlug = resolvePostCandidateSeriesSlug();
 
   console.log(
-    `[auto-ingest]\tstage=${stage}\tenabled=${settings.auto_ingest_enabled}\tneeds_review=${needsReview}\tthreshold=${settings.auto_pause_threshold}\tinterval_min=${settings.auto_ingest_interval_minutes}`,
+    `[auto-ingest]\tstage=${stage}\tenabled=${settings.auto_ingest_enabled}\tneeds_review=${needsReview}\tthreshold=${settings.auto_pause_threshold}\tinterval_min=${settings.auto_ingest_interval_minutes}` +
+      (seriesSlug ? `\tseries=${seriesSlug}` : ''),
   );
 
   if (!settings.auto_ingest_enabled && isScheduledGithubEvent()) {
@@ -189,7 +197,7 @@ export async function runAutoIngestTick(): Promise<void> {
   await patchPipeline(supabase, {
     last_run_started_at: startedAt,
     last_run_status: 'running',
-    last_run_summary: null,
+    last_run_summary: seriesSlug ? { series_slug: seriesSlug } : null,
   });
 
   let summary: TickSummary = {
@@ -219,7 +227,7 @@ export async function runAutoIngestTick(): Promise<void> {
     }
 
     console.log('[auto-ingest]\tstep: generate post candidates');
-    await generatePostCandidates();
+    await generatePostCandidates(seriesSlug ? { seriesSlug } : undefined);
 
     summary = {
       ingested: await countSince(supabase, 'content_assets', startedAt),
@@ -228,6 +236,7 @@ export async function runAutoIngestTick(): Promise<void> {
       geocoded: await countGeocodedSince(supabase, startedAt),
       candidates_created: await countSince(supabase, 'post_candidates', startedAt),
       needs_review_count_after: await needsReviewCount(supabase),
+      ...(seriesSlug ? { series_slug: seriesSlug } : {}),
     };
 
     const finishedAt = new Date().toISOString();

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   appendSeriesToSystemInstruction,
   formatSeriesBlockForPrompt,
+  intersectEnabledPostTypesWithSeries,
   type SeriesRow,
 } from './content-series.js';
 
@@ -57,4 +58,22 @@ test('appendSeriesToSystemInstruction appends series block to base instruction',
 
 test('formatSeriesBlockForPrompt returns empty string when no series', () => {
   assert.equal(formatSeriesBlockForPrompt([]), '');
+});
+
+test('intersectEnabledPostTypesWithSeries keeps reels only for reels-only series', () => {
+  const global = ['reel', 'carousel', 'static_post'];
+  const reelsOnly = makeSeries({ enabled_post_types: ['reel'] });
+  assert.deepEqual(intersectEnabledPostTypesWithSeries(global, reelsOnly), ['reel']);
+});
+
+test('intersectEnabledPostTypesWithSeries preserves global types when series allows all', () => {
+  const global = ['reel', 'carousel'];
+  const allTypes = makeSeries({ enabled_post_types: [] });
+  assert.deepEqual(intersectEnabledPostTypesWithSeries(global, allTypes), global);
+});
+
+test('intersectEnabledPostTypesWithSeries returns empty when no overlap', () => {
+  const global = ['carousel', 'static_post'];
+  const reelsOnly = makeSeries({ enabled_post_types: ['reel'] });
+  assert.deepEqual(intersectEnabledPostTypesWithSeries(global, reelsOnly), []);
 });

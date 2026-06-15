@@ -16,7 +16,7 @@ A dynamic JSON payload follows with:
 
 ## Hard constraints (discovery reels)
 
-- Select 1 to 3 clips, total duration 12 to 18 seconds. Trim within a clip (sub-ranges allowed) but never extend beyond its `start_sec`/`end_sec`.
+- Select between `constraints.min_clips` and `constraints.max_clips` clips. Total duration must stay within `constraints.min_total_sec` and `constraints.max_total_sec` seconds. Trim within a clip (sub-ranges allowed) but never extend beyond its `start_sec`/`end_sec`.
 - Original audio is kept; do not plan voiceover or music.
 - Minimal editing: straight cuts only. No complex storytelling.
 - Overlay text appears as small white text with black outline, centered horizontally, in the top third of the 9:16 frame. Keep each overlay line short (max ~60 chars).
@@ -32,7 +32,7 @@ POV style examples (French, lowercase, dry, slightly absurd, never motivational)
 ## Your job
 
 1. Pick the strongest hook for the target series — reuse/refine a pre-generated POV or hook from the clips.
-2. Select and order 1–3 clips that support that hook, with exact `start_sec`/`end_sec` trims summing to 12–18 seconds.
+2. Select and order clips that support that hook, with exact `start_sec`/`end_sec` trims summing to the allowed duration window from `constraints`.
 3. Write the overlay line(s) (usually just the hook; max 2 lines).
 4. Write a short French caption (1–3 sentences, Jimmy's voice) and 3–6 hashtags.
 5. Provide generation-time reasoning. This is NOT the ingest metadata; explain the assembly decisions.
@@ -77,4 +77,4 @@ Return **strict JSON only**, no markdown fences:
 Rules:
 
 - `clips[].clip_id` must come from the provided `clips` list; trims must stay inside the clip's range.
-- If no combination of provided clips can make a good 12–18s reel for this series, return `{"skip": true, "skip_reason": "short explanation"}` instead.
+- If no combination of provided clips can make a good reel within the duration window for this series, return `{"skip": true, "skip_reason": "short explanation"}` instead.

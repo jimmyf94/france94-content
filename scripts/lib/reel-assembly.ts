@@ -12,7 +12,7 @@ import {
 import { parseGeminiJsonObject } from './ai/parse-gemini-json.js';
 import { loadComposedStableSystemInstruction } from './ai/resolve-stable-prompt.js';
 import { cacheKeyCandidateGeneration, getFr94PromptVersion } from './ai/prompt-version.js';
-import { loadReadyClipsForReels, type ClipWithAsset } from './content-clips.js';
+import { loadReadyClipsForReels, loadClipsByIds, type ClipWithAsset } from './content-clips.js';
 import {
   appendSeriesToSystemInstruction,
   loadActiveSeries,
@@ -20,6 +20,7 @@ import {
   type SeriesRow,
 } from './content-series.js';
 import { loadReelRenderDefaults } from './reel-render-defaults.js';
+import { REEL_MAX_CLIPS } from './reel-clip-limits.js';
 import {
   DEFAULT_REEL_RENDER_TEXT_STYLE,
   mergeHookWithOverlayLines,
@@ -30,7 +31,7 @@ import {
 
 export const REEL_MIN_TOTAL_SEC = 8;
 export const REEL_MAX_TOTAL_SEC = 20;
-export const REEL_MAX_CLIPS = 3;
+export { REEL_MAX_CLIPS } from './reel-clip-limits.js';
 
 export const REEL_VARIANT_KINDS = [
   'different_pov',
@@ -374,16 +375,25 @@ export async function assembleReelFromClips(params: {
   variant?: ReelVariantRequest;
   recentCommitted?: unknown[];
   clipPoolLimit?: number;
+  /** When set, assembly only considers these clip ids (reviewer-expanded pool). */
+  clipPoolIds?: string[];
 }): Promise<AssembleReelResult> {
   const { supabase, ai } = params;
 
   const [allSeries, allClips] = await Promise.all([
     loadActiveSeries(supabase),
-    loadReadyClipsForReels(supabase, { limit: params.clipPoolLimit ?? 200 }),
+    params.clipPoolIds && params.clipPoolIds.length > 0
+      ? loadClipsByIds(supabase, params.clipPoolIds)
+      : loadReadyClipsForReels(supabase, { limit: params.clipPoolLimit ?? 200 }),
   ]);
 
   if (allClips.length === 0) {
-    return { ok: false, skipped: 'no ready content_clips available' };
+    return {
+      ok: false,
+      skipped: params.clipPoolIds?.length
+        ? 'none of the requested clip ids are available'
+        : 'no ready content_clips available',
+    };
   }
 
   const scored = scoreSeriesForReels(allSeries, allClips);
@@ -397,11 +407,24 @@ export async function assembleReelFromClips(params: {
     if (!target) {
       return { ok: false, skipped: `target series not found: ${params.targetSeriesSlug}` };
     }
+  } else if (params.variant?.base.selected_series) {
+    target = allSeries.find((s) => s.slug === params.variant!.base.selected_series) ?? scored[0]!.series;
   } else {
     target = scored[0]!.series;
   }
 
-  const pool = selectClipPoolForSeries(allClips, target.slug);
+  const pool =
+    params.clipPoolIds && params.clipPoolIds.length > 0
+      ? allClips.filter((c) => c.status === 'ready' && c.asset?.status === 'processed')
+      : selectClipPoolForSeries(allClips, target.slug);
+  if (pool.length === 0) {
+    return {
+      ok: false,
+      skipped: params.clipPoolIds?.length
+        ? 'no eligible clips in requested pool'
+        : 'no clips available for target series',
+    };
+  }
   const poolById = new Map(pool.map((c) => [c.id, c]));
 
   const route = await getResolvedModelRoute(supabase, 'candidate_generation');

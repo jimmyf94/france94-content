@@ -18,14 +18,23 @@ export function isPipelineRunBusy(status: string | null | undefined): boolean {
   return status === 'running' || status === 'dispatching';
 }
 
+export type PipelineRunOptions = {
+  seriesSlug?: string;
+};
+
 export async function dispatchPipelineRun(
   stage: 'full' | 'candidates_only',
+  options?: PipelineRunOptions,
 ): Promise<PipelineRunPayload> {
+  const body: { stage: typeof stage; series_slug?: string } = { stage };
+  const seriesSlug = options?.seriesSlug?.trim();
+  if (seriesSlug) body.series_slug = seriesSlug;
+
   const res = await fetch('/api/content-review/pipeline/run', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stage }),
+    body: JSON.stringify(body),
   });
   const json = await readJsonResponse<PipelineRunPayload & { error?: string }>(res);
   if (!res.ok) throw new Error(json.error || res.statusText);

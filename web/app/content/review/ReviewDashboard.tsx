@@ -646,6 +646,24 @@ export function ReviewDashboard() {
     [handleCandidateUpdated],
   );
 
+  const handleReelClipsAdded = useCallback(
+    (updated: PostCandidate) => {
+      handleCandidateUpdated(updated);
+      setToast({ kind: 'good', msg: 'Added clip(s) to reel pool' });
+    },
+    [handleCandidateUpdated],
+  );
+
+  const handleReelReassembled = useCallback(
+    (updated: PostCandidate) => {
+      invalidateCandidateMediaCache(updated.id);
+      setMediaReloadNonce((n) => n + 1);
+      handleCandidateUpdated(updated);
+      setToast({ kind: 'good', msg: 'Reel structure reassembled' });
+    },
+    [handleCandidateUpdated],
+  );
+
   const handleReorderCarouselSlides = useCallback(
     (orderedAssetIds: string[]) => {
       if (!selected) return;
@@ -1145,6 +1163,8 @@ export function ReviewDashboard() {
           onRemoveReviewAsset={handleRemoveReviewAsset}
           onCarouselAssetsAdded={handleCarouselAssetsAdded}
           onReorderCarouselSlides={handleReorderCarouselSlides}
+          onReelClipsAdded={handleReelClipsAdded}
+          onReelReassembled={handleReelReassembled}
           onCandidateUpdated={handleCandidateUpdated}
           onVariantCreated={handleVariantCreated}
           onDecide={decide}

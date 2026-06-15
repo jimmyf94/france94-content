@@ -36,6 +36,8 @@ import { loadRecentLedgerContext, toCommittedPostForPrompt } from './lib/content
 import { getFirstReviewFolderThumbnailLink } from './lib/review-folder-thumbnail.js';
 import {
   loadComposedSystemInstructionWithSeries,
+  loadActiveSeries,
+  intersectEnabledPostTypesWithSeries,
   type SeriesRow,
 } from './lib/content-series.js';
 import { rankAndCapPlannerAssets } from './lib/planner-asset-ranking.js';
@@ -782,13 +784,18 @@ function extractTitleOverlayFromValidated(c: ValidatedPostCandidate): string | n
   return null;
 }
 
-async function loadPlannerStableInstruction(supabase: SupabaseClient | null): Promise<{
+async function loadPlannerStableInstruction(
+  supabase: SupabaseClient | null,
+  seriesSlug?: string,
+): Promise<{
   stableSystemInstruction: string;
   activeSeries: SeriesRow[];
   composed: Awaited<ReturnType<typeof loadComposedStableSystemInstruction>>;
 }> {
   const composed = await loadComposedStableSystemInstruction(supabase, 'task_generate_candidate');
-  const withSeries = await loadComposedSystemInstructionWithSeries(supabase, composed.text);
+  const withSeries = await loadComposedSystemInstructionWithSeries(supabase, composed.text, {
+    seriesSlug,
+  });
   return {
     stableSystemInstruction: withSeries.instruction,
     activeSeries: withSeries.activeSeries,
@@ -979,6 +986,7 @@ export async function generatePostCandidatesWithLLM(params: {
   supabase: SupabaseClient | null;
   avoidRecentRejections?: RejectedFeedbackItem[];
   committedRecentPosts?: ReturnType<typeof toCommittedPostForPrompt>[];
+  seriesSlug?: string;
 }): Promise<{
   candidates: ValidatedPostCandidateWithRaw[];
   llmRaw: Record<string, unknown>;
@@ -991,6 +999,7 @@ export async function generatePostCandidatesWithLLM(params: {
   const ai = createGeminiClient(apiKey);
   const { stableSystemInstruction, activeSeries } = await loadPlannerStableInstruction(
     params.supabase,
+    params.seriesSlug,
   );
   const promptVersion = getFr94PromptVersion();
   const route = await getResolvedModelRoute(params.supabase, 'candidate_generation');
@@ -1368,17 +1377,48 @@ export async function updatePostCandidateReviewFolder(
   if (error) throw error;
 }
 
-export async function generatePostCandidates(): Promise<void> {
+export type GeneratePostCandidatesOptions = {
+  seriesSlug?: string;
+};
+
+function resolveSeriesSlugOverride(options?: GeneratePostCandidatesOptions): string | null {
+  const fromOpts = options?.seriesSlug?.trim();
+  if (fromOpts) return fromOpts;
+  const fromEnv = process.env.POST_CANDIDATE_SERIES_SLUG?.trim();
+  return fromEnv || null;
+}
+
+export async function generatePostCandidates(options?: GeneratePostCandidatesOptions): Promise<void> {
   const batchDays = envInt('POST_CANDIDATE_BATCH_DAYS', 14);
   const maxAssets = envInt('POST_CANDIDATE_MAX_ASSETS', 80);
   const llmTarget = plannerLlmTarget();
   const plannerCap = plannerMaxAssets();
   const topPairs = plannerTopPairs();
   const reviewParentId = requireEnv('GOOGLE_DRIVE_READY_FOR_REVIEW_FOLDER_ID');
+  const seriesSlug = resolveSeriesSlugOverride(options);
 
   const supabase = getSupabaseClient();
   const drive = await getDriveClient();
-  const enabledPostTypes = [...(await loadEnabledPostTypes(supabase))];
+  let enabledPostTypes = [...(await loadEnabledPostTypes(supabase))];
+
+  if (seriesSlug) {
+    const scopedSeries = await loadActiveSeries(supabase, { slug: seriesSlug });
+    if (scopedSeries.length === 0) {
+      console.log(`summary: scoped series not found or inactive: ${seriesSlug}`);
+      return;
+    }
+    const series = scopedSeries[0]!;
+    enabledPostTypes = intersectEnabledPostTypesWithSeries(enabledPostTypes, series);
+    console.log(
+      `[series-scope] slug=${seriesSlug} enabled_post_types=${enabledPostTypes.join(',') || 'none'}`,
+    );
+    if (enabledPostTypes.length === 0) {
+      console.log(
+        `summary: no allowed post types for series ${seriesSlug} after intersection with pipeline settings`,
+      );
+      return;
+    }
+  }
 
   const assets = await getCandidateSourceAssets(supabase, { maxAssets });
   console.log(`source assets (processed, relaxed pool, max ${maxAssets}, batch hint ${batchDays}d): ${assets.length}`);
@@ -1406,7 +1446,12 @@ export async function generatePostCandidates(): Promise<void> {
         .filter((r) => r.post_type === 'reel')
         .map(toCommittedPostForPrompt);
       const ai = createGeminiClient(requireEnv('GEMINI_API_KEY'));
-      const res = await assembleReelFromClips({ supabase, ai, recentCommitted: reelRecent });
+      const res = await assembleReelFromClips({
+        supabase,
+        ai,
+        recentCommitted: reelRecent,
+        ...(seriesSlug ? { targetSeriesSlug: seriesSlug } : {}),
+      });
 
       if (!res.ok) {
         console.log(`[reel-clips] skipped: ${res.skipped}`);
@@ -1524,6 +1569,7 @@ export async function generatePostCandidates(): Promise<void> {
       supabase,
       avoidRecentRejections,
       committedRecentPosts,
+      seriesSlug: seriesSlug ?? undefined,
     });
   } catch (e) {
     const msg = formatGeminiFetchError(e);

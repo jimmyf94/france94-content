@@ -164,6 +164,8 @@ export type ClipWithAsset = ContentClipRow & {
     usage_status: string | null;
     quality_score: number | null;
     processed_at: string | null;
+    status?: string | null;
+    candidate_eligibility?: string | null;
   };
 };
 
@@ -191,5 +193,28 @@ export async function loadReadyClipsForReels(
     .limit(limit);
 
   if (error) throw new Error(`loadReadyClipsForReels: ${error.message}`);
+  return (data ?? []) as unknown as ClipWithAsset[];
+}
+
+/** Load specific clip rows (with asset join) by id. */
+export async function loadClipsByIds(
+  supabase: SupabaseClient,
+  clipIds: string[],
+): Promise<ClipWithAsset[]> {
+  const ids = [...new Set(clipIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from('content_clips')
+    .select(
+      `*, asset:content_assets!inner (
+        id, drive_file_id, current_filename, final_filename,
+        duration_seconds, usage_status, quality_score, processed_at,
+        status, candidate_eligibility
+      )`,
+    )
+    .in('id', ids);
+
+  if (error) throw new Error(`loadClipsByIds: ${error.message}`);
   return (data ?? []) as unknown as ClipWithAsset[];
 }

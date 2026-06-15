@@ -9,6 +9,10 @@ on:
         description: 'full | candidates_only'
         required: false
         default: 'full'
+      series_slug:
+        description: 'Optional content_series slug to scope candidate generation'
+        required: false
+        default: ''
 
 concurrency:
   group: auto-ingest
@@ -28,6 +32,7 @@ jobs:
       - run: npm run auto:ingest-tick
         env:
           AUTO_INGEST_STAGE: ${{ github.event.inputs.stage || 'full' }}
+          POST_CANDIDATE_SERIES_SLUG: ${{ github.event.inputs.series_slug || '' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}

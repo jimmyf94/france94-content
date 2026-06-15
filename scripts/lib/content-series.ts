@@ -90,18 +90,36 @@ export function seriesAllowsPostType(series: SeriesRow, postType: string): boole
   return series.enabled_post_types.includes(postType);
 }
 
-export async function loadActiveSeries(supabase: SupabaseClient | null): Promise<SeriesRow[]> {
+export async function loadActiveSeries(
+  supabase: SupabaseClient | null,
+  opts?: { slug?: string },
+): Promise<SeriesRow[]> {
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('content_series')
     .select('*')
     .eq('status', 'active')
     .order('weight', { ascending: false })
     .order('name', { ascending: true });
 
+  const slug = opts?.slug?.trim();
+  if (slug) query = query.eq('slug', slug);
+
+  const { data, error } = await query;
+
   if (error || !Array.isArray(data)) return [];
   return data.map((row) => normalizeSeriesRow(row as Record<string, unknown>));
+}
+
+/** Intersect global pipeline post types with a series config (empty series config = all global types). */
+export function intersectEnabledPostTypesWithSeries(
+  globalEnabled: string[],
+  series: SeriesRow,
+): string[] {
+  if (series.enabled_post_types.length === 0) return [...globalEnabled];
+  const seriesSet = new Set(series.enabled_post_types);
+  return globalEnabled.filter((t) => seriesSet.has(t));
 }
 
 function normalizeWeights(series: SeriesRow[]): Array<SeriesRow & { normalizedWeight: number }> {
@@ -176,8 +194,9 @@ export function appendSeriesToSystemInstruction(
 export async function loadComposedSystemInstructionWithSeries(
   supabase: SupabaseClient | null,
   baseInstruction: string,
+  opts?: { seriesSlug?: string },
 ): Promise<{ instruction: string; activeSeries: SeriesRow[] }> {
-  const activeSeries = await loadActiveSeries(supabase);
+  const activeSeries = await loadActiveSeries(supabase, { slug: opts?.seriesSlug });
   return {
     instruction: appendSeriesToSystemInstruction(baseInstruction, activeSeries),
     activeSeries,

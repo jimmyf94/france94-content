@@ -92,6 +92,11 @@ export type ReelProductionWorkspaceProps = {
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   /** Draft overlay/style/cues differ from the last produced job spec. */
   draftDiffersFromRendered?: boolean;
+  maxClipPoolSize?: number;
+  canAddClips?: boolean;
+  reassembleBusy?: boolean;
+  onOpenClipPicker?: () => void;
+  onReassembleClips?: () => void;
 };
 
 function formatDuration(sec: number | null | undefined): string | null {
@@ -1192,6 +1197,11 @@ function OperatorPanel({
   onCreateHookLabVariants,
   clips,
   reasoningEntries,
+  maxClipPoolSize,
+  canAddClips,
+  reassembleBusy,
+  onOpenClipPicker,
+  onReassembleClips,
 }: Pick<
   ReelProductionWorkspaceProps,
   | 'isClipReel'
@@ -1225,6 +1235,11 @@ function OperatorPanel({
   | 'onCreateHookLabVariants'
   | 'clips'
   | 'reasoningEntries'
+  | 'maxClipPoolSize'
+  | 'canAddClips'
+  | 'reassembleBusy'
+  | 'onOpenClipPicker'
+  | 'onReassembleClips'
 > & { currentTimeSec: number | null; includeHookLab?: boolean }) {
   const playhead = currentTimeSec ?? 0;
   const timedCueCount = draftTimedCues.length;
@@ -1379,7 +1394,63 @@ function OperatorPanel({
         </CollapsibleSection>
       )}
 
-      {clips && clips.length > 0 && (
+      {isClipReel && (
+        <CollapsibleSection
+          title="Clip pool"
+          hint="Add ready clips, then rerun structure analysis on this candidate."
+          badge={clips?.length ? String(clips.length) : undefined}
+          defaultOpen
+          headerAction={
+            canAddClips && onOpenClipPicker ? (
+              <button
+                type="button"
+                disabled={!!reassembleBusy}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onOpenClipPicker();
+                }}
+                className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-[11px] font-medium text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                Add clips
+              </button>
+            ) : undefined
+          }
+        >
+          {(!clips || clips.length === 0) && (
+            <p className="text-sm text-[var(--muted)]">
+              No clips in pool yet. Add ready clips from the library, then rerun structure.
+            </p>
+          )}
+          {clips && clips.length > 0 && (
+            <ul className="space-y-2 text-sm text-[var(--text)]">
+              {clips.map((c, i) => (
+                <li key={c.clip_id ?? i} className="leading-relaxed">
+                  <span className="font-medium text-[var(--muted)]">#{i + 1}</span>{' '}
+                  {(c.end_sec - c.start_sec).toFixed(1)}s
+                  {c.why ? <span className="text-[var(--muted)]"> — {c.why}</span> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+          {maxClipPoolSize != null && (
+            <p className="mt-2 text-[11px] text-[var(--muted)]">
+              Pool limit: {clips?.length ?? 0}/{maxClipPoolSize} clips
+            </p>
+          )}
+          {onReassembleClips && (clips?.length ?? 0) > 0 && (
+            <button
+              type="button"
+              disabled={!!reassembleBusy}
+              onClick={() => onReassembleClips()}
+              className="mt-3 rounded-lg border border-[var(--accent)] bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--bg)] disabled:opacity-50"
+            >
+              {reassembleBusy ? 'Reassembling…' : 'Rerun structure analysis'}
+            </button>
+          )}
+        </CollapsibleSection>
+      )}
+
+      {clips && clips.length > 0 && !isClipReel && (
         <CollapsibleSection
           title="Clips"
           badge={String(clips.length)}
@@ -1641,6 +1712,11 @@ function WorkspaceLayout(props: ReelProductionWorkspaceProps) {
                 onCreateHookLabVariants={props.onCreateHookLabVariants}
                 clips={props.clips}
                 reasoningEntries={props.reasoningEntries}
+                maxClipPoolSize={props.maxClipPoolSize}
+                canAddClips={props.canAddClips}
+                reassembleBusy={props.reassembleBusy}
+                onOpenClipPicker={props.onOpenClipPicker}
+                onReassembleClips={props.onReassembleClips}
               />
             </div>
           </div>

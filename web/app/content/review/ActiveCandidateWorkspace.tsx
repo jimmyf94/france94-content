@@ -14,6 +14,8 @@ export function ActiveCandidateWorkspace({
   onRemoveReviewAsset,
   onCarouselAssetsAdded,
   onReorderCarouselSlides,
+  onReelClipsAdded,
+  onReelReassembled,
   onCandidateUpdated,
   onVariantCreated,
   onDecide,
@@ -34,6 +36,8 @@ export function ActiveCandidateWorkspace({
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
   onCarouselAssetsAdded?: (c: PostCandidate) => void;
   onReorderCarouselSlides?: (orderedAssetIds: string[]) => void;
+  onReelClipsAdded?: (c: PostCandidate) => void;
+  onReelReassembled?: (c: PostCandidate) => void;
   onCandidateUpdated?: (c: PostCandidate) => void;
   onVariantCreated?: (c: PostCandidate) => void;
   onDecide?: (s: DecisionStatus) => void;
@@ -83,6 +87,8 @@ export function ActiveCandidateWorkspace({
           videoRef={videoRef}
           onRegisterActivateStream={onRegisterActivateStream}
           onRemoveReviewAsset={onRemoveReviewAsset}
+          onReelClipsAdded={onReelClipsAdded}
+          onReelReassembled={onReelReassembled}
         />
       ) : (
         <MediaPreviewStage

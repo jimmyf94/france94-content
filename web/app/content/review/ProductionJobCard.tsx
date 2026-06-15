@@ -15,11 +15,15 @@ import {
   type ReelRenderTextStyle,
   type ReelTimedOverlayCue,
 } from '@fr94/reel-text-style';
+import { REEL_MAX_CLIPS } from '@fr94/reel-clip-limits';
 
+import { collectAttachedClipIds } from '@/lib/append-candidate-reel-clips';
 import { readJsonResponse } from '@/lib/read-json-response';
 
+import { ReelClipPickerModal } from './ReelClipPickerModal';
 import { ReelProductionWorkspace } from './ReelProductionWorkspace';
 import type { PostCandidate, ReelHookLabPersistedOption, ReelReasoning, ReelVariantKind, ReviewDriveFile } from './types';
+import { isLockedReviewCandidate } from './types';
 import type { CandidateMediaState } from './useCandidateMedia';
 
 type ProductionJobDto = {
@@ -104,6 +108,8 @@ export function ProductionJobCard({
   videoRef,
   onRegisterActivateStream,
   onRemoveReviewAsset,
+  onReelClipsAdded,
+  onReelReassembled,
 }: {
   candidate: PostCandidate;
   onVariantCreated?: (c: PostCandidate) => void;
@@ -113,6 +119,8 @@ export function ProductionJobCard({
   videoRef?: React.RefObject<HTMLVideoElement | null>;
   onRegisterActivateStream?: (activate: () => void) => void;
   onRemoveReviewAsset?: (file: ReviewDriveFile) => void;
+  onReelClipsAdded?: (c: PostCandidate) => void;
+  onReelReassembled?: (c: PostCandidate) => void;
 }) {
   const [job, setJob] = useState<ProductionJobDto | null>(null);
   const [loading, setLoading] = useState(false);
@@ -137,6 +145,8 @@ export function ProductionJobCard({
   const [draftOverlay, setDraftOverlay] = useState('');
   const [draftOverlayEndSec, setDraftOverlayEndSec] = useState<number | null>(null);
   const [draftTimedCues, setDraftTimedCues] = useState<ReelTimedOverlayCue[]>([]);
+  const [clipPickerOpen, setClipPickerOpen] = useState(false);
+  const [reassembleBusy, setReassembleBusy] = useState(false);
 
   const reelSpec = useMemo(
     () => parseReelSpec(candidate.reel_instructions) ?? parseReelSpec(job?.reel_specification),
@@ -368,6 +378,50 @@ export function ProductionJobCard({
     },
     [candidate.id, onVariantCreated, variantBusy],
   );
+
+  const attachedClipIds = useMemo(
+    () =>
+      collectAttachedClipIds(candidate.reel_instructions, candidate.selected_clip_ids),
+    [candidate.reel_instructions, candidate.selected_clip_ids],
+  );
+
+  const canAddClips =
+    isClipReel &&
+    !isLockedReviewCandidate(candidate.status) &&
+    attachedClipIds.length < REEL_MAX_CLIPS;
+
+  const reassembleClips = useCallback(async () => {
+    if (reassembleBusy || !isClipReel) return;
+    setReassembleBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/content-review/candidates/${candidate.id}/reassemble-clips`,
+        {
+          method: 'POST',
+          credentials: 'include',
+        },
+      );
+      const json = await readJsonResponse<{ candidate?: PostCandidate; error?: string }>(res);
+      if (!res.ok || !json.candidate) {
+        throw new Error(json.error || res.statusText);
+      }
+      onCandidateUpdated?.(json.candidate);
+      onReelReassembled?.(json.candidate);
+      void load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReassembleBusy(false);
+    }
+  }, [
+    candidate.id,
+    isClipReel,
+    load,
+    onCandidateUpdated,
+    onReelReassembled,
+    reassembleBusy,
+  ]);
 
   const generateHookLab = useCallback(async () => {
     if (hookLabBusy) return;
@@ -771,7 +825,27 @@ export function ProductionJobCard({
       onRegisterActivateStream={onRegisterActivateStream}
       onRemoveReviewAsset={onRemoveReviewAsset}
       draftDiffersFromRendered={draftDiffersFromRendered}
+      maxClipPoolSize={REEL_MAX_CLIPS}
+      canAddClips={canAddClips}
+      reassembleBusy={reassembleBusy}
+      onOpenClipPicker={() => setClipPickerOpen(true)}
+      onReassembleClips={() => void reassembleClips()}
     />
+    {canAddClips && (
+      <ReelClipPickerModal
+        open={clipPickerOpen}
+        candidateId={candidate.id}
+        attachedClipIds={attachedClipIds}
+        clipCount={attachedClipIds.length}
+        maxClips={REEL_MAX_CLIPS}
+        onClose={() => setClipPickerOpen(false)}
+        onAdded={(updated) => {
+          onCandidateUpdated?.(updated);
+          onReelClipsAdded?.(updated);
+          setClipPickerOpen(false);
+        }}
+      />
+    )}
     </div>
   );
 }

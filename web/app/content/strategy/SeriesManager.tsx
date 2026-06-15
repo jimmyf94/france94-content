@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { readJsonResponse } from '@/lib/read-json-response';
+import { dispatchPipelineRun } from '@/lib/pipeline-run-client';
 
 type SeriesExample = { hook?: string; notes?: string; url?: string };
 
@@ -79,6 +80,7 @@ export function SeriesManager() {
 
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [generatingId, setGeneratingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -196,6 +198,29 @@ export function SeriesManager() {
     }
   };
 
+  const generateFromSeries = async (s: Series) => {
+    if (drafts[s.id]) {
+      setError('Save your edits before generating from this series.');
+      return;
+    }
+    if (s.status !== 'active') {
+      setError('Restore this series before generating from it.');
+      return;
+    }
+
+    setGeneratingId(s.id);
+    setMessage(null);
+    setError(null);
+    try {
+      await dispatchPipelineRun('candidates_only', { seriesSlug: s.slug });
+      setMessage(`Generation dispatched for "${s.name}". Check Review when the pipeline finishes.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingId(null);
+    }
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 lg:p-6">
       <header>
@@ -203,7 +228,8 @@ export function SeriesManager() {
         <p className="mt-1 max-w-2xl text-sm text-[var(--muted)]">
           Each series is a configurable content strategy: vision, tone, discovery patterns,
           examples, allowed post types and a generation weight. Higher weight = more likely to be
-          picked. No post candidates are generated here.
+          picked in the global pipeline. Use Generate posts on a series to build candidates from
+          that strategy only.
         </p>
       </header>
 
@@ -305,6 +331,16 @@ export function SeriesManager() {
                     >
                       {isEditing ? 'Collapse' : 'Edit'}
                     </button>
+                    {draft.status === 'active' ? (
+                      <button
+                        type="button"
+                        disabled={generatingId === s.id || savingId === s.id || dirty}
+                        onClick={() => void generateFromSeries(s)}
+                        className="rounded-md border border-[var(--accent)] px-2.5 py-1 text-sm font-medium text-[var(--accent)] disabled:opacity-50"
+                      >
+                        {generatingId === s.id ? 'Generating…' : 'Generate posts'}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={savingId === s.id || !dirty}
