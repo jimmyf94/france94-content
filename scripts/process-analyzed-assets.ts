@@ -8,6 +8,9 @@ import type { drive_v3 } from 'googleapis';
 
 import { driveFileViewUrl, fileExtension, getDriveClient } from './ingest-drive-content.js';
 import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
+import { sanitizeFilenamePart } from './lib/filename-sanitize.js';
+
+export { sanitizeFilenamePart };
 
 function logDrivePermissionHints(formattedMessage: string): void {
   const m = formattedMessage.toLowerCase();
@@ -93,20 +96,6 @@ export type ProcessableAsset = {
 
 const SELECT_COLUMNS =
   'id, drive_file_id, drive_parent_folder_id, original_filename, current_filename, file_extension, capture_time, drive_created_time, imported_at, suggested_filename_core, semantic_summary, suggested_title, activity, content_lane, quality_score, geo_locality, geo_admin_region, geo_label, geo_raw, metadata_raw, postal_code, final_filename, rename_status, move_status, status';
-
-export function sanitizeFilenamePart(raw: string | null | undefined, maxLen: number): string {
-  if (!raw?.trim()) return 'unknown';
-  const asciiFold = raw
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase();
-  const slug = asciiFold
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-  if (!slug) return 'unknown';
-  return slug.length <= maxLen ? slug : slug.slice(0, maxLen).replace(/-+$/g, '') || 'unknown';
-}
 
 export function inferQualityLetter(score: number | string | null | undefined): string {
   if (score == null || score === '') return 'U';

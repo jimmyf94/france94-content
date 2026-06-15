@@ -37,8 +37,8 @@ import {
   validatePostCandidateOutput,
   type CandidateSourceAsset,
   type ValidatedPostCandidate,
-} from '@fr94/generate-post-candidates';
-import { sanitizeFilenamePart } from '@fr94/process-analyzed-assets';
+} from '@fr94/post-candidate-shared';
+import { sanitizeFilenamePart } from '@fr94/filename-sanitize';
 import { loadAutoReelRenderEnabled } from '@fr94/pipeline-settings';
 import {
   assembleReelFromClips,

@@ -35,9 +35,9 @@
       "@fr94/content-clips": ["../scripts/lib/content-clips"],
       "@fr94/pipeline-settings": ["../scripts/lib/pipeline-settings"],
       "@fr94/publishing/instagram-graph": ["../scripts/lib/publishing/instagram-graph"],
-      "@fr94/generate-post-candidates": ["../scripts/generate-post-candidates"],
       "@fr94/planner-asset-ranking": ["../scripts/lib/planner-asset-ranking"],
-      "@fr94/process-analyzed-assets": ["../scripts/process-analyzed-assets"]
+      "@fr94/post-candidate-shared": ["../scripts/lib/post-candidate-shared"],
+      "@fr94/filename-sanitize": ["../scripts/lib/filename-sanitize"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
