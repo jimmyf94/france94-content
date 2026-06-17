@@ -1,5 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+/** CDN cache TTL (seconds); Smart CDN revalidates on upsert/delete. */
+const STORAGE_CACHE_CONTROL = '31536000';
+
 function trimSlash(s: string): string {
   return s.replace(/\/+$/, '');
 }
@@ -80,6 +83,7 @@ export async function uploadPublicMedia(params: {
       const { error: upErr } = await supabase.storage.from(bucket).upload(objectPath, body, {
         contentType,
         upsert: true,
+        cacheControl: STORAGE_CACHE_CONTROL,
       });
       if (upErr) {
         lastErr = new Error(upErr.message);

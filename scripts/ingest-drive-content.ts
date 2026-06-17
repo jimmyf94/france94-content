@@ -171,16 +171,7 @@ export async function listDriveFiles(
   return out;
 }
 
-export function inferMediaType(mimeType: string | null | undefined): string {
-  const m = mimeType ?? '';
-  if (m.startsWith('image/')) return 'image';
-  if (m.startsWith('video/')) return 'video';
-  if (m.startsWith('audio/')) return 'audio';
-  if (m.startsWith('text/') || m === 'application/pdf') return 'text';
-  return 'other';
-}
-
-export function fileExtension(filename: string): string | null {
+import { inferMediaType } from './lib/media-type.js';
   const i = filename.lastIndexOf('.');
   if (i <= 0 || i === filename.length - 1) return null;
   return filename.slice(i + 1).toLowerCase();

@@ -9,6 +9,7 @@ import { countActivePublishingJobs } from '@/lib/publishing-publish-feedback';
 import { isPipelineRunBusy } from '@/lib/pipeline-run-client';
 
 import { openScheduleDrawer, SCHEDULE_QUEUE_CHANGED_EVENT } from './schedule-events';
+import { IngestQueueControl } from './IngestQueueControl';
 import {
   isReviewCockpitPath,
   requestReviewGenerate,
@@ -381,6 +382,7 @@ export function ContentNav() {
         </div>
 
         <div className="flex min-w-0 items-center justify-end gap-1 lg:ml-auto">
+          <IngestQueueControl />
           {showReviewToolbar && (
             <div className="hidden shrink-0 items-center gap-1 lg:flex">
               <button

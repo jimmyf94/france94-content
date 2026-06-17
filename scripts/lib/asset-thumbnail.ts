@@ -8,6 +8,8 @@ import { extractFrames, probeVideo, withTempDir } from './video-preprocess.js';
 
 export const DEFAULT_THUMB_MAX_WIDTH = 512;
 const JPEG_QUALITY = 82;
+/** CDN cache TTL (seconds); Smart CDN revalidates on upsert/delete. */
+const STORAGE_CACHE_CONTROL = '31536000';
 
 export type ThumbnailStatus = 'pending' | 'ready' | 'failed';
 
@@ -125,6 +127,7 @@ export async function uploadAssetThumbnail(
   const { error } = await supabase.storage.from(bucket).upload(objectPath, jpeg, {
     contentType: 'image/jpeg',
     upsert: true,
+    cacheControl: STORAGE_CACHE_CONTROL,
   });
   if (error) {
     throw new Error(error.message);

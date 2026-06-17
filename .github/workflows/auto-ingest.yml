@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: 'full | candidates_only'
+        description: 'full | candidates_only | assets_only'
         required: false
         default: 'full'
       series_slug:

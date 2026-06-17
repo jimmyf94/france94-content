@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { inferMediaType } from '../../ingest-drive-content.js';
+import { inferMediaType } from '../media-type.js';
 
 import type { PostCandidateRow, ResolvedMediaItem } from './types.js';
 

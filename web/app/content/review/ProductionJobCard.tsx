@@ -16,6 +16,7 @@ import {
   type ReelTimedOverlayCue,
 } from '@fr94/reel-text-style';
 import { REEL_MAX_CLIPS } from '@fr94/reel-clip-limits';
+import { parseRenderProgressLog } from '@fr94/reel-render-progress';
 
 import { collectAttachedClipIds } from '@/lib/append-candidate-reel-clips';
 import { readJsonResponse } from '@/lib/read-json-response';
@@ -68,6 +69,14 @@ function withCacheBust(url: string, version?: string | null): string {
     const sep = url.includes('?') ? '&' : '?';
     return `${url}${sep}v=${encodeURIComponent(version)}`;
   }
+}
+
+/** Stable version for produced renders; avoids busting on unrelated job row updates. */
+function producedRenderVersion(job: Pick<ProductionJobDto, 'status' | 'render_log' | 'updated_at'>): string | null {
+  if (job.status !== 'produced') return null;
+  const progress = parseRenderProgressLog(job.render_log);
+  if (progress?.stage === 'done') return progress.updated_at;
+  return job.updated_at;
 }
 
 function parseReelSpec(raw: unknown): ReelSpecDto | null {
@@ -702,16 +711,18 @@ export function ProductionJobCard({
 
   const isRenderActive = job?.status === 'queued' || job?.status === 'rendering';
 
+  const renderVersion = job ? producedRenderVersion(job) : null;
+
   const previewUrl =
     !isRenderActive && job?.status === 'produced' && job.output_video_url
-      ? withCacheBust(job.output_video_url, job.updated_at)
+      ? withCacheBust(job.output_video_url, renderVersion)
       : null;
   const downloadUrl = previewUrl
     ? `/api/content-review/production-jobs/by-candidate/${encodeURIComponent(candidate.id)}/download?filename=${encodeURIComponent(reelDownloadFilename(candidate))}`
     : null;
   const rawPoster =
     previewUrl && job?.status === 'produced' ? job.thumbnail_url ?? null : null;
-  const posterUrl = rawPoster ? withCacheBust(rawPoster, job?.updated_at) : null;
+  const posterUrl = rawPoster ? withCacheBust(rawPoster, renderVersion) : null;
 
   const reasoningEntries: Array<[string, string]> = [
     ['Why the script works', reasoning?.why_script_works],

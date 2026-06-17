@@ -5,20 +5,6 @@ import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
 
-function sanitizeDownloadFilename(raw: string | null, fallback: string): string {
-  const base = (raw ?? fallback)
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 120);
-
-  const stem = base.replace(/\.mp4$/i, '') || fallback.replace(/\.mp4$/i, '');
-  return `${stem}.mp4`;
-}
-
 export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ candidateId: string }> },
@@ -54,28 +40,5 @@ export async function GET(
     return NextResponse.json({ error: 'No rendered reel' }, { status: 404 });
   }
 
-  const filename = sanitizeDownloadFilename(
-    req.nextUrl.searchParams.get('filename'),
-    `${candidateId.trim()}_reel.mp4`,
-  );
-
-  try {
-    const upstream = await fetch(outputUrl);
-    if (!upstream.ok || !upstream.body) {
-      return NextResponse.json({ error: 'Failed to fetch render' }, { status: 502 });
-    }
-
-    const headers = new Headers();
-    headers.set('Content-Type', 'video/mp4');
-    headers.set('Content-Disposition', `attachment; filename="${filename}"`);
-    const contentLength = upstream.headers.get('content-length');
-    if (contentLength) headers.set('Content-Length', contentLength);
-    headers.set('Cache-Control', 'private, no-store');
-
-    return new NextResponse(upstream.body, { status: 200, headers });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[production-job download stream]', msg);
-    return NextResponse.json({ error: msg }, { status: 502 });
-  }
+  return NextResponse.redirect(outputUrl, 302);
 }

@@ -22,8 +22,10 @@ export type PipelineRunOptions = {
   seriesSlug?: string;
 };
 
+export type PipelineRunStage = 'full' | 'candidates_only' | 'assets_only';
+
 export async function dispatchPipelineRun(
-  stage: 'full' | 'candidates_only',
+  stage: PipelineRunStage,
   options?: PipelineRunOptions,
 ): Promise<PipelineRunPayload> {
   const body: { stage: typeof stage; series_slug?: string } = { stage };

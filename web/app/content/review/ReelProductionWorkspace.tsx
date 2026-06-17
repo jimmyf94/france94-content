@@ -600,6 +600,7 @@ function RenderedStage({
               poster={posterUrl ?? undefined}
               controls
               playsInline
+              preload="metadata"
               className={videoClass}
               style={large ? { aspectRatio: '9 / 16' } : undefined}
               onTimeUpdate={(e) => {

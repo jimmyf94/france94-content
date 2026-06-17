@@ -48,6 +48,7 @@ export {
 export type { ReelTrialGraduationStrategy } from './reel-publish.js';
 export { isStageableCandidateStatus, STAGEABLE_CANDIDATE_STATUSES } from './staging-gates.js';
 export type { StageableCandidateStatus } from './staging-gates.js';
+export { validatePublishingForCandidate } from './validate-publishing-candidate.js';
 export type {
   EligibilityResult,
   PostCandidateRow,

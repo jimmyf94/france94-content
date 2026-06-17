@@ -13,7 +13,7 @@ import {
 } from '@/lib/pipeline-settings-server';
 
 const runBodySchema = z.object({
-  stage: z.enum(['full', 'candidates_only']),
+  stage: z.enum(['full', 'candidates_only', 'assets_only']),
   series_slug: z.string().trim().min(1).optional(),
 });
 

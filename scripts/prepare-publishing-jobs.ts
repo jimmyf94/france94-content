@@ -41,6 +41,12 @@ import {
 import { findProducedReelRender, parseReelTrialGraduationStrategy, type ReelTrialGraduationStrategy } from './lib/publishing/reel-publish.js';
 import { isStageableCandidateStatus } from './lib/publishing/staging-gates.js';
 import type { PostCandidateRow, PreparedMediaItem, PublishType } from './lib/publishing/types.js';
+import {
+  ensureJobForApprovedCandidate,
+  validatePublishingForCandidate,
+} from './lib/publishing/validate-publishing-candidate.js';
+
+export { validatePublishingForCandidate };
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -94,83 +100,6 @@ function igCaption(raw: string): string {
   const t = raw.trim();
   if (t.length <= max) return t;
   return `${t.slice(0, max - 1)}…`;
-}
-
-async function insertFailedJob(
-  supabase: SupabaseClient,
-  candidate: PostCandidateRow,
-  publishType: PublishType,
-  caption: string,
-  reason: string,
-): Promise<void> {
-  const row = {
-    post_candidate_id: candidate.id,
-    platform: 'instagram',
-    publish_type: publishType,
-    status: 'failed',
-    caption,
-    hashtags: candidate.hashtags ?? [],
-    source_asset_ids: [],
-    source_drive_file_ids: [],
-    prepared_media: [],
-    public_media_urls: [],
-    instagram_child_container_ids: [],
-    instagram_parent_container_id: null,
-    instagram_creation_id: null,
-    instagram_container_status: null,
-    instagram_media_id: null,
-    graph_api_review_url: null,
-    graph_api_raw: null,
-    error_message: reason,
-    updated_at: new Date().toISOString(),
-  };
-  const { data, error } = await supabase.from('publishing_jobs').insert(row).select('id').maybeSingle();
-  if (error) throw new Error(error.message);
-  if (data?.id) {
-    await supabase
-      .from('post_candidates')
-      .update({ publishing_job_id: data.id, updated_at: new Date().toISOString() })
-      .eq('id', candidate.id);
-  }
-}
-
-async function createDraftJob(
-  supabase: SupabaseClient,
-  candidate: PostCandidateRow,
-  publishType: PublishType,
-  caption: string,
-  sourceAssetIds: string[],
-  sourceDriveIds: string[],
-): Promise<string> {
-  const row = {
-    post_candidate_id: candidate.id,
-    platform: 'instagram',
-    publish_type: publishType,
-    status: 'draft',
-    caption,
-    hashtags: candidate.hashtags ?? [],
-    source_asset_ids: sourceAssetIds,
-    source_drive_file_ids: sourceDriveIds,
-    prepared_media: [],
-    public_media_urls: [],
-    instagram_child_container_ids: [],
-    instagram_parent_container_id: null,
-    instagram_creation_id: null,
-    instagram_container_status: null,
-    instagram_media_id: null,
-    graph_api_review_url: null,
-    graph_api_raw: null,
-    error_message: null,
-    updated_at: new Date().toISOString(),
-  };
-  const { data, error } = await supabase.from('publishing_jobs').insert(row).select('id').maybeSingle();
-  if (error) throw new Error(error.message);
-  if (!data?.id) throw new Error('Insert publishing_jobs returned no id');
-  await supabase
-    .from('post_candidates')
-    .update({ publishing_job_id: data.id, updated_at: new Date().toISOString() })
-    .eq('id', candidate.id);
-  return data.id;
 }
 
 async function prepareMediaForJob(params: {
@@ -702,34 +631,6 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
   pubLog('process job finished refresh', { jobId });
 }
 
-async function ensureJobForApprovedCandidate(
-  supabase: SupabaseClient,
-  candidate: PostCandidateRow,
-): Promise<string | null> {
-  const caption = igCaption(buildPublishingCaption(candidate));
-  const resolved = await resolveCandidateMedia(supabase, candidate);
-  const reelRender = await findProducedReelRender(supabase, candidate.id);
-  const el = assessPublishingEligibility(candidate, resolved, {
-    hasProducedReelRender: reelRender != null,
-  });
-
-  if (!el.ok) {
-    const fallbackType = resolvePublishType(candidate, resolved) ?? 'image';
-    await insertFailedJob(supabase, candidate, fallbackType, caption, el.reason);
-    return null;
-  }
-
-  const jobId = await createDraftJob(
-    supabase,
-    candidate,
-    el.publishType,
-    caption,
-    resolved.map((r) => r.asset_id),
-    resolved.map((r) => r.drive_file_id),
-  );
-  return jobId;
-}
-
 const OPEN_PUBLISHING_JOB_STATUSES = [
   'draft',
   'media_prepared',
@@ -757,51 +658,6 @@ function parseValidateOnlyArg(): boolean {
     process.argv.includes('--validate-only') ||
     process.argv.some((a) => a.startsWith('--validate-only'))
   );
-}
-
-/** Create a draft publishing job after eligibility checks — no media prep or Graph containers. */
-export async function validatePublishingForCandidate(
-  supabase: SupabaseClient,
-  candidateId: string,
-): Promise<string | null> {
-  const { data: candidate, error: cErr } = await supabase
-    .from('post_candidates')
-    .select('*')
-    .eq('id', candidateId)
-    .maybeSingle();
-  if (cErr) throw new Error(cErr.message);
-  if (!candidate) throw new Error(`Candidate not found: ${candidateId}`);
-
-  const st = String(candidate.status ?? '');
-  if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
-    throw new Error(`Cannot stage publishing: post_candidates.status is "${st}".`);
-  }
-  if (!isStageableCandidateStatus(st)) {
-    throw new Error(`Cannot stage publishing for candidate status "${st}".`);
-  }
-
-  const { data: existingJob, error: jErr } = await supabase
-    .from('publishing_jobs')
-    .select('id, status')
-    .eq('post_candidate_id', candidateId)
-    .maybeSingle();
-  if (jErr) throw new Error(jErr.message);
-
-  if (existingJob) {
-    const js = String(existingJob.status ?? '');
-    if (js === 'scheduled' || js === 'ready_to_publish' || js === 'published' || js === 'publishing') {
-      pubLog('validate-only: existing job already staged', { candidateId, jobId: existingJob.id, jobStatus: js });
-      return existingJob.id as string;
-    }
-    if (js === 'draft' || (OPEN_PUBLISHING_JOB_STATUSES as readonly string[]).includes(js)) {
-      pubLog('validate-only: reuse existing job', { candidateId, jobId: existingJob.id, jobStatus: js });
-      return existingJob.id as string;
-    }
-    throw new Error(`Cannot stage publishing: existing job status is "${js}".`);
-  }
-
-  pubLog('validate-only: create draft job', { candidateId, post_type: candidate.post_type });
-  return ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
 }
 
 /** Prepare (or resume) publishing for one candidate — used by CLI `--candidate-id` and review UI. */

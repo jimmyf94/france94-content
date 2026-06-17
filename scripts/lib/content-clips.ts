@@ -40,6 +40,8 @@ export function clipThumbnailObjectPath(clipId: string): string {
 }
 
 const CLIP_THUMB_MAX_WIDTH = 512;
+/** CDN cache TTL (seconds); Smart CDN revalidates on upsert/delete. */
+const STORAGE_CACHE_CONTROL = '31536000';
 
 /**
  * Sanitize LLM clip output against the real video duration:
@@ -114,6 +116,7 @@ export async function replaceContentClips(
           .upload(objectPath, fs.readFileSync(framePath), {
             contentType: 'image/jpeg',
             upsert: true,
+            cacheControl: STORAGE_CACHE_CONTROL,
           });
         out.push(error ? null : objectPath);
       }

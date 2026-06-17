@@ -11,6 +11,7 @@ import { AssetCard } from './AssetCard';
 import { AssetMediaThumb } from './AssetMediaThumb';
 import { AssetDetailDrawer } from './AssetDetailDrawer';
 import { ManualUsageModal } from './ManualUsageModal';
+import { PostAsReelModal } from './PostAsReelModal';
 
 type ViewMode = 'grid' | 'table';
 
@@ -54,6 +55,9 @@ export function AssetLibrary() {
     'manual_post',
   );
   const [manualAssetId, setManualAssetId] = useState<string | null>(null);
+  const [postReelOpen, setPostReelOpen] = useState(false);
+  const [postReelAssetId, setPostReelAssetId] = useState<string | null>(null);
+  const [postReelAssetLabel, setPostReelAssetLabel] = useState<string | null>(null);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -115,6 +119,23 @@ export function AssetLibrary() {
       else p.set(k, String(v));
     }
     pushParams(p);
+  }
+
+  function openPostAsReel(row: AssetListRow) {
+    setPostReelAssetId(row.id);
+    setPostReelAssetLabel(
+      row.final_filename?.trim() ||
+        row.current_filename?.trim() ||
+        row.original_filename?.trim() ||
+        null,
+    );
+    setPostReelOpen(true);
+  }
+
+  function isVideoRow(row: AssetListRow): boolean {
+    const mime = (row.mime_type ?? '').toLowerCase();
+    const media = (row.media_type ?? '').toLowerCase();
+    return mime.startsWith('video/') || media === 'video';
   }
 
   async function patchEligibility(
@@ -339,6 +360,7 @@ export function AssetLibrary() {
                   setManualKind(kind);
                   setManualOpen(true);
                 }}
+                onPostAsReel={() => openPostAsReel(row)}
                 onOpenDrive={() => {
                   const u = row.drive_web_view_link?.trim();
                   if (u) window.open(u, '_blank', 'noopener,noreferrer');
@@ -437,10 +459,17 @@ export function AssetLibrary() {
                               setManualAssetId(row.id);
                               setManualKind(v);
                               setManualOpen(true);
+                              return;
+                            }
+                            if (v === 'post_as_reel') {
+                              openPostAsReel(row);
                             }
                           }}
                         >
                           <option value="">Choose action…</option>
+                          {isVideoRow(row) ? (
+                            <option value="post_as_reel">Post as reel…</option>
+                          ) : null}
                           <option value="detail">Open detail</option>
                           <option value="history">Usage history</option>
                           <option value="eligible">Mark eligible</option>
@@ -492,6 +521,18 @@ export function AssetLibrary() {
         onClose={() => {
           setManualOpen(false);
           setManualAssetId(null);
+        }}
+        onDone={() => void load()}
+      />
+
+      <PostAsReelModal
+        open={postReelOpen}
+        assetId={postReelAssetId}
+        assetLabel={postReelAssetLabel}
+        onClose={() => {
+          setPostReelOpen(false);
+          setPostReelAssetId(null);
+          setPostReelAssetLabel(null);
         }}
         onDone={() => void load()}
       />

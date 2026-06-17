@@ -19,6 +19,7 @@ export function AssetCard({
   onOpenDetail,
   onSetEligibility,
   onManualUsage,
+  onPostAsReel,
   onOpenDrive,
 }: {
   row: AssetListRow;
@@ -27,6 +28,7 @@ export function AssetCard({
     el: 'eligible' | 'stale' | 'excluded' | 'manual_only' | 'needs_review',
   ) => void;
   onManualUsage: (kind: 'manual_post' | 'manual_story' | 'manual_reel') => void;
+  onPostAsReel?: () => void;
   onOpenDrive: () => void;
 }) {
   const isVideo = (row.mime_type ?? row.media_type ?? '').toLowerCase().startsWith('video');
@@ -98,9 +100,13 @@ export function AssetCard({
               if (v === 'manual_post' || v === 'manual_story' || v === 'manual_reel') {
                 onManualUsage(v);
               }
+              if (v === 'post_as_reel') {
+                onPostAsReel?.();
+              }
             }}
           >
             <option value="">Actions…</option>
+            {isVideo ? <option value="post_as_reel">Post as reel…</option> : null}
             <option value="eligible">Mark eligible</option>
             <option value="stale">Mark stale</option>
             <option value="excluded">Exclude</option>

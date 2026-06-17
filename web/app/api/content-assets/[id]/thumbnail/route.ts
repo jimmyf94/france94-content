@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { assetThumbnailBucketName } from '@/lib/asset-thumbnail-storage';
 import { assertReviewAuthorized } from '@/lib/review-auth';
+import {
+  getCachedStoredThumbnail,
+  setCachedStoredThumbnail,
+} from '@/lib/stored-thumbnail-response-cache';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 export const runtime = 'nodejs';
@@ -16,6 +20,17 @@ export async function GET(
   const { id } = await ctx.params;
   if (!id?.trim()) {
     return NextResponse.json({ error: 'Missing id' }, { status: 400 });
+  }
+
+  const cached = getCachedStoredThumbnail('asset', id);
+  if (cached) {
+    return new NextResponse(new Uint8Array(cached), {
+      status: 200,
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'private, max-age=86400',
+      },
+    });
   }
 
   const supabase = getSupabaseServiceRole();
@@ -49,6 +64,7 @@ export async function GET(
   }
 
   const bytes = Buffer.from(await blob.arrayBuffer());
+  setCachedStoredThumbnail('asset', id, bytes);
 
   return new NextResponse(bytes, {
     status: 200,

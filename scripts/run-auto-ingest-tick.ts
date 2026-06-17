@@ -26,11 +26,13 @@ type PipelineRow = {
   last_run_finished_at: string | null;
 };
 
-type AutoIngestStage = 'full' | 'candidates_only';
+type AutoIngestStage = 'full' | 'candidates_only' | 'assets_only';
 
 function resolveAutoIngestStage(): AutoIngestStage {
   const raw = process.env.AUTO_INGEST_STAGE?.trim();
-  return raw === 'candidates_only' ? 'candidates_only' : 'full';
+  if (raw === 'candidates_only') return 'candidates_only';
+  if (raw === 'assets_only') return 'assets_only';
+  return 'full';
 }
 
 function resolvePostCandidateSeriesSlug(): string | null {
@@ -210,24 +212,36 @@ export async function runAutoIngestTick(): Promise<void> {
   };
 
   try {
-    if (stage === 'full') {
+    if (stage === 'full' || stage === 'assets_only') {
       console.log('[auto-ingest]\tstep: ingest');
       await ingestDriveFolder();
 
       console.log('[auto-ingest]\tstep: analyze');
       await analyzePendingAssets();
 
-      console.log('[auto-ingest]\tstep: process (rename/move)');
-      await processAnalyzedAssets();
+      if (stage === 'assets_only') {
+        console.log('[auto-ingest]\tstep: geocode');
+        await reverseGeocodePendingAssets();
 
-      console.log('[auto-ingest]\tstep: geocode');
-      await reverseGeocodePendingAssets();
+        console.log('[auto-ingest]\tstep: process (rename/move)');
+        await processAnalyzedAssets();
+      } else {
+        console.log('[auto-ingest]\tstep: process (rename/move)');
+        await processAnalyzedAssets();
+
+        console.log('[auto-ingest]\tstep: geocode');
+        await reverseGeocodePendingAssets();
+      }
     } else {
       console.log('[auto-ingest]\tskipping ingest/analyze/process/geocode (candidates_only)');
     }
 
-    console.log('[auto-ingest]\tstep: generate post candidates');
-    await generatePostCandidates(seriesSlug ? { seriesSlug } : undefined);
+    if (stage !== 'assets_only') {
+      console.log('[auto-ingest]\tstep: generate post candidates');
+      await generatePostCandidates(seriesSlug ? { seriesSlug } : undefined);
+    } else {
+      console.log('[auto-ingest]\tskipping post candidates (assets_only)');
+    }
 
     summary = {
       ingested: await countSince(supabase, 'content_assets', startedAt),
