@@ -7,6 +7,21 @@ import { findProducedReelRender } from './reel-publish.js';
 import { isStageableCandidateStatus } from './staging-gates.js';
 import type { PostCandidateRow, PublishType } from './types.js';
 
+const PUBLISHING_CANDIDATE_PREP_COLUMNS = [
+  'id',
+  'post_type',
+  'caption_fr',
+  'caption_en',
+  'hashtags',
+  'story_frames',
+  'reel_instructions',
+  'carousel_slides',
+  'static_post_instructions',
+  'source_asset_ids',
+  'source_drive_file_ids',
+  'status',
+].join(',');
+
 function igCaption(raw: string): string {
   const max = 2200;
   const t = raw.trim();
@@ -131,13 +146,14 @@ export async function validatePublishingForCandidate(
   supabase: SupabaseClient,
   candidateId: string,
 ): Promise<string | null> {
-  const { data: candidate, error: cErr } = await supabase
+  const { data: candidateRow, error: cErr } = await supabase
     .from('post_candidates')
-    .select('*')
+    .select(PUBLISHING_CANDIDATE_PREP_COLUMNS)
     .eq('id', candidateId)
     .maybeSingle();
   if (cErr) throw new Error(cErr.message);
-  if (!candidate) throw new Error(`Candidate not found: ${candidateId}`);
+  if (!candidateRow) throw new Error(`Candidate not found: ${candidateId}`);
+  const candidate = candidateRow as unknown as PostCandidateRow;
 
   const st = String(candidate.status ?? '');
   if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
@@ -165,7 +181,7 @@ export async function validatePublishingForCandidate(
     throw new Error(`Cannot stage publishing: existing job status is "${js}".`);
   }
 
-  return ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
+  return ensureJobForApprovedCandidate(supabase, candidate);
 }
 
 export { ensureJobForApprovedCandidate };

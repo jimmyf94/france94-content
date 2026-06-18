@@ -56,8 +56,8 @@ type ReelSpecDto = {
   total_duration_sec?: number;
 };
 
-const POLL_ACTIVE_MS = 1500;
-const POLL_AFTER_RENDER_MAX = 120;
+const POLL_ACTIVE_MS = 3000;
+const POLL_AFTER_RENDER_MAX = 60;
 
 function withCacheBust(url: string, version?: string | null): string {
   if (!version?.trim()) return url;
@@ -229,6 +229,7 @@ export function ProductionJobCard({
   const pollUntilRenderSettled = useCallback(async () => {
     for (let i = 0; i < POLL_AFTER_RENDER_MAX; i += 1) {
       await new Promise((r) => setTimeout(r, POLL_ACTIVE_MS));
+      if (document.hidden) continue;
       const res = await fetch(
         `/api/content-review/production-jobs/by-candidate/${encodeURIComponent(candidate.id)}`,
         { credentials: 'include', cache: 'no-store' },
@@ -358,8 +359,18 @@ export function ProductionJobCard({
   useEffect(() => {
     const status = job?.status ?? '';
     if (status !== 'queued' && status !== 'rendering') return;
-    const t = window.setInterval(() => void load(), POLL_ACTIVE_MS);
-    return () => window.clearInterval(t);
+    const tick = () => {
+      if (!document.hidden) void load();
+    };
+    const t = window.setInterval(tick, POLL_ACTIVE_MS);
+    const onVisible = () => {
+      if (!document.hidden) void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [job?.status, load]);
 
   const createVariant = useCallback(

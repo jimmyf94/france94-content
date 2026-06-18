@@ -45,6 +45,17 @@ export function parsePreparedMedia(raw: unknown): PreparedMediaItem[] {
 
 type JobRow = Record<string, unknown>;
 
+const PUBLISHING_JOB_GRAPH_REFRESH_COLUMNS = [
+  'id',
+  'post_candidate_id',
+  'status',
+  'publish_type',
+  'instagram_child_container_ids',
+  'instagram_parent_container_id',
+  'instagram_creation_id',
+  'error_message',
+].join(',');
+
 export async function updatePublishingJob(
   supabase: SupabaseClient,
   jobId: string,
@@ -125,14 +136,14 @@ export async function refreshPublishingJobFromGraph(
 ): Promise<{ status: PublishingJobStatus; summary: string }> {
   const { data: row, error } = await supabase
     .from('publishing_jobs')
-    .select('*')
+    .select(PUBLISHING_JOB_GRAPH_REFRESH_COLUMNS)
     .eq('id', jobId)
     .maybeSingle();
 
   if (error) throw new Error(error.message);
   if (!row) throw new Error('Publishing job not found');
 
-  const r = row as JobRow;
+  const r = row as unknown as JobRow;
   const childIds = Array.isArray(r.instagram_child_container_ids)
     ? (r.instagram_child_container_ids as string[])
     : [];

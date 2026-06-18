@@ -18,7 +18,20 @@ export async function GET(
   const supabase = getSupabaseServiceRole();
   const { data, error } = await supabase
     .from('production_jobs')
-    .select('*')
+    .select(
+      [
+        'id',
+        'status',
+        'production_type',
+        'output_video_url',
+        'thumbnail_url',
+        'error_message',
+        'render_strategy',
+        'render_log',
+        'reel_specification',
+        'updated_at',
+      ].join(','),
+    )
     .eq('post_candidate_id', candidateId.trim())
     .order('updated_at', { ascending: false })
     .limit(1)

@@ -48,6 +48,43 @@ import {
 
 export { validatePublishingForCandidate };
 
+const PUBLISHING_JOB_PREP_COLUMNS = [
+  'id',
+  'post_candidate_id',
+  'status',
+  'publish_type',
+  'prepared_media',
+  'public_media_urls',
+  'instagram_child_container_ids',
+  'instagram_parent_container_id',
+  'instagram_creation_id',
+  'instagram_container_status',
+  'instagram_media_id',
+  'instagram_permalink',
+  'error_message',
+  'scheduled_publish_at',
+  'published_at',
+  'publish_attempt_count',
+  'last_publish_attempt_at',
+  'reel_trial_graduation_strategy',
+  'updated_at',
+].join(',');
+
+export const PUBLISHING_CANDIDATE_PREP_COLUMNS = [
+  'id',
+  'post_type',
+  'caption_fr',
+  'caption_en',
+  'hashtags',
+  'story_frames',
+  'reel_instructions',
+  'carousel_slides',
+  'static_post_instructions',
+  'source_asset_ids',
+  'source_drive_file_ids',
+  'status',
+].join(',');
+
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v?.trim()) throw new Error(`Missing required environment variable: ${name}`);
@@ -426,7 +463,7 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
 
   let { data: job, error: jobErr } = await supabase
     .from('publishing_jobs')
-    .select('*')
+    .select(PUBLISHING_JOB_PREP_COLUMNS)
     .eq('id', jobId)
     .maybeSingle();
   if (jobErr) throw new Error(jobErr.message);
@@ -444,7 +481,11 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
         status: 'media_prepared',
         error_message: null,
       });
-      const { data: jobAgain } = await supabase.from('publishing_jobs').select('*').eq('id', jobId).maybeSingle();
+      const { data: jobAgain } = await supabase
+        .from('publishing_jobs')
+        .select(PUBLISHING_JOB_PREP_COLUMNS)
+        .eq('id', jobId)
+        .maybeSingle();
       if (jobAgain) job = jobAgain;
     } else {
       pubLog('skip failed job (no prepared media or IG already set)', {
@@ -458,7 +499,7 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
 
   const { data: candidate, error: cErr } = await supabase
     .from('post_candidates')
-    .select('*')
+    .select(PUBLISHING_CANDIDATE_PREP_COLUMNS)
     .eq('id', job.post_candidate_id)
     .maybeSingle();
   if (cErr) throw new Error(cErr.message);
@@ -537,7 +578,11 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     error_message: null,
   });
 
-  const { data: jobFresh } = await supabase.from('publishing_jobs').select('*').eq('id', jobId).maybeSingle();
+  const { data: jobFresh } = await supabase
+    .from('publishing_jobs')
+    .select(PUBLISHING_JOB_PREP_COLUMNS)
+    .eq('id', jobId)
+    .maybeSingle();
   if (jobFresh) job = jobFresh;
 
   let prepared = parsePreparedMedia(job.prepared_media);
@@ -589,7 +634,11 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     return;
   }
 
-  const { data: jobIg } = await supabase.from('publishing_jobs').select('*').eq('id', jobId).maybeSingle();
+  const { data: jobIg } = await supabase
+    .from('publishing_jobs')
+    .select(PUBLISHING_JOB_PREP_COLUMNS)
+    .eq('id', jobId)
+    .maybeSingle();
   if (jobIg) job = jobIg;
 
   const existingCreation =
@@ -667,7 +716,7 @@ export async function preparePublishingForCandidate(
 ): Promise<void> {
   const { data: candidate, error: cErr } = await supabase
     .from('post_candidates')
-    .select('*')
+    .select(PUBLISHING_CANDIDATE_PREP_COLUMNS)
     .eq('id', candidateId)
     .maybeSingle();
   if (cErr) throw new Error(cErr.message);
@@ -732,7 +781,7 @@ export async function getApprovedCandidatesWithoutPublishingJobs(
 
   const { data: candidates, error: cErr } = await supabase
     .from('post_candidates')
-    .select('*')
+    .select(PUBLISHING_CANDIDATE_PREP_COLUMNS)
     .eq('status', 'approved');
   if (cErr) throw new Error(cErr.message);
 

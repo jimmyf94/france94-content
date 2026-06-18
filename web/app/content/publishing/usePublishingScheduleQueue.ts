@@ -12,7 +12,7 @@ import { readJsonResponse } from '@/lib/read-json-response';
 
 import { notifyScheduleQueueChanged } from '../schedule-events';
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 5000;
 
 export function usePublishingScheduleQueue(reloadNonce = 0) {
   const [items, setItems] = useState<PublishingQueueItem[]>([]);
@@ -109,10 +109,18 @@ export function usePublishingScheduleQueue(reloadNonce = 0) {
 
   useEffect(() => {
     if (pollingJobIds.length === 0) return undefined;
-    const timer = window.setInterval(() => {
-      void loadItems({ silent: true });
-    }, POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    const tick = () => {
+      if (!document.hidden) void loadItems({ silent: true });
+    };
+    const timer = window.setInterval(tick, POLL_INTERVAL_MS);
+    const onVisible = () => {
+      if (!document.hidden) void loadItems({ silent: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [loadItems, pollingJobIds.length]);
 
   const schedulePublish = async (jobId: string, scheduledPublishAt: string) => {

@@ -13,7 +13,7 @@ import {
 
 import { loadPublishingJobByCandidate, triggerPublishJobNow } from './publishingJobClient';
 
-const POLL_MS = 3000;
+const POLL_MS = 5000;
 
 export function usePublishingJobProgress(options: {
   job: PublishingJobDto | null;
@@ -37,7 +37,8 @@ export function usePublishingJobProgress(options: {
 
   useEffect(() => {
     if (!shouldPoll || !candidateId) return undefined;
-    const timer = window.setInterval(() => {
+    const tick = () => {
+      if (document.hidden) return;
       void (async () => {
         try {
           const polled = await loadPublishingJobByCandidate(candidateId);
@@ -46,8 +47,16 @@ export function usePublishingJobProgress(options: {
           /* best-effort */
         }
       })();
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(tick, POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [shouldPoll, candidateId, onJobUpdate]);
 
   const publishNow = useCallback(async () => {

@@ -172,6 +172,18 @@ export type ClipWithAsset = ContentClipRow & {
   };
 };
 
+const CLIP_WITH_ASSET_COLUMNS = `
+  id, content_asset_id, seq, duration_sec, thumbnail_path, status, created_at, updated_at,
+  start_sec, end_sec, visual_summary, transcript_excerpt,
+  supported_reel_formats, fitting_series_slugs, pov_concepts, hooks,
+  emotional_tags, tension_tags, visual_tags, discovery_tags, could_be_used_for,
+  asset:content_assets!inner (
+    id, drive_file_id, current_filename, final_filename,
+    duration_seconds, usage_status, quality_score, processed_at,
+    status, candidate_eligibility
+  )
+`;
+
 /**
  * Load ready clips (joined to eligible processed video assets) for reel generation.
  */
@@ -182,13 +194,7 @@ export async function loadReadyClipsForReels(
   const limit = params.limit ?? 200;
   const { data, error } = await supabase
     .from('content_clips')
-    .select(
-      `*, asset:content_assets!inner (
-        id, drive_file_id, current_filename, final_filename,
-        duration_seconds, usage_status, quality_score, processed_at,
-        status, candidate_eligibility
-      )`,
-    )
+    .select(CLIP_WITH_ASSET_COLUMNS)
     .eq('status', 'ready')
     .eq('content_assets.status', 'processed')
     .eq('content_assets.candidate_eligibility', 'eligible')
@@ -209,13 +215,7 @@ export async function loadClipsByIds(
 
   const { data, error } = await supabase
     .from('content_clips')
-    .select(
-      `*, asset:content_assets!inner (
-        id, drive_file_id, current_filename, final_filename,
-        duration_seconds, usage_status, quality_score, processed_at,
-        status, candidate_eligibility
-      )`,
-    )
+    .select(CLIP_WITH_ASSET_COLUMNS)
     .in('id', ids);
 
   if (error) throw new Error(`loadClipsByIds: ${error.message}`);

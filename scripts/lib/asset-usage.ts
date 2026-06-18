@@ -211,7 +211,7 @@ export async function recordAssetUsageEvent(
 async function fetchActiveEvents(supabase: SupabaseClient, assetId: string) {
   const { data, error } = await supabase
     .from('asset_usage_events')
-    .select('*')
+    .select('usage_stage,lock_strength,usage_type,reuse_allowed_after,published_at,used_at')
     .eq('content_asset_id', assetId)
     .not('usage_stage', 'eq', 'released')
     .not('usage_stage', 'eq', 'rejected')

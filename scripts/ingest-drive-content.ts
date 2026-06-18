@@ -12,6 +12,7 @@ import {
 } from './lib/drive-media-download.js';
 import { finalizeHeicIngest, resolveDriveFileForIngest, rollbackHeicUpload } from './lib/heic-normalize.js';
 import { getDriveClient } from './lib/google-drive-auth.js';
+import { inferMediaType } from './lib/media-type.js';
 
 export { getDriveClient };
 
@@ -171,7 +172,7 @@ export async function listDriveFiles(
   return out;
 }
 
-import { inferMediaType } from './lib/media-type.js';
+function fileExtension(filename: string): string | null {
   const i = filename.lastIndexOf('.');
   if (i <= 0 || i === filename.length - 1) return null;
   return filename.slice(i + 1).toLowerCase();

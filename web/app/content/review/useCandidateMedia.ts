@@ -8,10 +8,13 @@ import type { ReviewDriveFile } from './types';
 
 function prefetchVideoPosters(files: ReviewDriveFile[]) {
   if (typeof Image === 'undefined') return;
+  let prefetched = 0;
   for (const f of files) {
     if (!f.posterUrl || !f.mimeType.startsWith('video/')) continue;
     const img = new Image();
     img.src = f.posterUrl;
+    prefetched += 1;
+    if (prefetched >= 1) return;
   }
 }
 

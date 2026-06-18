@@ -31,6 +31,7 @@ export function AssetDetailDrawer({
   const [data, setData] = useState<AssetDetailResponse | null>(null);
   const [notesDraft, setNotesDraft] = useState('');
   const [savingNotes, setSavingNotes] = useState(false);
+  const [videoPreviewArmed, setVideoPreviewArmed] = useState(false);
 
   const load = useCallback(async () => {
     if (!assetId) return;
@@ -56,6 +57,7 @@ export function AssetDetailDrawer({
   useEffect(() => {
     if (!open || !assetId) return;
     setTab(initialTab ?? 'overview');
+    setVideoPreviewArmed(false);
     void load();
   }, [open, assetId, initialTab, load]);
 
@@ -158,8 +160,19 @@ export function AssetDetailDrawer({
                     {isImage ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={previewUrl} alt="" className="max-h-64 w-full object-contain" />
-                    ) : isVideo ? (
+                    ) : isVideo && videoPreviewArmed ? (
                       <video src={previewUrl} controls className="max-h-64 w-full" />
+                    ) : isVideo ? (
+                      <div className="flex min-h-40 flex-col items-center justify-center gap-2 p-4 text-center text-[var(--muted)]">
+                        <p>Video preview is paused to avoid streaming the full Drive file.</p>
+                        <button
+                          type="button"
+                          className="rounded border border-[var(--accent)] px-2 py-1 text-xs text-[var(--text)]"
+                          onClick={() => setVideoPreviewArmed(true)}
+                        >
+                          Load video preview
+                        </button>
+                      </div>
                     ) : (
                       <div className="p-4 text-[var(--muted)]">
                         Preview not available for this type.{' '}
