@@ -12,9 +12,8 @@ for (const envPath of [path.join(repoRoot, '.env'), path.join(repoRoot, '.env.lo
 }
 import type { drive_v3 } from 'googleapis';
 
-import { getDriveClient } from './ingest-drive-content.js';
 import { fetchDriveFileMedia, maxPublishingFileBytes } from './lib/drive-media-download.js';
-import { formatGoogleDriveApiError } from './lib/google-drive-auth.js';
+import { formatGoogleDriveApiError, getDriveClient } from './lib/google-drive-auth.js';
 import {
   assessPublishingEligibility,
   buildPublishingCaption,
