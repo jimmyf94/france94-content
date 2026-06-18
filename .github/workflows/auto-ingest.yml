@@ -2,13 +2,13 @@ name: auto-ingest
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       stage:
         description: 'full | candidates_only | assets_only'
         required: false
-        default: 'full'
+        default: 'assets_only'
       series_slug:
         description: 'Optional content_series slug to scope candidate generation'
         required: false
@@ -31,7 +31,7 @@ jobs:
       - run: npm ci
       - run: npm run auto:ingest-tick
         env:
-          AUTO_INGEST_STAGE: ${{ github.event.inputs.stage || 'full' }}
+          AUTO_INGEST_STAGE: ${{ github.event.inputs.stage || 'assets_only' }}
           POST_CANDIDATE_SERIES_SLUG: ${{ github.event.inputs.series_slug || '' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

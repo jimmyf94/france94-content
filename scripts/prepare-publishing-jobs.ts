@@ -70,6 +70,18 @@ const PUBLISHING_JOB_PREP_COLUMNS = [
   'updated_at',
 ].join(',');
 
+type PublishingJobPrepRow = {
+  id: string;
+  post_candidate_id: string;
+  status: string;
+  publish_type: PublishType | null;
+  prepared_media: unknown;
+  instagram_child_container_ids: unknown;
+  instagram_parent_container_id: string | null;
+  instagram_creation_id: string | null;
+  reel_trial_graduation_strategy?: unknown;
+};
+
 export const PUBLISHING_CANDIDATE_PREP_COLUMNS = [
   'id',
   'post_type',
@@ -468,13 +480,14 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     .maybeSingle();
   if (jobErr) throw new Error(jobErr.message);
   if (!job) throw new Error('Job not found');
+  let jobRow = job as unknown as PublishingJobPrepRow;
 
-  if (job.status === 'failed' && !force) {
-    const prevPrepared = parsePreparedMedia(job.prepared_media);
+  if (jobRow.status === 'failed' && !force) {
+    const prevPrepared = parsePreparedMedia(jobRow.prepared_media);
     const noIg =
-      job.instagram_creation_id == null &&
-      (!Array.isArray(job.instagram_child_container_ids) ||
-        job.instagram_child_container_ids.length === 0);
+      jobRow.instagram_creation_id == null &&
+      (!Array.isArray(jobRow.instagram_child_container_ids) ||
+        jobRow.instagram_child_container_ids.length === 0);
     if (prevPrepared.length > 0 && noIg) {
       pubLog('failed job reset to media_prepared for IG retry', { jobId });
       await updatePublishingJob(supabase, jobId, {
@@ -486,12 +499,12 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
         .select(PUBLISHING_JOB_PREP_COLUMNS)
         .eq('id', jobId)
         .maybeSingle();
-      if (jobAgain) job = jobAgain;
+      if (jobAgain) jobRow = jobAgain as unknown as PublishingJobPrepRow;
     } else {
       pubLog('skip failed job (no prepared media or IG already set)', {
         jobId,
         preparedCount: prevPrepared.length,
-        has_creation: Boolean(job.instagram_creation_id),
+        has_creation: Boolean(jobRow.instagram_creation_id),
       });
       return;
     }
@@ -500,13 +513,13 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
   const { data: candidate, error: cErr } = await supabase
     .from('post_candidates')
     .select(PUBLISHING_CANDIDATE_PREP_COLUMNS)
-    .eq('id', job.post_candidate_id)
+    .eq('id', jobRow.post_candidate_id)
     .maybeSingle();
   if (cErr) throw new Error(cErr.message);
   if (!candidate) throw new Error('Candidate not found');
 
-  const cand = candidate as PostCandidateRow;
-  const jobStatus = String(job.status ?? '');
+  const cand = candidate as unknown as PostCandidateRow;
+  const jobStatus = String(jobRow.status ?? '');
   const gate = candidatePublishPrepGate(cand.status, jobStatus);
 
   pubLog('process job', {
@@ -515,7 +528,7 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     candidateId: cand.id,
     candidateStatus: cand.status,
     post_type: cand.post_type,
-    publish_type_on_row: job.publish_type,
+    publish_type_on_row: jobRow.publish_type,
     gate,
   });
 
@@ -583,9 +596,9 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     .select(PUBLISHING_JOB_PREP_COLUMNS)
     .eq('id', jobId)
     .maybeSingle();
-  if (jobFresh) job = jobFresh;
+  if (jobFresh) jobRow = jobFresh as unknown as PublishingJobPrepRow;
 
-  let prepared = parsePreparedMedia(job.prepared_media);
+  let prepared = parsePreparedMedia(jobRow.prepared_media);
   const hasMedia = prepared.length > 0 && !force;
   pubLog('media checkpoint', { jobId, hasMedia, preparedCount: prepared.length, force });
 
@@ -611,7 +624,7 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
       return;
     }
   } else {
-    prepared = parsePreparedMedia(job.prepared_media);
+    prepared = parsePreparedMedia(jobRow.prepared_media);
     pubLog('skip download (prepared_media already present)', { jobId, count: prepared.length });
   }
 
@@ -639,14 +652,14 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
     .select(PUBLISHING_JOB_PREP_COLUMNS)
     .eq('id', jobId)
     .maybeSingle();
-  if (jobIg) job = jobIg;
+  if (jobIg) jobRow = jobIg as unknown as PublishingJobPrepRow;
 
   const existingCreation =
-    typeof job.instagram_creation_id === 'string' && job.instagram_creation_id.length > 0;
+    typeof jobRow.instagram_creation_id === 'string' && jobRow.instagram_creation_id.length > 0;
   if (existingCreation && !force) {
     pubLog('refresh only (creation id already set)', {
       jobId,
-      instagram_creation_id: job.instagram_creation_id,
+      instagram_creation_id: jobRow.instagram_creation_id,
     });
     await refreshPublishingJobFromGraph(supabase, jobId);
     pubLog('refreshPublishingJobFromGraph done', { jobId });
@@ -655,7 +668,7 @@ export async function processPublishingJob(supabase: SupabaseClient, jobId: stri
 
   try {
     const trialStrategy = parseReelTrialGraduationStrategy(
-      (job as Record<string, unknown>).reel_trial_graduation_strategy,
+      jobRow.reel_trial_graduation_strategy,
     );
     await createGraphContainers({
       supabase,
@@ -721,8 +734,9 @@ export async function preparePublishingForCandidate(
     .maybeSingle();
   if (cErr) throw new Error(cErr.message);
   if (!candidate) throw new Error(`Candidate not found: ${candidateId}`);
+  const candidateRow = candidate as unknown as PostCandidateRow;
 
-  const st = String(candidate.status ?? '');
+  const st = String(candidateRow.status ?? '');
   if (st === 'rejected' || st === 'needs_review' || st === 'needs_rewrite') {
     throw new Error(`Cannot prepare publishing: post_candidates.status is "${st}".`);
   }
@@ -735,7 +749,8 @@ export async function preparePublishingForCandidate(
   if (jErr) throw new Error(jErr.message);
 
   if (existingJob) {
-    const js = String(existingJob.status ?? '');
+    const existingJobRow = existingJob as unknown as { id: string; status: string };
+    const js = String(existingJobRow.status ?? '');
     if (st === 'ready_to_publish' && js === 'ready_to_publish') {
       pubLog('nothing to do (candidate and job both ready_to_publish)', { candidateId });
       return;
@@ -746,11 +761,11 @@ export async function preparePublishingForCandidate(
     ) {
       pubLog('resume single candidate', {
         candidateId,
-        jobId: existingJob.id,
+        jobId: existingJobRow.id,
         jobStatus: js,
         candidateStatus: st,
       });
-      await processPublishingJob(supabase, existingJob.id as string);
+      await processPublishingJob(supabase, existingJobRow.id);
       return;
     }
     if (isStageableCandidateStatus(st)) {
@@ -761,8 +776,8 @@ export async function preparePublishingForCandidate(
   }
 
   if (isStageableCandidateStatus(st)) {
-    pubLog('fresh single candidate', { candidateId, post_type: candidate.post_type });
-    const jobId = await ensureJobForApprovedCandidate(supabase, candidate as PostCandidateRow);
+    pubLog('fresh single candidate', { candidateId, post_type: candidateRow.post_type });
+    const jobId = await ensureJobForApprovedCandidate(supabase, candidateRow);
     if (jobId) {
       await processPublishingJob(supabase, jobId);
     }
@@ -777,7 +792,8 @@ export async function getApprovedCandidatesWithoutPublishingJobs(
 ): Promise<PostCandidateRow[]> {
   const { data: jobs, error: jErr } = await supabase.from('publishing_jobs').select('post_candidate_id');
   if (jErr) throw new Error(jErr.message);
-  const has = new Set((jobs ?? []).map((r) => r.post_candidate_id as string));
+  const jobRows = (jobs ?? []) as unknown as Array<{ post_candidate_id: string | null }>;
+  const has = new Set(jobRows.map((r) => r.post_candidate_id).filter((id): id is string => Boolean(id)));
 
   const { data: candidates, error: cErr } = await supabase
     .from('post_candidates')
@@ -785,7 +801,8 @@ export async function getApprovedCandidatesWithoutPublishingJobs(
     .eq('status', 'approved');
   if (cErr) throw new Error(cErr.message);
 
-  return (candidates ?? []).filter((c) => !has.has(c.id)) as PostCandidateRow[];
+  const candidateRows = (candidates ?? []) as unknown as PostCandidateRow[];
+  return candidateRows.filter((c) => !has.has(c.id));
 }
 
 async function main(): Promise<void> {

@@ -13,13 +13,13 @@ import {
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 import { validatePublishingForCandidate } from '@fr94/publishing/validate-publishing-candidate';
 
-import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
 import { POST_CANDIDATE_DETAIL_COLUMNS } from '@/lib/post-candidate-api-columns';
 import {
   assetDisplayTitle,
   isVideoAsset,
   normalizeHashtags,
 } from '@/lib/post-as-reel-utils';
+import { schedulePublishingJob } from '@/lib/qstash-publishing';
 import { assertReviewAuthorized, getCurrentUserEmail } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -198,7 +198,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  const dispatch = await dispatchGithubWorkflow('publish-scheduled.yml');
+  try {
+    await schedulePublishingJob({ jobId, scheduledAt: now });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[post-as-reel] qstash enqueue', msg);
+    await updatePublishingJob(supabase, jobId, {
+      error_message: `QStash scheduling failed: ${msg}`,
+    });
+    return NextResponse.json({ error: msg }, { status: 502 });
+  }
 
   const { data: candidate, error: cOutErr } = await supabase
     .from('post_candidates')
@@ -224,9 +233,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     publishing_job_id: jobId,
     candidate: candidate ?? null,
     job: job ?? null,
-    dispatched: dispatch.ok,
-    message: dispatch.ok
-      ? 'Reel publish pipeline started. Instagram may take a few minutes.'
-      : 'Reel scheduled for publish. Worker will pick it up within ~5 minutes.',
+    dispatched: true,
+    message: 'Reel publish pipeline queued. Instagram may take a few minutes.',
   });
 }

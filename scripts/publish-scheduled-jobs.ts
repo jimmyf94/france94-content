@@ -1,6 +1,7 @@
 /**
- * Run due scheduled Instagram jobs: media prep -> Graph containers -> poll -> media_publish.
- * Run periodically via cron (e.g. every five minutes): cd /path/to/repo && npm run publish:scheduled
+ * Run scheduled Instagram jobs: media prep -> Graph containers -> poll -> media_publish.
+ * QStash calls the web API for one job at its scheduled time; this CLI remains
+ * a manual fallback.
  *
  * Single job (e.g. Publish now): npm run publish:scheduled -- --job-id=<uuid>
  */

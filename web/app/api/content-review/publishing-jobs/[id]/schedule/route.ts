@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 
+import { schedulePublishingJob } from '@/lib/qstash-publishing';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -79,6 +80,16 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       scheduled_publish_at: iso,
       error_message: null,
     });
+    try {
+      await schedulePublishingJob({ jobId: id, scheduledAt: iso });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[schedule publishing] qstash enqueue', msg);
+      await updatePublishingJob(supabase, id, {
+        error_message: `QStash scheduling failed: ${msg}`,
+      });
+      return NextResponse.json({ error: msg }, { status: 502 });
+    }
     const { data: updated, error: uErr } = await supabase
       .from('publishing_jobs')
       .select('*')

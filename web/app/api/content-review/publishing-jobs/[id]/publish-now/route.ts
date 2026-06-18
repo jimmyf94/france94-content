@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { updatePublishingJob } from '@fr94/publishing/publishing-state';
 
-import { dispatchGithubWorkflow } from '@/lib/github-dispatch';
+import { schedulePublishingJob } from '@/lib/qstash-publishing';
 import { assertReviewAuthorized } from '@/lib/review-auth';
 import { getSupabaseServiceRole } from '@/lib/supabase-server';
 
@@ -61,9 +61,15 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  const dispatch = await dispatchGithubWorkflow('publish-scheduled.yml');
-  if (!dispatch.ok) {
-    console.warn('[publish now] dispatch failed', dispatch.error);
+  try {
+    await schedulePublishingJob({ jobId: id, scheduledAt: nowIso });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[publish now] qstash enqueue', msg);
+    await updatePublishingJob(supabase, id, {
+      error_message: `QStash scheduling failed: ${msg}`,
+    });
+    return NextResponse.json({ error: msg }, { status: 502 });
   }
 
   const { data: updated, error: uErr } = await supabase
@@ -77,10 +83,8 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
   return NextResponse.json({
     ok: true,
-    message: dispatch.ok
-      ? 'Publish pipeline started'
-      : 'Publish scheduled; worker will pick it up within ~5 minutes',
-    dispatched: dispatch.ok,
+    message: 'Publish pipeline queued',
+    dispatched: true,
     job: updated,
   });
 }

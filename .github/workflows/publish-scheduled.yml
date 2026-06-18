@@ -1,9 +1,12 @@
 name: publish-scheduled
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Optional publishing_jobs.id to publish; empty scans due jobs manually'
+        required: false
+        default: ''
 
 concurrency:
   group: publish-scheduled
@@ -21,8 +24,14 @@ jobs:
           cache: npm
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
-      - run: npm run publish:scheduled
+      - run: |
+          if [ -n "$JOB_ID" ]; then
+            npm run publish:scheduled -- --job-id="$JOB_ID"
+          else
+            npm run publish:scheduled
+          fi
         env:
+          JOB_ID: ${{ github.event.inputs.job_id || '' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
