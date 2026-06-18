@@ -8,3 +8,4 @@ node_modules/
 f94client.json
 **/f94client.json
 *.sql
+logs/backfill-nohup.out
