@@ -172,7 +172,7 @@ export async function listDriveFiles(
   return out;
 }
 
-function fileExtension(filename: string): string | null {
+export function fileExtension(filename: string): string | null {
   const i = filename.lastIndexOf('.');
   if (i <= 0 || i === filename.length - 1) return null;
   return filename.slice(i + 1).toLowerCase();
