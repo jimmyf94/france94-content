@@ -1,6 +1,7 @@
 import type { getSupabaseServiceRole } from '@/lib/supabase-server';
 
 const PIPELINE_SINGLETON = true;
+const STALE_PIPELINE_RUN_MS = 45 * 60 * 1000;
 
 export const PIPELINE_POST_TYPES = [
   'reel',
@@ -70,6 +71,54 @@ export async function loadPipelineRow(
     auto_ingest_interval_minutes: row.auto_ingest_interval_minutes ?? 30,
     enabled_post_types: normalizeEnabledPostTypes(row.enabled_post_types),
     auto_reel_render_enabled: row.auto_reel_render_enabled === true,
+  };
+}
+
+function isPipelineRunBusy(status: string | null): boolean {
+  return status === 'running' || status === 'dispatching';
+}
+
+function pipelineRunAgeMs(row: PipelineRow): number | null {
+  const started = row.last_run_status === 'running' ? row.last_run_started_at ?? row.updated_at : row.updated_at;
+  const startedMs = new Date(started).getTime();
+  if (Number.isNaN(startedMs)) return null;
+  return Date.now() - startedMs;
+}
+
+export async function recoverStalePipelineRun(
+  supabase: ReturnType<typeof getSupabaseServiceRole>,
+  row: PipelineRow,
+): Promise<PipelineRow> {
+  const ageMs = pipelineRunAgeMs(row);
+  if (!isPipelineRunBusy(row.last_run_status) || ageMs == null || ageMs < STALE_PIPELINE_RUN_MS) {
+    return row;
+  }
+
+  const finishedAt = new Date().toISOString();
+  const lastRunSummary = {
+    ...(row.last_run_summary ?? {}),
+    error: 'GitHub Action did not report a final pipeline status before the timeout window',
+    stale_status: row.last_run_status,
+  };
+
+  const { error } = await supabase
+    .from('pipeline_settings')
+    .update({
+      last_run_finished_at: finishedAt,
+      last_run_status: 'error',
+      last_run_summary: lastRunSummary,
+      updated_at: finishedAt,
+    })
+    .eq('singleton', PIPELINE_SINGLETON);
+
+  if (error) throw new Error(error.message);
+
+  return {
+    ...row,
+    last_run_finished_at: finishedAt,
+    last_run_status: 'error',
+    last_run_summary: lastRunSummary,
+    updated_at: finishedAt,
   };
 }
 

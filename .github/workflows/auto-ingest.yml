@@ -46,3 +46,37 @@ jobs:
           POST_CANDIDATE_MAX_ASSETS: '80'
           POST_CANDIDATE_DAILY_TARGET: '2'
           FR94_PROMPT_VERSION: '2026-05-23-v1'
+      - name: Mark auto-ingest failed
+        if: failure()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "Supabase credentials missing; cannot mark pipeline failure"
+            exit 0
+          fi
+
+          finished_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          payload="$(jq -n \
+            --arg finished_at "$finished_at" \
+            --arg run_url "$RUN_URL" \
+            '{
+              last_run_finished_at: $finished_at,
+              last_run_status: "error",
+              last_run_summary: {
+                error: "GitHub Action failed before auto-ingest could report a final status",
+                github_run_url: $run_url
+              },
+              updated_at: $finished_at
+            }')"
+
+          curl --fail-with-body \
+            --request PATCH \
+            --url "$SUPABASE_URL/rest/v1/pipeline_settings?singleton=eq.true&last_run_status=in.(dispatching,running)" \
+            --header "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --header "Prefer: return=minimal" \
+            --data "$payload"

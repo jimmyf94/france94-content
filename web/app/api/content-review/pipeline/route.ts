@@ -5,6 +5,7 @@ import {
   loadPipelineRow,
   needsReviewCount,
   PIPELINE_POST_TYPES,
+  recoverStalePipelineRun,
   toPipelinePayload,
   PIPELINE_SINGLETON_KEY,
 } from '@/lib/pipeline-settings-server';
@@ -40,7 +41,8 @@ export async function GET(req: NextRequest) {
     if (denied) return denied;
 
     const supabase = getSupabaseServiceRole();
-    const [row, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
+    const [rawRow, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
+    const row = await recoverStalePipelineRun(supabase, rawRow);
     return NextResponse.json(toPipelinePayload(row, needsReview));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -88,7 +90,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const [row, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
+    const [rawRow, needsReview] = await Promise.all([loadPipelineRow(supabase), needsReviewCount(supabase)]);
+    const row = await recoverStalePipelineRun(supabase, rawRow);
     return NextResponse.json(toPipelinePayload(row, needsReview));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
